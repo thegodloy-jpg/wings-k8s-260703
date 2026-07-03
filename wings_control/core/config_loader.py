@@ -79,14 +79,7 @@ REASONING_PARSER_SUPPORT_PATH = (
     / "docs"
     / "features"
     / "reasoning_parser"
-    / "reasoning_parser_support.yaml"
-)
-FUNCTION_CALL_SUPPORT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "docs"
-    / "features"
-    / "function_call"
-    / "function_call_support.yaml"
+    / "reason_parser.yaml"
 )
 
 # 各设备类型和引擎对应的默认配置文件名映射
@@ -3181,46 +3174,22 @@ def _load_reasoning_parser_support() -> Dict[str, Any]:
     }
 
 
-@lru_cache(maxsize=1)
-def _load_function_call_support() -> Dict[str, Any]:
-    """Load the function-call parser matrix keyed by model architecture."""
-    try:
-        with FUNCTION_CALL_SUPPORT_PATH.open("r", encoding="utf-8-sig") as stream:
-            support = yaml.safe_load(stream) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        logger.warning(
-            "Failed to load function-call support file %s: %s",
-            FUNCTION_CALL_SUPPORT_PATH,
-            exc,
-        )
-        return {}
-
-    architectures = support.get("architectures", [])
-    if not isinstance(architectures, list):
-        logger.warning(
-            "Invalid function-call support format: architectures must be a list"
-        )
-        return {}
-    return {
-        item["name"]: item
-        for item in architectures
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    }
-
-
-def _resolve_parser_support(
-    support_by_architecture: Dict[str, Any],
+def _resolve_reasoning_parser_support(
     model_architecture: str,
     model_name: str,
     engine: str,
-    supported_engines: set[str],
 ) -> Tuple[bool, Optional[str]]:
-    """Resolve one parser value from a parser support matrix."""
+    """Resolve one parser value from reasoning_parser_support.yaml.
+
+    Concrete model rows, including explicit ``null``, take precedence over the
+    architecture config map. Distributed vLLM variants share their base engine
+    mapping.
+    """
     base_engine = engine.removesuffix("_distributed")
-    if base_engine not in supported_engines:
+    if base_engine not in {"vllm", "vllm_ascend"}:
         return False, None
 
-    architecture = support_by_architecture.get(model_architecture)
+    architecture = _load_reasoning_parser_support().get(model_architecture)
     if not architecture:
         return False, None
 
@@ -3245,41 +3214,6 @@ def _resolve_parser_support(
     return False, None
 
 
-def _resolve_reasoning_parser_support(
-    model_architecture: str,
-    model_name: str,
-    engine: str,
-) -> Tuple[bool, Optional[str]]:
-    """Resolve one parser value from reasoning_parser_support.yaml.
-
-    Concrete model rows, including explicit ``null``, take precedence over the
-    architecture config map. Distributed vLLM variants share their base engine
-    mapping.
-    """
-    return _resolve_parser_support(
-        _load_reasoning_parser_support(),
-        model_architecture,
-        model_name,
-        engine,
-        {"vllm", "vllm_ascend"},
-    )
-
-
-def _resolve_function_call_support(
-    model_architecture: str,
-    model_name: str,
-    engine: str,
-) -> Tuple[bool, Optional[str]]:
-    """Resolve one tool-call parser value from function_call_support.yaml."""
-    return _resolve_parser_support(
-        _load_function_call_support(),
-        model_architecture,
-        model_name,
-        engine,
-        {"vllm", "vllm_ascend", "sglang"},
-    )
-
-
 def _apply_reasoning_parser_support(
     engine_specific_defaults: Dict[str, Any],
     model_architecture: str,
@@ -3299,28 +3233,6 @@ def _apply_reasoning_parser_support(
         resolved["reasoning_parser"] = parser
     else:
         resolved.pop("reasoning_parser", None)
-    return resolved
-
-
-def _apply_function_call_support(
-    engine_specific_defaults: Dict[str, Any],
-    model_architecture: str,
-    model_name: str,
-    engine_key: str,
-) -> Dict[str, Any]:
-    """Merge the YAML-backed function-call parser into model defaults."""
-    resolved = dict(engine_specific_defaults)
-    found, parser = _resolve_function_call_support(
-        model_architecture,
-        model_name,
-        engine_key,
-    )
-    if not found:
-        return resolved
-    if parser:
-        resolved["tool_call_parser"] = parser
-    else:
-        resolved.pop("tool_call_parser", None)
     return resolved
 
 
@@ -3384,12 +3296,6 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
         engine_specific_defaults = models_dict.get(default_key, {}).get(engine_key, {})
         logger.info("The default deploy configuration of the model type %s will be used.", model_type)
 
-    engine_specific_defaults = _apply_function_call_support(
-        engine_specific_defaults,
-        model_architecture,
-        cmd_known_params.get("model_name", ""),
-        engine_key,
-    )
     engine_specific_defaults = _apply_reasoning_parser_support(
         engine_specific_defaults,
         model_architecture,
