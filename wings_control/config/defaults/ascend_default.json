@@ -1,0 +1,676 @@
+{
+  "model_deploy_config": {
+    "llm": {
+      "default": {
+        "vllm_ascend": {
+          "trust_remote_code": true,
+          "max_model_len": 4096
+        },
+        "vllm_ascend_distributed": {
+          "trust_remote_code": true,
+          "max_model_len": 4096
+        },
+        "mindie": {
+          "maxSeqLen": 4096,
+          "maxInputTokenLen": 2048,
+          "maxIterTimes": 2048
+        },
+        "mindie_distributed": {
+          "maxSeqLen": 4096,
+          "maxInputTokenLen": 2048,
+          "maxIterTimes": 2048
+        }
+      },
+      "DeepseekV3ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v3"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v3"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "deepseekv2",
+            "mindie_tool_call_parser": "deepseekv3"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "deepseekv2",
+            "mindie_tool_call_parser": "deepseekv3"
+          }
+        },
+        "DeepSeek-R1-w8a8": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v3",
+            "reasoning_parser": "deepseek_r1"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v3"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "deepseekv2",
+            "mindie_tool_call_parser": "deepseekv3"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 16384,
+            "maxInputTokenLen": 8192,
+            "maxPrefillBatchSize": 10,
+            "maxPrefillTokens": 8192,
+            "maxBatchSize": 130,
+            "maxIterTimes": 8192,
+            "mindie_model_type": "deepseekv2",
+            "mindie_tool_call_parser": "deepseekv3"
+          }
+        },
+        "DeepSeek-V3.1-w8a8": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v31",
+            "reasoning_parser": "deepseek_v3"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v31"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "deepseekv2",
+            "mindie_tool_call_parser": "deepseek_v31"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "deepseekv2",
+            "mindie_tool_call_parser": "deepseek_v31"
+          }
+        }
+      },
+      "DeepseekV4ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4"
+          }
+        },
+        "DeepSeek-V4-Flash": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 65536,
+            "max_num_batched_tokens": 8192,
+            "gpu_memory_utilization": 0.9,
+            "max_num_seqs": 16,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "block_size": 128,
+            "chat_template": "/usr/local/serving/models/chat_template.jinja",
+            "async_scheduling": true,
+            "enable_prefix_caching": true,
+            "enable_chunked_prefill": true,
+            "safetensors_load_strategy": "prefetch",
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": false},
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "enable_auto_tool_choice": true,
+            "use_vllm_serve": true
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 65536,
+            "max_num_batched_tokens": 8192,
+            "gpu_memory_utilization": 0.9,
+            "max_num_seqs": 16,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "block_size": 128,
+            "chat_template": "/usr/local/serving/models/chat_template.jinja",
+            "async_scheduling": true,
+            "enable_prefix_caching": true,
+            "enable_chunked_prefill": true,
+            "safetensors_load_strategy": "prefetch",
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": false},
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "enable_auto_tool_choice": true,
+            "use_vllm_serve": true
+          }
+        },
+        "DeepSeek-V4-Pro": {
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 135000,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.9,
+            "max_num_seqs": 16,
+            "tensor_parallel_size": 16,
+            "data_parallel_size": 2,
+            "data_parallel_size_local": 1,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "block_size": 128,
+            "async_scheduling": true,
+            "safetensors_load_strategy": "prefetch",
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "ascend_compilation_config": {
+                "enable_npugraph_ex": true,
+                "enable_static_kernel": false
+              }
+            },
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "enable_auto_tool_choice": true,
+            "use_vllm_serve": true
+          }
+        }
+      },
+      "Qwen3MoeForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen3",
+            "mindie_tool_call_parser": "qwen3"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen3",
+            "mindie_tool_call_parser": "qwen3"
+          }
+        },
+        "Qwen3-235B-A22B": {
+          "vllm_ascend": {
+            "max_model_len": 4096,
+            "trust_remote_code": true,
+            "tool_call_parser": "hermes"
+          },
+          "vllm_ascend_distributed": {
+            "max_model_len": 4096,
+            "trust_remote_code": true,
+            "tool_call_parser": "hermes"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen3",
+            "mindie_tool_call_parser": "qwen3"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 16384,
+            "maxInputTokenLen": 8192,
+            "maxPrefillBatchSize": 10,
+            "maxPrefillTokens": 8192,
+            "maxBatchSize": 130,
+            "maxIterTimes": 8192,
+            "mindie_model_type": "qwen3",
+            "mindie_tool_call_parser": "qwen3"
+          }
+        }
+      },
+      "Qwen3ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen3",
+            "mindie_tool_call_parser": "qwen3"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen3",
+            "mindie_tool_call_parser": "qwen3"
+          }
+        }
+      },
+      "Qwen2ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "mindie": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen2_5",
+            "mindie_tool_call_parser": "qwen2_5"
+          },
+          "mindie_distributed": {
+            "maxSeqLen": 4096,
+            "maxInputTokenLen": 2048,
+            "maxIterTimes": 2048,
+            "mindie_model_type": "qwen2_5",
+            "mindie_tool_call_parser": "qwen2_5"
+          }
+        }
+      },
+      "DeepseekV32ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v32"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v32"
+          }
+        }
+      },
+      "Glm4MoeForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "glm47"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "glm47"
+          }
+        }
+      },
+      "GlmMoeDsaForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "glm47",
+            "quantization": "ascend",
+            "seed": 1024,
+            "max_num_seqs": 8,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.95,
+            "enable_chunked_prefill": true,
+            "enable_prefix_caching": true,
+            "additional_config": {
+              "fuse_muls_add": true,
+              "multistream_overlap_shared_expert": true,
+              "ascend_compilation_config": {
+                "enable_npugraph_ex": true
+              }
+            },
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          },
+           "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "glm47",
+            "quantization": "ascend",
+            "seed": 1024,
+            "max_num_seqs": 8,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.95,
+            "enable_chunked_prefill": true,
+            "enable_prefix_caching": true,
+            "additional_config": {
+              "fuse_muls_add": true,
+              "multistream_overlap_shared_expert": true,
+              "ascend_compilation_config": {
+                "enable_npugraph_ex": true
+              }
+            },
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          }
+        },
+        "GLM-5.2-w8a8": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 81920,
+            "tool_call_parser": "glm47",
+            "quantization": "ascend",
+            "seed": 1024,
+            "max_num_seqs": 16,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.98,
+            "enable_expert_parallel": true,
+            "async_scheduling": true,
+            "additional_config": {
+              "fuse_muls_add": true,
+              "multistream_overlap_shared_expert": true,
+              "ascend_compilation_config": {
+                "enable_npugraph_ex": true
+              }
+            },
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 133120,
+            "tool_call_parser": "glm47",
+            "quantization": "ascend",
+            "seed": 1024,
+            "max_num_seqs": 30,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.95,
+            "enable_expert_parallel": true,
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "additional_config": {
+              "fuse_muls_add": true,
+              "multistream_overlap_shared_expert": true,
+              "ascend_compilation_config": {
+                "enable_npugraph_ex": true
+              }
+            },
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          }
+        }
+      },
+      "Qwen3_5ForConditionalGeneration": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "task": "generate",
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "compilation_config": "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
+            "additional_config": "{\"enable_cpu_binding\":true}",
+            "tool_call_parser": "qwen3_coder"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "task": "generate",
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "compilation_config": "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
+            "additional_config": "{\"enable_cpu_binding\":true}",
+            "tool_call_parser": "qwen3_coder"
+          }
+        }
+      },
+      "Qwen3_5MoeForConditionalGeneration": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "task": "generate",
+            "quantization": "ascend",
+            "enable_expert_parallel": true,
+            "max_num_seqs": 128,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true},
+            "tool_call_parser": "qwen3_coder"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "task": "generate",
+            "quantization": "ascend",
+            "enable_expert_parallel": true,
+            "max_num_seqs": 128,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true},
+            "tool_call_parser": "qwen3_coder"
+          }
+        },
+        "Qwen3.6-35B-A3B": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 262144,
+            "task": "generate",
+            "quantization": "ascend",
+            "enable_expert_parallel": true,
+            "max_num_seqs": 128,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "tool_call_parser": "qwen3_coder"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 262144,
+            "task": "generate",
+            "quantization": "ascend",
+            "enable_expert_parallel": true,
+            "max_num_seqs": 128,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "enable_prefix_caching": true,
+            "async_scheduling": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "tool_call_parser": "qwen3_coder"
+          }
+        },
+        "Qwen-AgentWorld-35B-A3B": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 262144,
+            "gpu_memory_utilization": 0.9,
+            "async_scheduling": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
+            "language_model_only": true
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 262144,
+            "gpu_memory_utilization": 0.9,
+            "async_scheduling": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
+            "language_model_only": true
+          }
+        }
+      },
+      "MiniMaxM2ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "gpu_memory_utilization": 0.92,
+            "max_model_len": 34816,
+            "max_num_seqs": 64,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
+            "additional_config": {
+              "enable_cpu_binding": true
+            },
+            "tool_call_parser": "minimax_m2"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "gpu_memory_utilization": 0.92,
+            "max_model_len": 34816,
+            "max_num_seqs": 64,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
+            "additional_config": {
+              "enable_cpu_binding": true
+            },
+            "tool_call_parser": "minimax_m2"
+          }
+        }
+      },
+      "LlamaForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "llama3_json"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "llama3_json"
+          }
+        }
+      },
+      "Glm4ForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          }
+        }
+      },
+      "Qwen3NextForCausalLM": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "hermes"
+          }
+        }
+      },
+      "KimiK25ForConditionalGeneration": {
+        "default": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "max_num_seqs": 16,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "enable_expert_parallel": true,
+            "allowed-local-media-path": "/",
+            "no_enable_prefix_caching": true,
+            "enable_auto_tool_choice": true,
+            "tool_call_parser": "kimi_k2",
+            "async_scheduling": true,
+            "compilation_config": "{\"cudagraph_capture_sizes\":[4,8,16,32,64,128,256], \"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
+            "mm_encoder_tp_mode": "data"
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "max_num_seqs": 16,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "enable_expert_parallel": true,
+            "allowed-local-media-path": "/",
+            "no_enable_prefix_caching": true,
+            "enable_auto_tool_choice": true,
+            "tool_call_parser": "kimi_k2",
+            "async_scheduling": true,
+            "compilation_config": "{\"cudagraph_capture_sizes\":[4,8,16,32,64,128,256], \"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
+            "mm_encoder_tp_mode": "data"
+          }
+        }
+      }
+    },
+    "embedding": {
+      "default": {
+        "vllm_ascend": {
+          "trust_remote_code": true
+        },
+        "vllm_ascend_distributed": {
+          "trust_remote_code": true
+        }
+      }
+    },
+    "rerank": {
+      "default": {
+        "vllm_ascend": {
+          "trust_remote_code": true
+        },
+        "vllm_ascend_distributed": {
+          "trust_remote_code": true
+        }
+      }
+    }
+  }
+}

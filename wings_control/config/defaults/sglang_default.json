@@ -1,0 +1,14 @@
+{
+  "context_length": 4096,
+  "trust_remote_code": true,
+  "dtype": "auto",
+  "kv_cache_dtype": "auto",
+  "quantization": null,
+  "quantization_param_path": null,
+  "mem_fraction_static": 0.8,
+  "enable_chunked_prefill": null,
+  "max_running_requests": 256,
+  "chunked_prefill_size": 4096,
+  "random_seed": 42,
+  "disable_chunked_prefix_cache": false
+}

@@ -1,0 +1,16 @@
+{
+  "max_model_len": 4096,
+  "trust_remote_code": true,
+  "dtype": "auto",
+  "kv_cache_dtype": "auto",
+  "quantization": null,
+  "quantization_param_path": null,
+  "gpu_memory_utilization": 0.9,
+  "enable_chunked_prefill": null,
+  "block_size": 16,
+  "max_num_seqs": 32,
+  "max_num_batched_tokens": 4096,
+  "seed": 0,
+  "enable_expert_parallel": null,
+  "enable_prefix_caching": true
+}

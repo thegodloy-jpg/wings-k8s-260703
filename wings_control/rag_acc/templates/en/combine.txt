@@ -1,0 +1,15 @@
+### You need to process a task with a long context that greatly exceeds your context limit.
+### The only feasible way to handle this is by processing the long context chunk by chunk.
+### You are provided with a question and some information extracted from each chunk.
+### Each piece of information contains Extracted Information, Rationale, and a Confidence Score.
+### The following is some assigning scoring cases:
+<Text: [Jerry is 18 years old this year. He can swim and wants to be an athlete.].
+assigning scoring: [Jerry can swim, 5 points; Jerry will become an athlete in the future, 3.5 points; Jerry will become a swimming athlete in the future, 3 points;Jerry is strong,3 points; Jerry can play chess, 0 points;Jerry likes talking,0 points]>.
+### Read the information and follow my instructions to process it.
+### Question:
+{question}
+### Information from chunks:
+{context}
+### Each chunk provides extracted information related to the same question, but due to partial data, conclusions from each chunk might vary.
+### Your role is to integrate and reason through this information, weighing confidence scores to resolve any inconsistencies. Then provide the final answer.
+### Answer:

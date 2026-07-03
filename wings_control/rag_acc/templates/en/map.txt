@@ -1,0 +1,19 @@
+### You are provided with a portion of an article and a question. Read the article portion and follow my instructions to process it.
+### Instructions:
+Please extract information from the provided passage to try and answer the given question.
+Note that you only have a part of the entire text, so the information you obtain might not fully answer the question.
+Therefore, provide your rationale for using the extracted information to answer the question and include a confidence score.
+### The following is some assigning scoring cases:
+<Text: [Jerry is 18 years old this year. He can swim and wants to be an athlete.].
+assigning scoring: [Jerry can swim, 5 points; Jerry will become an athlete in the future, 3.5 points; Jerry will become a swimming athlete in the future, 3 points;Jerry is strong,3 points; Jerry can play chess, 0 points;Jerry likes talking,0 points]>.
+### Follow these steps:
+1. Extract Relevant Information: Identify and highlight the key pieces of information from the passage that are relevant to the given question.\n
+2. Provide a Rationale: Analyze the extracted information and explain how it can be used to address the question.
+   If the information is incomplete, discuss any assumptions or inferences you need to make.\n
+4. Assign a Confidence Score: Assign a confidence score (out of 5) to your answer based on the completeness and reliability of the extracted information and your rationale process.\n
+### Please follow this format:
+Extracted Information:\nRationale:\nConfidence Score:
+### Article:
+{context}
+### Question:
+{question}

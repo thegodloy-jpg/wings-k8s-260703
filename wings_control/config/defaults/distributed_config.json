@@ -1,0 +1,26 @@
+{
+  "master": {
+    "host": "127.0.0.1",
+    "port": 16000,
+    "heartbeat_timeout": 90,
+    "max_retries": 3
+  },
+  "workers": {
+    "port": 16001
+  },
+  "scheduler": {
+    "policy": "least_load",
+    "fallback_policy": "round_robin"
+  },
+  "vllm_distributed": {
+    "ray_head_port": 28020,
+    "nixl_port": 5759,
+    "rpc_port": 13355
+  },
+  "sglang_distributed": {
+    "dist_port": 28030
+  },
+  "mindie_distributed": {
+    "master_port": 27070
+  }
+}
