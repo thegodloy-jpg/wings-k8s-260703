@@ -3027,7 +3027,7 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     if model_info.model_architecture == "Qwen3NextForCausalLM" and engine == "vllm_ascend":
         return "suffix"
 
-    mtp_method = _resolve_mtp_method(model_info.model_architecture)
+    mtp_method = _resolve_mtp_method(model_info.model_architecture, engine)
     if mtp_method:
         # §2.3 白名单 gate：spec 不在白名单 → suffix 地板（恒产 suffix，不返回空）。
         #   修真实 bug：GLM-5.1·Ascend（清单 sparse-only）现状误产 deepseek_mtp，改后回落 suffix。
