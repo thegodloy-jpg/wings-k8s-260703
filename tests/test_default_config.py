@@ -99,6 +99,7 @@ def test_deepseek_v4_flash_ascend_a2_defaults_are_selected_without_static_topolo
     assert config["max_num_batched_tokens"] == 8192
     assert config["max_num_seqs"] == 32
     assert config["no_enable_prefix_caching"] is True
+    assert config["no_disable_hybrid_kv_cache_manager"] is True
     assert "enable_prefix_caching" not in config
     assert "tensor_parallel_size" not in config
     assert "data_parallel_size" not in config
@@ -129,6 +130,7 @@ def test_deepseek_v4_flash_ascend_a3_defaults_are_selected_without_static_topolo
     assert config["max_num_batched_tokens"] == 10240
     assert config["max_num_seqs"] == 64
     assert config["api_server_count"] == 1
+    assert config["no_disable_hybrid_kv_cache_manager"] is True
     assert "enable_prefix_caching" not in config
     assert "no_enable_prefix_caching" not in config
     assert "tensor_parallel_size" not in config
@@ -139,3 +141,47 @@ def test_deepseek_v4_flash_ascend_a3_defaults_are_selected_without_static_topolo
         "enable_npugraph_ex": True,
         "enable_static_kernel": False,
     }
+
+
+def test_deepseek_v4_flash_reasoning_parser_support_file_is_loaded(monkeypatch):
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a2")
+
+    config_loader._load_reasoning_parser_support.cache_clear()
+    config = config_loader._get_model_specific_config(
+        {"device": "ascend"},
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "distributed": False,
+            "enable_auto_think_choice": True,
+        },
+        _FakeDeepSeekV4Info(),
+    )
+
+    assert config["reasoning_parser"] == "deepseek_v4"
+
+
+def test_reasoning_parser_support_source_file_uses_short_name():
+    assert config_loader.REASONING_PARSER_SUPPORT_PATH.name == "reason_parser.yaml"
+    assert config_loader.REASONING_PARSER_SUPPORT_PATH.exists()
+
+
+def test_explicit_served_model_name_overrides_model_name(monkeypatch):
+    monkeypatch.setenv("SERVED_MODEL_NAME", "dsv4")
+
+    config = config_loader._get_model_specific_config(
+        {"device": "ascend"},
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "distributed": False,
+            "served_model_name": "dsv4",
+        },
+        _FakeDeepSeekV4Info(),
+    )
+
+    assert config["served_model_name"] == "dsv4"

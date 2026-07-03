@@ -31,7 +31,6 @@ from engines.vllm_adapter import (
     resolve_speculative_strategy,
     resolve_sparse_variant,
     resolve_offload_variant,
-    _is_deepseek_v4_pro_cpu_offload_params,
     _is_deepseek_v4_flash_params,
     _inject_env_echo,
     _need_triton_patch,
@@ -61,9 +60,7 @@ logger = logging.getLogger(__name__)
 #   ENABLE_SPECULATIVE_DECODE → adaptive_draft_model（已改为 --install-runtime-deps 独立安装）
 #   ENABLE_SPARSE             → indexcache（仅 IndexCache 架构，通过独立安装片段处理）
 #
-# 注意：ENABLE_KV_OFFLOAD（KV 卸载）通常通过 --lmcache-target 独立安装，
-# DeepSeek-V4-Pro on vllm_ascend 例外：直接追加 CPUOffloadingConnector
-# kv_transfer_config，不安装 LMCache 补丁；DeepSeek-V4-Flash 0.21 走 LMCache dynamic。
+# ENABLE_KV_OFFLOAD installs LMCache by target; DeepSeek-V4-Flash 0.21 uses LMCache dynamic.
 #
 # 可通过 WINGS_ENGINE_PATCH_OPTIONS 环境变量直接覆盖（JSON 字符串），
 # 此时直接使用用户提供的值，不再按特性开关自动生成。
@@ -377,7 +374,6 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
 
     命中下列任一情况返回 None（跳过安装）：
       * ``ENABLE_KV_OFFLOAD`` 未开启；
-      * V4-Pro on vllm_ascend → 用 CPUOffloadingConnector；
       * V4-Flash on NV/vllm → 用 native ``--kv_offloading_backend``（构建期 CLI flag）；
       * GLM-5.1 on NV/vllm → 强制关闭 LMCache；
       * 引擎无已知 lmcache-target 映射。
@@ -404,14 +400,6 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
                 "_resolve_lmcache_install_target — skipping LMCache patch install."
             )
             return None
-
-    if merged and _is_deepseek_v4_pro_cpu_offload_params(merged, engine=engine):
-        logger.info(
-            "[KVCache Offload] DeepSeek-V4-Pro uses vllm-ascend "
-            "CPUOffloadingConnector; skipping LMCache patch install despite "
-            "ENABLE_KV_OFFLOAD=true."
-        )
-        return None
 
     # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv_offloading_backend（构建期 CLI flag），
     # 与 LMCache 互斥：跳过 LMCache 补丁安装，避免两套卸载机制并存。
@@ -604,7 +592,6 @@ def _build_accel_preamble(engine: str, merged: dict) -> str:
     安装策略（容错）：
       1. 投机推理（ENABLE_SPECULATIVE_DECODE）使用 --install-runtime-deps 独立安装
       2. LMCache KV 卸载（ENABLE_KV_OFFLOAD）使用 --lmcache-target 独立安装
-         （DeepSeek-V4-Pro on vllm_ascend 例外，直接注入 CPUOffloadingConnector）
       3. IndexCache（KV 稀疏 + IndexCache 架构）使用 --features indexcache 安装
       4. 其他高级特性继续走 --features 路径
       5. 先尝试批量安装所有特性

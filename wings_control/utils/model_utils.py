@@ -540,7 +540,7 @@ def resolve_thinking_off_policy(model_name: str):
         return THINKING_ALWAYS_ON, {}
 
     # 2) Qwen3 系列（混合推理）：enable_thinking
-    #    排除 Qwen3-Coder-*：官方为非思考模型，reasoning_parser_support.yaml 显式置 null，
+    #    排除 Qwen3-Coder-*：官方为非思考模型，reason_parser.yaml 显式置 null，
     #    不应注入思考默认（否则开关开时会把非思考的 Coder 误强制思考）。
     if "qwen3" in name and "coder" not in name:
         return THINKING_HYBRID, {"enable_thinking": False}

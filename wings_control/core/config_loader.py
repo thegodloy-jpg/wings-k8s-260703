@@ -424,6 +424,7 @@ def _build_engine_cmd_parameter(cmd_known_params: Dict[str, Any]) -> Dict[str, A
     """从 CLI 参数字典提取引擎级参数。"""
     keys = [
         "host", "port", "model_name", "model_path", "input_length", "output_length",
+        "served_model_name",
         "trust_remote_code", "dtype", "kv_cache_dtype", "quantization",
         "quantization_param_path", "gpu_memory_utilization", "enable_chunked_prefill",
         "block_size", "max_num_seqs", "seed", "enable_expert_parallel",
@@ -570,7 +571,7 @@ def _set_reasoning_parser(params, engine_cmd_parameter):
 
     适用引擎：vllm / vllm_ascend / sglang（三引擎一致；mindie 无 reasoning_parser 字段）。
     本函数仅作用于配置解析后 params 中已存在的字段；模型对应 parser 由
-    docs/features/reasoning_parser/reasoning_parser_support.yaml 注入。
+    docs/features/reasoning_parser/reason_parser.yaml 注入。
     """
     if engine_cmd_parameter.get("enable_auto_think_choice"):
         if params.get("reasoning_parser"):
@@ -1477,19 +1478,8 @@ def _v4_offload_identity_text(ctx, model_info) -> str:
     return " ".join(str(item).lower() for item in candidates if item)
 
 
-def _is_deepseek_v4_pro_cpu_offload(ctx, model_info) -> bool:
-    """Return True when V4-Pro KV offload should use CPUOffloadingConnector."""
-    if ctx.get("engine") != "vllm_ascend":
-        return False
-    text = _v4_offload_identity_text(ctx, model_info)
-    if not ("v4" in text and "pro" in text):
-        return False
-    arch = getattr(model_info, "model_architecture", "")
-    return arch in _DEEPSEEK_V4_OFFLOAD_ARCHES
-
-
 def _is_deepseek_v4_flash_offload(ctx, model_info) -> bool:
-    """Return True when the V4 offload target is V4-Flash (vs V4-Pro)."""
+    """Return True when the V4 offload target is V4-Flash."""
     return "flash" in _v4_offload_identity_text(ctx, model_info)
 
 
@@ -1506,39 +1496,6 @@ def _is_deepseek_v4_flash_nv(ctx, model_info) -> bool:
         return False
     arch = getattr(model_info, "model_architecture", "")
     return arch in _DEEPSEEK_V4_OFFLOAD_ARCHES
-
-
-def _build_deepseek_v4_pro_cpu_offload_config(params, ctx, model_info) -> Dict[str, Any]:
-    """Build the legacy V4-Pro CPUOffloadingConnector config.
-
-    cpu_swap_space_gb 取值:
-      * V4-Flash: ``device_count(本节点卡数) × KV_MEM_OFFLOAD_SIZE``（每卡语义）;
-      * V4-Pro / 其它: 直接等于 ``KV_MEM_OFFLOAD_SIZE``（不乘卡数）;
-      * "auto" / 未设置 / 非法: 一律缺省 200（不乘；auto 精确值由 vllm_adapter C4 补偿）。
-    This path is not used by DeepSeek-V4-Flash 0.21.
-    """
-    raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
-    if raw_size.lower() == "auto":
-        raw_size = ""  # auto 由 vllm_adapter C4 反算补偿，此处回退缺省
-    try:
-        per_card_gb = int(raw_size) if raw_size else None
-    except ValueError:
-        logger.warning(
-            "[DeepSeek-V4 KV Offload] Invalid KV_MEM_OFFLOAD_SIZE=%r; "
-            "falling back to 200 GB.", raw_size,
-        )
-        per_card_gb = None
-    cpu_swap_gb = per_card_gb if per_card_gb is not None else 200
-    return {
-        "kv_connector": "CPUOffloadingConnector",
-        "kv_connector_module_path":
-            "vllm_ascend.distributed.kv_transfer.kv_pool.cpu_offload.cpu_offload_connector",
-        "kv_role": "kv_both",
-        "kv_connector_extra_config": {
-            "swap_in_threshold": 1,
-            "cpu_swap_space_gb": cpu_swap_gb,
-        },
-    }
 
 
 def _build_deepseek_v4_flash_lmcache_dynamic_config() -> Dict[str, Any]:
@@ -1594,16 +1551,6 @@ def _set_kv_cache_config(params, ctx, model_info=None):
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash on vllm_ascend uses "
             "LMCacheAscendConnectorV1Dynamic."
-        )
-        return
-
-    if lmcache_offload and model_info is not None and _is_deepseek_v4_pro_cpu_offload(ctx, model_info):
-        params["kv_transfer_config"] = json.dumps(
-            _build_deepseek_v4_pro_cpu_offload_config(params, ctx, model_info)
-        )
-        logger.info(
-            "[KVCache Offload] DeepSeek-V4-Pro on vllm_ascend uses "
-            "CPUOffloadingConnector; not injecting LMCacheConnectorV1."
         )
         return
 
@@ -2364,6 +2311,7 @@ _COMMON_CLI_ENV_MAP: Dict[str, str] = {
     "enable_chunked_prefill": "ENABLE_CHUNKED_PREFILL",
     "enable_prefix_caching": "ENABLE_PREFIX_CACHING",
     "enable_expert_parallel": "ENABLE_EXPERT_PARALLEL",
+    "served_model_name": "SERVED_MODEL_NAME",
 }
 
 
@@ -3233,7 +3181,7 @@ def _resolve_reasoning_parser_support(
     model_name: str,
     engine: str,
 ) -> Tuple[bool, Optional[str]]:
-    """Resolve one parser value from reasoning_parser_support.yaml.
+    """Resolve one parser value from reason_parser.yaml.
 
     Concrete model rows, including explicit ``null``, take precedence over the
     architecture config map. Distributed vLLM variants share their base engine

@@ -3,6 +3,7 @@
     "host": "host",
     "port": "port",
     "model_name": "served_model_name",
+    "served_model_name": "served_model_name",
     "model_path": "model",
     "input_length": "",
     "output_length": "",

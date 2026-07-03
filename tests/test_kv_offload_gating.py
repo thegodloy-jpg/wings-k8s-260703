@@ -8,6 +8,16 @@ from engines import vllm_adapter  # noqa: E402
 from core import wings_entry  # noqa: E402
 
 
+class _FakeDeepSeekV4ProIdentifier:
+    model_architecture = "DeepseekV4ForCausalLM"
+    model_quantize = "w4a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 def test_lmcache_env_exports_do_not_leak_l2_child_values_when_l2_switches_are_off(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "false")
@@ -89,3 +99,19 @@ def test_deepseek_v4_flash_ascend_installs_lmcache_patch(monkeypatch):
     )
 
     assert target == "ascend-arm"
+
+
+def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4ProIdentifier)
+
+    special = vllm_adapter._classify_offload_special_case(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "DeepSeek-V4-Pro-w4a8-mtp",
+            "model_path": "/models/DeepSeek-V4-Pro-w4a8-mtp",
+            "model_type": "llm",
+        },
+        "vllm_ascend",
+    )
+
+    assert special == ""
