@@ -723,9 +723,9 @@ def _resolve_lmcache_cpu_env(params: Optional[Dict[str, Any]]) -> Tuple[str, str
     auto 模式（``resolve_offload_cpu_capacity_gb`` 非 None）反向预算并写回「均卡」容量；
     熔断(<=0)清空 CPU 池；非 auto 透传现有 env。需求一 §3.0。
     """
-    _mem_env = os.getenv("ENABLE_KV_MEM_OFFLOAD")
-    if _mem_env is None:
-        _mem_env = os.getenv("LMCACHE_LOCAL_CPU", "")  # 过渡期兼容旧名
+    mem_enabled = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    if not mem_enabled:
+        return "", ""
     local_cpu_value = os.getenv("ENABLE_KV_MEM_OFFLOAD", "").strip()
     max_cpu_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
 
@@ -836,8 +836,10 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         _append_lmcache_env_export(env_commands, "ENABLE_KV_MEM_OFFLOAD", local_cpu_value or "true")
         _append_lmcache_env_export(env_commands, "KV_MEM_OFFLOAD_SIZE", max_cpu_size)
 
-    _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_PATH")
-    _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_SIZE")
+    if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true":
+        _append_lmcache_env_export(env_commands, "ENABLE_KV_DISK_OFFLOAD", "true")
+        _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_PATH")
+        _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_SIZE")
 
     # 任何 LMCache 容量/功能段配置都会触发 YAML 生成并导出路径
     yaml_path = _write_lmcache_config_yaml(engine)
@@ -2443,7 +2445,9 @@ def resolve_offload_cpu_capacity_gb(params: Dict[str, Any]) -> Optional[int]:
     max_cpu = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     pod_mem = os.getenv("AVAILABLE_POD_MEM_SIZE", "").strip()
 
-    # 判定: KV_MEM_OFFLOAD_SIZE == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto 自算
+    # 判定: ENABLE_KV_MEM_OFFLOAD=true 且 KV_MEM_OFFLOAD_SIZE == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto 自算
+    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
+        return None
     if max_cpu.lower() != "auto":
         return None  # custom 带 GB 值或未设置 → 透传
     if not pod_mem:
