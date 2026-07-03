@@ -912,6 +912,18 @@ def _set_parallelism_params(params, ctx):
     # 判定与 adapter 分支共用 is_deepseek_v4_flash_rtx_pro_5000，保证两处条件逐字一致。
     if is_deepseek_v4_flash_rtx_pro_5000(ctx):
         return
+    flash_identity = " ".join(
+        str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
+    )
+    if (
+        ctx.get("engine") == "vllm_ascend"
+        and (
+            "deepseek-v4-flash" in flash_identity
+            or "deepseek_v4_flash" in flash_identity
+            or "deepseekv4flash" in flash_identity
+        )
+    ):
+        return
     _adjust_tensor_parallelism(
         params,
         ctx["device_count"],
@@ -1448,7 +1460,7 @@ def _is_glm51_nvidia_vllm(ctx, model_info) -> bool:
     )
 
 
-_DEEPSEEK_V4_CPU_OFFLOAD_ARCHES = {
+_DEEPSEEK_V4_OFFLOAD_ARCHES = {
     "DeepseekV4ForCausalLM",
     "DeepSeekV4ForCausalLM",
 }
@@ -1465,16 +1477,15 @@ def _v4_offload_identity_text(ctx, model_info) -> str:
     return " ".join(str(item).lower() for item in candidates if item)
 
 
-def _is_deepseek_v4_cpu_offload(ctx, model_info) -> bool:
-    """Return True when V4 KV offload should bypass LMCache in config merge."""
+def _is_deepseek_v4_pro_cpu_offload(ctx, model_info) -> bool:
+    """Return True when V4-Pro KV offload should use CPUOffloadingConnector."""
     if ctx.get("engine") != "vllm_ascend":
         return False
     text = _v4_offload_identity_text(ctx, model_info)
-    is_v4_flash_or_pro = "v4" in text and ("flash" in text or "pro" in text)
-    if not is_v4_flash_or_pro:
+    if not ("v4" in text and "pro" in text):
         return False
     arch = getattr(model_info, "model_architecture", "")
-    return arch in _DEEPSEEK_V4_CPU_OFFLOAD_ARCHES
+    return arch in _DEEPSEEK_V4_OFFLOAD_ARCHES
 
 
 def _is_deepseek_v4_flash_offload(ctx, model_info) -> bool:
@@ -1494,25 +1505,17 @@ def _is_deepseek_v4_flash_nv(ctx, model_info) -> bool:
     if not ("v4" in text and "flash" in text):
         return False
     arch = getattr(model_info, "model_architecture", "")
-    return arch in _DEEPSEEK_V4_CPU_OFFLOAD_ARCHES
+    return arch in _DEEPSEEK_V4_OFFLOAD_ARCHES
 
 
-def _resolve_v4_offload_device_count(params, ctx) -> int:
-    """本节点卡数，用于 V4-Flash 卸载容量按卡放大。"""
-    try:
-        return int(ctx.get("device_count") or params.get("device_count") or 1)
-    except (TypeError, ValueError):
-        return 1
-
-
-def _build_deepseek_v4_cpu_offload_config(params, ctx, model_info) -> Dict[str, Any]:
-    """构建 V4 CPUOffloadingConnector 配置。
+def _build_deepseek_v4_pro_cpu_offload_config(params, ctx, model_info) -> Dict[str, Any]:
+    """Build the legacy V4-Pro CPUOffloadingConnector config.
 
     cpu_swap_space_gb 取值:
       * V4-Flash: ``device_count(本节点卡数) × KV_MEM_OFFLOAD_SIZE``（每卡语义）;
       * V4-Pro / 其它: 直接等于 ``KV_MEM_OFFLOAD_SIZE``（不乘卡数）;
       * "auto" / 未设置 / 非法: 一律缺省 200（不乘；auto 精确值由 vllm_adapter C4 补偿）。
-    须与 ``vllm_adapter._apply_deepseek_v4_cpu_offload`` 公式保持一致。
+    This path is not used by DeepSeek-V4-Flash 0.21.
     """
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     if raw_size.lower() == "auto":
@@ -1525,12 +1528,7 @@ def _build_deepseek_v4_cpu_offload_config(params, ctx, model_info) -> Dict[str, 
             "falling back to 200 GB.", raw_size,
         )
         per_card_gb = None
-    if per_card_gb is None:
-        cpu_swap_gb = 200
-    elif _is_deepseek_v4_flash_offload(ctx, model_info):
-        cpu_swap_gb = _resolve_v4_offload_device_count(params, ctx) * per_card_gb
-    else:
-        cpu_swap_gb = per_card_gb
+    cpu_swap_gb = per_card_gb if per_card_gb is not None else 200
     return {
         "kv_connector": "CPUOffloadingConnector",
         "kv_connector_module_path":
@@ -1540,6 +1538,16 @@ def _build_deepseek_v4_cpu_offload_config(params, ctx, model_info) -> Dict[str, 
             "swap_in_threshold": 1,
             "cpu_swap_space_gb": cpu_swap_gb,
         },
+    }
+
+
+def _build_deepseek_v4_flash_lmcache_dynamic_config() -> Dict[str, Any]:
+    """Build the vLLM-Ascend 0.21 LMCache dynamic offload connector."""
+    return {
+        "kv_connector": "LMCacheAscendConnectorV1Dynamic",
+        "kv_role": "kv_both",
+        "kv_connector_module_path":
+            "lmcache_ascend.integration.vllm.lmcache_ascend_connector_v1",
     }
 
 
@@ -1573,12 +1581,28 @@ def _set_kv_cache_config(params, ctx, model_info=None):
             )
             lmcache_offload = False
 
-    if lmcache_offload and model_info is not None and _is_deepseek_v4_cpu_offload(ctx, model_info):
+    if (
+        lmcache_offload
+        and model_info is not None
+        and ctx.get("engine") == "vllm_ascend"
+        and getattr(model_info, "model_architecture", "") in _DEEPSEEK_V4_OFFLOAD_ARCHES
+        and _is_deepseek_v4_flash_offload(ctx, model_info)
+    ):
         params["kv_transfer_config"] = json.dumps(
-            _build_deepseek_v4_cpu_offload_config(params, ctx, model_info)
+            _build_deepseek_v4_flash_lmcache_dynamic_config()
         )
         logger.info(
-            "[KVCache Offload] DeepSeek-V4 Flash/Pro on vllm_ascend uses "
+            "[KVCache Offload] DeepSeek-V4-Flash on vllm_ascend uses "
+            "LMCacheAscendConnectorV1Dynamic."
+        )
+        return
+
+    if lmcache_offload and model_info is not None and _is_deepseek_v4_pro_cpu_offload(ctx, model_info):
+        params["kv_transfer_config"] = json.dumps(
+            _build_deepseek_v4_pro_cpu_offload_config(params, ctx, model_info)
+        )
+        logger.info(
+            "[KVCache Offload] DeepSeek-V4-Pro on vllm_ascend uses "
             "CPUOffloadingConnector; not injecting LMCacheConnectorV1."
         )
         return
@@ -3022,6 +3046,23 @@ def _model_config_key_matches_lookup_names(config_key_lower: str, lookup_names: 
     )
 
 
+def _is_deepseek_v4_flash_lookup(lookup_names: list) -> bool:
+    return any(
+        "deepseek-v4-flash" in name
+        or "deepseek_v4_flash" in name
+        or "deepseekv4flash" in name
+        for name in lookup_names
+    )
+
+
+def _resolve_deepseek_v4_flash_ascend_config_key(arch_dict: Dict[str, Any]) -> str:
+    platform = _resolve_ascend_platform() or "a2"
+    candidate = f"DeepSeek-V4-Flash-{platform.upper()}"
+    if candidate in arch_dict:
+        return candidate
+    return ""
+
+
 @dataclass
 class _SpecialEngineScenario:
     """DeepSeek + 引擎 + NVIDIA 的两类特殊卡型选配场景标记。"""
@@ -3063,6 +3104,18 @@ def _match_model_engine_config(
     for extra in _fingerprint_model_config_keys(model_info):
         if extra not in lookup_names:
             lookup_names.append(extra)
+
+    if (
+        engine_key in {"vllm_ascend", "vllm_ascend_distributed"}
+        and _is_deepseek_v4_flash_lookup(lookup_names)
+    ):
+        config_key = _resolve_deepseek_v4_flash_ascend_config_key(arch_dict)
+        if config_key:
+            logger.info(
+                "Using DeepSeek-V4-Flash Ascend config '%s' (engine_key=%s)",
+                config_key, engine_key,
+            )
+            return arch_dict[config_key].get(engine_key, {})
 
     for model, config in arch_dict.items():
         if not _model_config_key_matches_lookup_names(model.lower(), lookup_names):

@@ -1,5 +1,5 @@
 {
-  "_doc": "Smart 三特性白名单，按特性拆为三独立表（投机 spec / 稀疏 sparse / 卸载 offload）。详解 + 全枚举矩阵见 xuqiu/smart/需求一-白名单详解.md。由 utils/model_utils.py 模块加载。",
+  "_doc": "Smart 三特性白名单，按特性拆为三独立表（投机 spec / 稀疏 sparse / 卸载 offload）。23.6.0 矩阵来源见 docs/features/smart_feature/23.6.0_feature_matrix_summary.md。由 utils/model_utils.py 模块加载。",
   "_schema": {
     "每表条目": "engine(精确 vllm|vllm_ascend) + name_tokens(小写子串，对 model_name+model_path 任一命中) + card_tokens(子串|[\"*\"]，Ascend 用 910b/910c)",
     "arch / source": "仅文档用元信息，加载器忽略",
@@ -8,33 +8,33 @@
     "口径": "无 forced：有效=开关 on AND 命中对应表；miss → 该特性不产"
   },
   "spec": [
-    {"engine": "vllm", "name_tokens": ["qwen3.5-397b", "qwen3_5-397b"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "0430"},
-    {"engine": "vllm", "name_tokens": ["glm-4.7"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "0430"},
-    {"engine": "vllm", "name_tokens": ["minimax-m2.7", "minimax-m27"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "0430"},
-    {"engine": "vllm", "name_tokens": ["deepseek-v4-flash", "v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "day0"},
-    {"engine": "vllm_ascend", "name_tokens": ["glm-4.7"], "card_tokens": ["910b", "910c"], "arch": "Glm4MoeForCausalLM", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["minimax-m2.5", "minimax-m25"], "card_tokens": ["910b", "910c"], "arch": "MiniMaxM2ForCausalLM", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["deepseek-v3.2", "deepseek_v3.2"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["qwen3.6", "qwen3_6"], "card_tokens": ["910b", "910c"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["deepseek-v4-flash", "v4-flash"], "card_tokens": ["910b", "910c"], "arch": "DeepseekV4ForCausalLM", "source": "day0"},
-    {"engine": "vllm_ascend", "name_tokens": ["glm-5.2", "glm5.2"], "card_tokens": ["910b", "910c"], "arch": "GlmMoeDsaForCausalLM", "source": "day0"}
+    {"engine": "vllm", "name_tokens": ["qwen/qwen3.5-397b-a17b", "qwen3.5-397b-a17b"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0"},
+    {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash", "deepseek-v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b", "910c"], "arch": "DeepseekV4ForCausalLM", "source": "0.21"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.2-w8a8", "glm-5.2-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/qwen3.6-27b-w8a8", "qwen3.6-27b-w8a8"], "card_tokens": ["910b"], "arch": "Qwen3_5ForConditionalGeneration", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/qwen3.6-35b-a3b-w8a8", "qwen3.6-35b-a3b-w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.6-27b", "qwen3.6-27b"], "card_tokens": ["910c"], "arch": "Qwen3_5ForConditionalGeneration", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.6-35b-a3b", "qwen3.6-35b-a3b"], "card_tokens": ["910c"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-4.7-w8a8-floatmtp", "glm-4.7-w8a8-floatmtp"], "card_tokens": ["910b", "910c"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/minimax-m2.5-w8a8-quarot", "minimax-m2.5-w8a8-quarot"], "card_tokens": ["910b", "910c"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v3.2-w8a8", "deepseek-v3.2-w8a8"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "23.6.0"}
   ],
   "sparse": [
-    {"engine": "vllm", "name_tokens": ["qwen3.5-397b", "qwen3_5-397b"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "0430", "topk": {"accuracy_first": 4}},
-    {"engine": "vllm", "name_tokens": ["glm-4.7"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "0430", "topk": {"accuracy_first": 4}},
-    {"engine": "vllm", "name_tokens": ["glm-5.1", "glm5.1"], "card_tokens": ["*"], "arch": "GlmMoeDsaForCausalLM", "source": "0430", "topk": {"accuracy_first": 4}},
-    {"engine": "vllm", "name_tokens": ["minimax-m2.7", "minimax-m27"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "0430", "topk": {"accuracy_first": 4}},
-    {"engine": "vllm", "name_tokens": ["deepseek-v4-flash", "v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "day0", "topk": {"accuracy_first": 4, "performance_first": 8}},
-    {"engine": "vllm_ascend", "name_tokens": ["deepseek-v4-flash", "v4-flash"], "card_tokens": ["910b", "910c"], "arch": "DeepseekV4ForCausalLM", "source": "day0", "topk": {"accuracy_first": 4, "performance_first": 8}},
-    {"engine": "vllm_ascend", "name_tokens": ["glm-5.1", "glm5.1"], "card_tokens": ["910b", "910c"], "arch": "GlmMoeDsaForCausalLM", "source": "day0", "topk": {"accuracy_first": 8}}
+    {"engine": "vllm", "name_tokens": ["qwen/qwen3.5-397b-a17b", "qwen3.5-397b-a17b"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0", "topk": {"accuracy_first": 4}},
+    {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
+    {"engine": "vllm", "name_tokens": ["zhipuai/glm-5.1-fp8", "glm-5.1-fp8"], "card_tokens": ["*"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
+    {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910b", "910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 8}}
   ],
   "offload": [
-    {"engine": "vllm", "name_tokens": ["glm-4.7"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "0430"},
-    {"engine": "vllm", "name_tokens": ["minimax-m2.7", "minimax-m27"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "0430"},
-    {"engine": "vllm", "name_tokens": ["deepseek-v4-flash", "v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "day0"},
-    {"engine": "vllm_ascend", "name_tokens": ["glm-4.7"], "card_tokens": ["910b", "910c"], "arch": "Glm4MoeForCausalLM", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["minimax-m2.5", "minimax-m25"], "card_tokens": ["910b", "910c"], "arch": "MiniMaxM2ForCausalLM", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["deepseek-v3.2", "deepseek_v3.2"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "0430"},
-    {"engine": "vllm_ascend", "name_tokens": ["deepseek-v4-flash", "v4-flash"], "card_tokens": ["910b", "910c"], "arch": "DeepseekV4ForCausalLM", "source": "day0"}
+    {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-4.7-w8a8-floatmtp", "glm-4.7-w8a8-floatmtp"], "card_tokens": ["910b", "910c"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/minimax-m2.5-w8a8-quarot", "minimax-m2.5-w8a8-quarot"], "card_tokens": ["910b", "910c"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v3.2-w8a8", "deepseek-v3.2-w8a8"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b", "910c"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"}
   ]
 }

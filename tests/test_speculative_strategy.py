@@ -16,6 +16,16 @@ class _FakeModelIdentifier:
         self.model_type = model_type
 
 
+class _FakeDeepSeekV4Identifier:
+    model_architecture = "DeepseekV4ForCausalLM"
+    model_quantize = "w8a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
 
@@ -31,3 +41,24 @@ def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
     )
 
     assert strategy == "qwen3_5_mtp"
+
+
+def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+
+    command = vllm_adapter.build_speculative_cmd(
+        {
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "speculative_decode_model_path": "none",
+            "_smart_feats": ["spec"],
+        },
+        "vllm_ascend",
+    )
+
+    assert '"method": "mtp"' in command
+    assert '"num_speculative_tokens": 1' in command
+    assert '"enforce_eager": true' in command
+    assert "deepseek_mtp" not in command

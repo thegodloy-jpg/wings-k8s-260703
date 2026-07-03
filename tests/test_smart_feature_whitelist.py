@@ -12,7 +12,35 @@ def test_default_smart_feature_whitelist_file_is_loaded():
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
-        "DeepSeek-V4-Flash",
-        "/models/DeepSeek-V4-Flash",
+        "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
         "910c",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset({"spec", "offload"})
+
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "",
+    ) == frozenset({"spec"})
+
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "GLM-4.7",
+        "/models/GLM-4.7",
+        "",
+    ) == frozenset()
+
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Qwen3.6-27B",
+        "/models/Qwen3.6-27B",
+        "910c",
+    ) == frozenset({"spec"})
+
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Qwen3.6-35B-A3B",
+        "/models/Qwen3.6-35B-A3B",
+        "910c",
+    ) == frozenset({"spec"})
