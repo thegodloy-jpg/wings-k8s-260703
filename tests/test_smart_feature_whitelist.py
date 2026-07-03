@@ -22,7 +22,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "deepseek-ai/DeepSeek-V4-Flash",
         "/models/deepseek-ai/DeepSeek-V4-Flash",
         "",
-    ) == frozenset({"spec"})
+    ) == frozenset({"spec", "sparse"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",

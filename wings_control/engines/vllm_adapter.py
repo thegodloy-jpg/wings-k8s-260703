@@ -1,4 +1,4 @@
-﻿# Copyright (c) xFusion Digital Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) xFusion Digital Technologies Co., Ltd. 2025-2025. All rights reserved.
 # -*- coding: utf-8 -*-
 
 """
@@ -665,11 +665,9 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
 #    使「守卫条件」成为单一真相源、二者天然同源同序）──
 _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache 通用路径
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
-_OFFLOAD_V4_PRO_CPU_CONNECTOR = "v4_pro_cpu_connector"  # V4-Pro ascend CPUOffloadingConnector
 _OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv_offloading_backend
 _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offload_variant 的 variant 串
     _OFFLOAD_GLM51_NV_DISABLED: "disabled",
-    _OFFLOAD_V4_PRO_CPU_CONNECTOR: "native_cpu_connector",
     _OFFLOAD_V4_FLASH_NATIVE: "native_kv_offloading_backend",
 }
 
@@ -682,8 +680,6 @@ def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str
     """
     if _is_glm51_nvidia_vllm_params(params, engine):
         return _OFFLOAD_GLM51_NV_DISABLED
-    if params and _is_deepseek_v4_pro_cpu_offload_params(params, engine=engine):
-        return _OFFLOAD_V4_PRO_CPU_CONNECTOR
     if params and engine == "vllm" and _is_deepseek_v4_flash_params(params):
         return _OFFLOAD_V4_FLASH_NATIVE
     return _OFFLOAD_NATIVE_NONE
@@ -692,19 +688,13 @@ def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str
 def _lmcache_engine_env_skip(special: str) -> bool:
     """三类 offload 特例下打印「跳过 LMCache engine 侧 env 导出」日志并返回 True。
 
-    三者均与 LMCache 互斥：GLM-5.1·NV 强制关 / V4-Pro 走 vllm-ascend CPUOffloadingConnector /
-    V4-Flash·NV 走 native ``--kv_offloading_backend``。非特例返回 False（继续走 LMCache 路径）。
+    GLM-5.1·NV 强制关；V4-Flash·NV 走 native ``--kv_offloading_backend``。
+    非特例返回 False（继续走 LMCache 路径）。
     """
     if special == _OFFLOAD_GLM51_NV_DISABLED:
         logger.warning(
             "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
             "skipping LMCache engine-side env exports despite ENABLE_KV_OFFLOAD=true."
-        )
-        return True
-    if special == _OFFLOAD_V4_PRO_CPU_CONNECTOR:
-        logger.info(
-            "[KVCache Offload] DeepSeek-V4-Pro uses vllm-ascend CPUOffloadingConnector "
-            "via --kv-transfer-config; skipping LMCache engine-side env exports."
         )
         return True
     if special == _OFFLOAD_V4_FLASH_NATIVE:
@@ -853,7 +843,7 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         )
         return env_commands
 
-    # 守卫（条件由 _classify_offload_special_case 统一裁定；三特例均与 LMCache 互斥，跳过 env 导出）
+    # 守卫（条件由 _classify_offload_special_case 统一裁定；互斥特例跳过 env 导出）
     special = _classify_offload_special_case(params, engine)
     if _lmcache_engine_env_skip(special):
         return env_commands
@@ -903,7 +893,7 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     不依赖产出口先跑，也绝不改 engine_config。
 
     variant 形态：后端 ``[+auto|+custom][+qat][+cold_start]``，如
-    ``lmcache_cpu+auto`` / ``lmcache_cpu+custom+qat`` / ``native_cpu_connector`` / ``disabled``。
+    ``lmcache_cpu+auto`` / ``lmcache_cpu+custom+qat`` / ``native_kv_offloading_backend`` / ``disabled``。
     """
     if not get_lmcache_env():
         return ""
@@ -1681,33 +1671,6 @@ def _is_deepseek_v4_pro_params(
     return False
 
 
-def _is_deepseek_v4_pro_cpu_offload_params(
-    params: Dict[str, Any],
-    model_info: Optional[ModelIdentifier] = None,
-    engine: Optional[str] = None,
-) -> bool:
-    """Return True when DeepSeek-V4-Pro should use CPUOffloadingConnector."""
-    effective_engine = engine or params.get("engine")
-    if effective_engine != "vllm_ascend":
-        return False
-    if model_info is None:
-        try:
-            model_info = ModelIdentifier(
-                params.get("model_name"),
-                params.get("model_path"),
-                params.get("model_type"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[DeepSeek-V4 KV Offload] Skip arch detection: %s", exc)
-            return False
-    if (
-        model_info.model_architecture
-        and model_info.model_architecture not in _DEEPSEEK_V4_CPU_OFFLOAD_ARCHES
-    ):
-        return False
-    return _is_deepseek_v4_pro_params(params, model_info)
-
-
 def _build_deepseek_v4_flash_env(params: Dict[str, Any]) -> List[str]:
     """构建 DeepSeek-V4-Flash A2/A3 vLLM-Ascend 专属环境变量。
 
@@ -2052,8 +2015,6 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     # block_size 固定 256 必须在所有可能写入 block_size 的默认注入之后执行，
     # 以确保最终值恒为 256（覆盖 json 默认与用户显式值）。
     _force_deepseek_v4_flash_nv_block_size(params, engine_config)
-    if _is_deepseek_v4_pro_cpu_offload_params(params):
-        _apply_deepseek_v4_pro_cpu_offload(params, engine_config, explicit_keys)
     _apply_glm5_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_generic_deepseek_ascend_dp_defaults(params, engine_config, explicit_keys)
     _apply_glm5_dsa_distributed_fixups(params, engine_config, explicit_keys)
@@ -2528,44 +2489,6 @@ def _resolve_qwen35_nvfp4_offload_gb(params: Dict[str, Any]) -> int:
         return 200
     device_count = _safe_int(params.get("device_count")) or 1
     return device_count * int(per_card_gb)
-
-
-def _apply_deepseek_v4_pro_cpu_offload(
-    params: Dict[str, Any],
-    engine_config: Dict[str, Any],
-    explicit_keys: set,
-) -> None:
-    """Inject legacy CPUOffloadingConnector kv_transfer_config for DeepSeek-V4-Pro.
-
-    触发条件复用 KV 卸载: ``ENABLE_KV_OFFLOAD=true`` (由上游 K8s ConfigMap 注入)。
-
-    cpu_swap_space_gb 取值规则:
-      * **V4-Flash**: ``device_count(本节点卡数) × KV_MEM_OFFLOAD_SIZE``
-        (即 ``KV_MEM_OFFLOAD_SIZE`` 语义为「每卡」CPU 卸载内存)；
-      * **V4-Pro / 其它**: 直接等于 ``KV_MEM_OFFLOAD_SIZE``（不乘卡数，维持原行为）；
-      * ``KV_MEM_OFFLOAD_SIZE`` 未设置/非法时：一律缺省 200（不乘）。
-
-    与 LMCache 互斥：``_build_cache_env_commands`` 在 V4 Flash/Pro 路径已跳过 LMCache env
-    导出与 YAML 生成。两者不会同时生效。
-
-    explicit_keys 中如果已有 kv_transfer_config，说明用户或上游显式声明了 connector，
-    adapter 不再覆盖，避免把调试场景或未来 vLLM 原生配置强行改成 CPUOffloadingConnector。
-    """
-    if not get_lmcache_env():
-        return
-    if "kv_transfer_config" in explicit_keys:
-        return
-    cpu_swap_gb = _resolve_v4_flash_offload_gb(params)
-    engine_config["kv_transfer_config"] = {
-        "kv_connector": "CPUOffloadingConnector",
-        "kv_connector_module_path":
-            "vllm_ascend.distributed.kv_transfer.kv_pool.cpu_offload.cpu_offload_connector",
-        "kv_role": "kv_both",
-        "kv_connector_extra_config": {
-            "swap_in_threshold": 1,
-            "cpu_swap_space_gb": cpu_swap_gb,
-        },
-    }
 
 
 _GLM5_A2_ADDITIONAL_CONFIG: Dict[str, Any] = {
@@ -3082,12 +3005,6 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
                 "(coexists with MTP); keeping mtp speculative strategy."
             )
             lmcache_effective = False
-        if lmcache_effective and _is_deepseek_v4_pro_cpu_offload_params(params, model_info, engine):
-            logger.info(
-                "[KVCache Offload] DeepSeek-V4-Pro uses CPUOffloadingConnector "
-                "(coexists with MTP); keeping deepseek_mtp speculative strategy."
-            )
-            lmcache_effective = False
         # [V4-Flash-NV-Day0] NV V4-Flash 用 native --kv_offloading_backend，
         # 与 MTP 共存，不应被 LMCache 误降级为 suffix。
         if lmcache_effective and engine == "vllm" and _is_deepseek_v4_flash_params(params, model_info):
@@ -3222,12 +3139,19 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         # 仅 vllm_ascend 生效：NV 的 GLM-5.2 是另一套（method=mtp/num=5），不应误产 num=3。
         glm52_ascend = engine == "vllm_ascend" and is_glm52_model(
             params.get("model_name"), params.get("model_path"))
+        _pro5000_v4_flash = (
+            engine == "vllm"
+            and _is_deepseek_v4_flash_params(params)
+            and is_deepseek_v4_flash_rtx_pro_5000(params, engine)
+        )
         _num1_arch = (
             _is_deepseek_v4_pro_params(params)
             or _is_deepseek_v4_flash_params(params)
             or model_info.model_architecture == "GlmMoeDsaForCausalLM"
         )
-        if not glm52_ascend and _num1_arch:
+        if _pro5000_v4_flash:
+            speculative_config_temp.append('"num_speculative_tokens": 2')
+        elif not glm52_ascend and _num1_arch:
             speculative_config_temp.append('"num_speculative_tokens": 1')
         else:
             speculative_config_temp.append('"num_speculative_tokens": 3')
@@ -3343,7 +3267,7 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
                 "IndexCache via --hf-overrides (no patch install)"
             )
             topk = _resolve_sparse_topk(params, engine, sparse_level, default=8)
-            return f" --hf-overrides '{{\"index_topk_freq\": {topk}}}'"
+            return f" --hf-overrides '{{\"use_index_cache\": true, \"index_topk_freq\": {topk}}}'"
         logger.info(
             "[KV Sparse] engine=vllm_ascend arch=%s not GLM-5.1; "
             "KV sparse is no-op on ascend", arch,
@@ -3389,7 +3313,7 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
             model_name=params.get("model_name"), model_path=params.get("model_path"),
         ):
             topk = _resolve_sparse_topk(params, engine, sparse_level, default=8)
-            return f"indexcache_topk{topk}"
+            return f"indexcache_use_index_cache_topk{topk}"
         return "noop"                    # Ascend 非 GLM-5.1
     if _is_deepseek_v4_flash_params(params, model_info):
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)

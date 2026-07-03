@@ -23,6 +23,7 @@
     {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v3.2-w8a8", "deepseek-v3.2-w8a8"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "23.6.0"}
   ],
   "sparse": [
+    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash", "deepseek-v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["qwen/qwen3.5-397b-a17b", "qwen3.5-397b-a17b"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-5.1-fp8", "glm-5.1-fp8"], "card_tokens": ["*"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
