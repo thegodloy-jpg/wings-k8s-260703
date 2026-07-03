@@ -2190,8 +2190,9 @@ def _load_default_config(hardware_env: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Determined default config file for hardware environment '%s': %s", device_type, default_config_path)
     config = load_json_config(default_config_path)
 
-    # 兼容旧版：若主配置缺少 model_deploy_config，尝试从旧版设备配置文件中补充
-    if "model_deploy_config" not in config and default_file == "vllm_default.json":
+    # Device JSON owns model-scoped defaults such as tool_call_parser.
+    # vllm_default.json remains the common engine default layer.
+    if default_file == "vllm_default.json":
         legacy_file = f"{device_type}_default.json"
         legacy_path = os.path.join(DEFAULT_CONFIG_DIR, legacy_file)
         if os.path.exists(legacy_path):
@@ -2199,7 +2200,7 @@ def _load_default_config(hardware_env: Dict[str, Any]) -> Dict[str, Any]:
             if "model_deploy_config" in legacy_config:
                 config["model_deploy_config"] = legacy_config["model_deploy_config"]
                 logger.info(
-                    "Supplemented model_deploy_config from legacy config: %s",
+                    "Loaded model_deploy_config from device config: %s",
                     legacy_path,
                 )
     return config
