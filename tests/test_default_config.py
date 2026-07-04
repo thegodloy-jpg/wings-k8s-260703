@@ -31,16 +31,16 @@ def _as_dict(value):
     return value
 
 
-def test_device_default_model_deploy_config_overrides_common_default(tmp_path, monkeypatch):
+def test_device_default_config_loads_device_file_directly(tmp_path, monkeypatch):
     _write_json(
-        tmp_path / "vllm_default.json",
+        tmp_path / "nvidia_default.json",
         {
-            "max_model_len": 4096,
+            "device_marker": "nvidia",
             "model_deploy_config": {
                 "llm": {
                     "default": {
                         "vllm": {
-                            "tool_call_parser": "common_parser",
+                            "tool_call_parser": "device_parser",
                         }
                     }
                 }
@@ -48,13 +48,14 @@ def test_device_default_model_deploy_config_overrides_common_default(tmp_path, m
         },
     )
     _write_json(
-        tmp_path / "nvidia_default.json",
+        tmp_path / "ascend_default.json",
         {
+            "device_marker": "ascend",
             "model_deploy_config": {
                 "llm": {
                     "default": {
-                        "vllm": {
-                            "tool_call_parser": "device_parser",
+                        "vllm_ascend": {
+                            "tool_call_parser": "ascend_parser",
                         }
                     }
                 }
@@ -66,11 +67,27 @@ def test_device_default_model_deploy_config_overrides_common_default(tmp_path, m
 
     config = config_loader._load_default_config({"device": "nvidia"})
 
-    assert config["max_model_len"] == 4096
+    assert config["device_marker"] == "nvidia"
     assert (
         config["model_deploy_config"]["llm"]["default"]["vllm"]["tool_call_parser"]
         == "device_parser"
     )
+
+
+def test_engine_fallback_defaults_are_not_loaded_when_model_type_is_missing(monkeypatch):
+    assert config_loader.DEFAULT_CONFIG_FILES["nvidia"] == "nvidia_default.json"
+    assert config_loader.DEFAULT_CONFIG_FILES["ascend"] == "ascend_default.json"
+    assert "sglang" not in config_loader.DEFAULT_CONFIG_FILES
+    assert "mindie" not in config_loader.DEFAULT_CONFIG_FILES
+
+
+def test_engine_fallback_defaults_ignore_removed_engine_default_files(tmp_path, monkeypatch):
+    _write_json(tmp_path / "sglang_default.json", {"legacy": "sglang"})
+    _write_json(tmp_path / "mindie_default.json", {"legacy": "mindie"})
+    monkeypatch.setattr(config_loader, "DEFAULT_CONFIG_DIR", str(tmp_path))
+
+    assert config_loader._load_engine_fallback_defaults("sglang") == {}
+    assert config_loader._load_engine_fallback_defaults("mindie") == {}
 
 
 def test_nvidia_default_contains_function_call_model_defaults():

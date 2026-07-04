@@ -5,7 +5,7 @@ Architecture:
     合并为一份统一的参数字典，提供给 engine adapter 使用。
 
 Config Merge Priority (low -> high):
-    1. 硬件默认配置 (e.g., config/vllm_default.json)
+    1. 硬件默认配置 (e.g., config/nvidia_default.json)
     2. 模型专属配置 (model_deploy_config 匹配)
     3. 用户自定义配置 (--config-file 指定的 JSON)
     4. CLI 参数 / 环境变量覆盖
@@ -84,16 +84,12 @@ REASONING_PARSER_SUPPORT_PATH = (
 
 # 各设备类型和引擎对应的默认配置文件名映射
 DEFAULT_CONFIG_FILES = {
-    "nvidia": "vllm_default.json",
-    "ascend": "vllm_default.json",
+    "nvidia": "nvidia_default.json",
+    "ascend": "ascend_default.json",
     "distributed": "distributed_config.json",
     "engine_parameter_mapping": "engine_parameter_mapping.json",
     # PD 分离模型配置注册表（按模型架构 key，含 default 兜底条目）
     "pd_config": "pd_config.json",
-    # Engine-specific fallback defaults (used when vllm_default.json
-    # has no model-level section for the selected engine)
-    "sglang": "sglang_default.json",
-    "mindie": "mindie_default.json",
 }
 
 # PD 配置注册表缓存（模块级，首次读取后复用）
@@ -1408,7 +1404,7 @@ def _apply_pd_external_lb(cmd_known_params, model_info):
     explicit = set(cmd_known_params.get("_explicit_cli_keys") or [])
 
     # 注册表值优先级：用户 CLI/ENV > 注册表 > 基础默认。
-    # 故对非用户显式键直接覆盖（setdefault 会被 vllm_default.json 等基础默认挡住）。
+    # 故对非用户显式键直接覆盖（setdefault 会被 model_deploy_config 默认挡住）。
     # 注册表来自模块级缓存(_load_pd_config)，且 dict 值（如 additional_config）会被下游模型
     # 默认注入器就地深合并 —— 必须 deepcopy 后再写入，否则会污染缓存并跨次调用泄漏。
     # ec 与 _pd_engine_overrides 各持一份独立 deepcopy：注入器只会改动 ec 那份，重申用的这份保持原值。
@@ -1998,7 +1994,7 @@ def _merge_sglang_params(params, ctx, engine_cmd_parameter):
 
     # sglang 4.10.0--enable-ep-moe is deprecated
     # 注意：必须检查值为 truthy 而非仅检查 key 存在，
-    # 因为 sglang_default.json 中 enable_ep_moe 默认为 null，
+    # 因为 model_deploy_config 中 enable_ep_moe 可能为 null，
     # 且参数映射会将 enable_expert_parallel=False 写入为 enable_ep_moe=False，
     # 若仅检查 key 存在会导致 EP 被错误启用。
     ep_moe_val = params.pop("enable_ep_moe", None)
@@ -2171,19 +2167,13 @@ def _merge_configs(*configs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_default_config(hardware_env: Dict[str, Any]) -> Dict[str, Any]:
-    """根据硬件类型（nvidia/ascend）加载对应的默认引擎配置文件。
+    """根据硬件类型（nvidia/ascend）加载对应的设备默认配置文件。
 
-    加载策略：
-      1. 优先加载 vllm_default.json（新版统一配置）
-      2. 若 vllm_default.json 不存在 → 回退到 <device>_default.json（旧版布局）
-      3. 若 vllm_default.json 存在但缺少 model_deploy_config →
-         尝试从旧版 <device>_default.json 中补充 model_deploy_config（兼容旧配置）
-
-    兼容说明：
-      旧版使用 nvidia_default.json / ascend_default.json，其中包含按模型细分的
-      model_deploy_config 段落。新版统一使用 vllm_default.json，但如果部署环境
-      中同时存在旧版配置文件，会自动合并其中的 model_deploy_config 到新版配置中。
+    NVIDIA 直接加载 nvidia_default.json，Ascend 直接加载 ascend_default.json。
+    不再叠加共享默认层。
     """
+    # Current contract: defaults come directly from the device config file.
+    # No shared engine default layer is merged here.
     device_key = 'device'
     device_type = hardware_env.get(device_key, "nvidia")
     if device_type not in SUPPORTED_DEVICE_TYPES:
@@ -2191,51 +2181,16 @@ def _load_default_config(hardware_env: Dict[str, Any]) -> Dict[str, Any]:
         device_type = "nvidia"
     default_file = DEFAULT_CONFIG_FILES.get(device_type)
     default_config_path = os.path.join(DEFAULT_CONFIG_DIR, default_file)
-    if not os.path.exists(default_config_path) and default_file == "vllm_default.json":
-        legacy_file = f"{device_type}_default.json"
-        legacy_path = os.path.join(DEFAULT_CONFIG_DIR, legacy_file)
-        if os.path.exists(legacy_path):
-            logger.warning("Fallback to legacy default config: %s", legacy_path)
-            default_config_path = legacy_path
     logger.info("Determined default config file for hardware environment '%s': %s", device_type, default_config_path)
-    config = load_json_config(default_config_path)
-
-    # Device JSON owns model-scoped defaults such as tool_call_parser.
-    # vllm_default.json remains the common engine default layer.
-    if default_file == "vllm_default.json":
-        legacy_file = f"{device_type}_default.json"
-        legacy_path = os.path.join(DEFAULT_CONFIG_DIR, legacy_file)
-        if os.path.exists(legacy_path):
-            legacy_config = load_json_config(legacy_path)
-            if "model_deploy_config" in legacy_config:
-                config["model_deploy_config"] = legacy_config["model_deploy_config"]
-                logger.info(
-                    "Loaded model_deploy_config from device config: %s",
-                    legacy_path,
-                )
-    return config
+    return load_json_config(default_config_path)
 
 
 def _load_engine_fallback_defaults(engine: str) -> Dict[str, Any]:
-    """加载特定引擎的兜底默认配置（sglang_default.json / mindie_default.json）。
-
-    当 vllm_default.json 或 model_deploy_config 中没有该引擎的专属配置项时，
-    从引擎专属默认文件加载参数。vllm/vllm_ascend 复用公共默认配置，无需此步骤。
-    """
-    fallback_file = DEFAULT_CONFIG_FILES.get(engine)
-    if not fallback_file:
-        logger.debug("No engine-level fallback config for engine='%s'", engine)
-        return {}
-    path = os.path.join(DEFAULT_CONFIG_DIR, fallback_file)
-    if not os.path.exists(path):
-        logger.warning(
-            "Engine fallback config '%s' not found at '%s'; using empty defaults",
-            fallback_file, path,
-        )
-        return {}
-    cfg = load_json_config(path)
-    logger.info("Loaded engine-level fallback defaults from '%s'", path)
-    return cfg
+    """不再从引擎专属默认文件加载兜底参数。"""
+    # Engine-level default files were removed; keep this hook empty for callers
+    # that still fall through when model_deploy_config has no matching model_type.
+    logger.debug("No engine-level fallback config for engine='%s'", engine)
+    return {}
 
 
 def _normalize_user_config_keys(user_config: Dict[str, Any]) -> Dict[str, Any]:
