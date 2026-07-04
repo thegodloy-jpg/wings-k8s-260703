@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 from utils import model_utils  # noqa: E402
 from utils.device_utils import resolve_card_token  # noqa: E402
 from core import config_loader  # noqa: E402
+from core.hardware_detect import detect_hardware  # noqa: E402
 
 
 class _FakeDeepSeekV4Info:
@@ -191,3 +192,22 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     assert os.environ["ENABLE_SPARSE"] == "true"
     assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
+
+
+def test_detect_hardware_accepts_minimal_ascend_hardware_family_file(tmp_path, monkeypatch):
+    hardware_file = tmp_path / "hardware_info.json"
+    hardware_file.write_text(
+        json.dumps({"device": "ascend", "hardware_family": "Ascend910B_64G"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
+    monkeypatch.setenv("WINGS_DEVICE_COUNT", "8")
+    monkeypatch.delenv("WINGS_DEVICE_NAME", raising=False)
+
+    hardware = detect_hardware()
+
+    assert hardware["device"] == "ascend"
+    assert hardware["count"] == 8
+    assert hardware["hardware_family"] == "Ascend910B_64G"
+    assert hardware["details"] == [{"name": "Ascend910B_64G"}]
+    assert resolve_card_token(hardware) == "ascend910b_64g"

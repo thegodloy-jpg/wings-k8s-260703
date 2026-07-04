@@ -36,6 +36,17 @@ class _FakeGlm51Identifier:
         self.model_type = model_type
 
 
+class _FakeUnknownGlm51Identifier:
+    model_architecture = "unknown_architecture"
+    model_quantize = "w8a8"
+    config = {}
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
 
@@ -123,5 +134,27 @@ def test_glm51_ascend_indexcache_hf_overrides_enable_index_cache(monkeypatch):
         },
         "vllm_ascend",
     )
+
+    assert variant == "indexcache_use_index_cache_topk8"
+
+
+def test_glm51_ascend_indexcache_uses_model_name_when_config_missing(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeUnknownGlm51Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "GLM-5.1-w8a8",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "_smart_feats": ["sparse"],
+    }
+
+    command = vllm_adapter._build_kv_sparse_cmd(params, "vllm_ascend")
+
+    assert '--hf-overrides' in command
+    assert '"use_index_cache": true' in command
+    assert '"index_topk_freq": 8' in command
+
+    variant = vllm_adapter.resolve_sparse_variant(params, "vllm_ascend")
 
     assert variant == "indexcache_use_index_cache_topk8"

@@ -233,7 +233,12 @@ def is_glm51_ascend_kvsparse_tmp_scope(model_info: Any, engine: Any,
     """[GLM5.1-Ascend-Tmp] Return True for vllm_ascend + GLM-5.1（单机/双机均适用）."""
     if engine != "vllm_ascend":
         return False
-    return is_glm_moe_dsa_glm51(model_info, model_name=model_name, model_path=model_path)
+    name = model_name if model_name is not None else getattr(model_info, "model_name", None)
+    path = model_path if model_path is not None else getattr(model_info, "model_path", None)
+    if not is_glm51_model(name, path, getattr(model_info, "config", None)):
+        return False
+    arch = getattr(model_info, "model_architecture", None)
+    return arch in (None, "", "unknown_architecture", "GlmMoeDsaForCausalLM")
 
 
 # ── GLM-5.2 识别（架构同 GlmMoeDsaForCausalLM，与 GLM-5/5.1 靠名称/路径区分）──

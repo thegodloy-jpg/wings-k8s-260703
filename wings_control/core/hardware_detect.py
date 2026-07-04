@@ -123,19 +123,27 @@ def _load_hardware_from_file(file_path: str) -> Dict[str, Any]:
     # 校验必要字段
     if not isinstance(data, dict):
         raise ValueError("hardware info JSON must be a dict")
-    if "device" not in data or "count" not in data:
-        raise ValueError("hardware info JSON must contain 'device' and 'count' fields")
+    if "device" not in data:
+        raise ValueError("hardware info JSON must contain 'device' field")
 
     # 标准化 device 字段
     data["device"] = _normalize_device(data["device"])
-    data.setdefault("details", [])
     data.setdefault("units", "GB")
 
     # 确保 count 为正整数
-    try:
-        data["count"] = max(int(data["count"]), 1)
-    except (TypeError, ValueError):
-        data["count"] = len(data["details"]) if data["details"] else 1
+    details = data.get("details")
+    if not isinstance(details, list):
+        details = []
+    hardware_family = str(data.get("hardware_family") or "").strip()
+    if not details and hardware_family:
+        details = [{"name": hardware_family}]
+    data["details"] = details
+
+    if data.get("count") is not None:
+        data["count"] = _parse_count(str(data.get("count")))
+    else:
+        env_count = os.getenv("WINGS_DEVICE_COUNT") or os.getenv("DEVICE_COUNT")
+        data["count"] = _parse_count(env_count) if env_count else (len(details) if details else 1)
 
     return data
 
