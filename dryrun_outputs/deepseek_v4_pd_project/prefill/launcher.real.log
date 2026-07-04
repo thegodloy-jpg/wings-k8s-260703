@@ -1,0 +1,91 @@
+2026-07-04 18:02:04 [INFO] [wings-launcher] Launcher role: standalone
+2026-07-04 18:02:04 [INFO] [wings-launcher] [Startup] Service starting (attempt 1/2) ...
+2026-07-04 18:02:04 [INFO] [wings-launcher] Starting launcher plan generation (attempt 1/2) ...
+2026-07-04 18:02:04 [INFO] [core.hardware_detect] Loaded hardware info from file D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\hardware_info.json: device=ascend, count=8, cards=8
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 0: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 1: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 2: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 3: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 4: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 5: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 6: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 7: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.config_loader] Starting config loading and merging...
+2026-07-04 18:02:04 [INFO] [core.config_loader] VRAM details lack free_memory field, skipping VRAM check
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\fake_model\config.json
+2026-07-04 18:02:04 [INFO] [core.config_loader] Set global environment variable WINGS_ENGINE=vllm_ascend
+2026-07-04 18:02:04 [INFO] [core.config_loader] [SmartFeature] PD role detected -> veto: spec/sparse/offload all disabled
+2026-07-04 18:02:04 [INFO] [core.config_loader] Determined default config file for hardware environment 'ascend': D:\project\wings-k8s-260703\wings_control\config\defaults\vllm_default.json
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\wings_control\config\defaults\vllm_default.json
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\wings_control\config\defaults\ascend_default.json
+2026-07-04 18:02:04 [INFO] [core.config_loader] Loaded model_deploy_config from device config: D:\project\wings-k8s-260703\wings_control\config\defaults\ascend_default.json
+2026-07-04 18:02:04 [INFO] [core.hardware_detect] Loaded hardware info from file D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\hardware_info.json: device=ascend, count=8, cards=8
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 0: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 1: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 2: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 3: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 4: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 5: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 6: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 7: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.config_loader] Using DeepSeek-V4-Flash Ascend config 'DeepSeek-V4-Flash-A3' (engine_key=vllm_ascend)
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\wings_control\config\defaults\engine_parameter_mapping.json
+2026-07-04 18:02:04 [INFO] [core.config_loader] Function Call enabled (parser=deepseek_v4)
+2026-07-04 18:02:04 [INFO] [core.config_loader] [thinking] enable_auto_think_choice=False; inject --default-chat-template-kwargs={'thinking': False} for model 'Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp'
+2026-07-04 18:02:04 [INFO] [core.config_loader] [PD] parallel topology from role env: tensor_parallel_size=4, data_parallel_size=2 (role=P, tp_source=PD_PREFILL_TP_SIZE, dp_source=PD_PREFILL_DP_SIZE)
+2026-07-04 18:02:04 [INFO] [core.config_loader] [PD Config] Ascend device detected, connector=MooncakeConnectorV1, role=P, kv_role=kv_producer, prefill(tp=4,dp=2,pp=1), decode(tp=1,dp=8,pp=1)
+2026-07-04 18:02:04 [INFO] [core.config_loader] PD role is P
+2026-07-04 18:02:04 [WARNING] [core.config_loader] [HybridKV] PD separation is enabled; removed --no-disable-hybrid-kv-cache-manager because current KV connectors do not support HMA.
+2026-07-04 18:02:04 [INFO] [core.config_loader] [PD external-lb] entry check: PD_ROLE=P
+2026-07-04 18:02:04 [INFO] [core.config_loader] [PD external-lb params] role=P tp_size=4 dp_size=2 dp_size_local=1 dp_rank_start=0 dp_address=10.254.124.131 rpc_port=12890 pd_index_base=0 (PD_DECODE_TP_SIZE=1, PD_PREFILL_TP_SIZE=4, PD_DECODE_DP_SIZE=8, PD_PREFILL_DP_SIZE=2)
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\wings_control\config\defaults\pd_config.json
+2026-07-04 18:02:04 [INFO] [core.config_loader] [PD external-lb] arch=DeepseekV4ForCausalLM role=P connector=MooncakeHybridConnector dp_size=2 local=1 rank_start=0 addr=10.254.124.131
+2026-07-04 18:02:04 [INFO] [core.config_loader] Final engine_config keys: ['trust_remote_code', 'max_model_len', 'max_num_batched_tokens', 'gpu_memory_utilization', 'api_server_count', 'max_num_seqs', 'enable_expert_parallel', 'quantization', 'block_size', 'async_scheduling', 'safetensors_load_strategy', 'model_loader_extra_config', 'compilation_config', 'additional_config', 'tokenizer_mode', 'tool_call_parser', 'enable_auto_tool_choice', 'use_vllm_serve', 'host', 'port', 'served_model_name', 'model', 'default_chat_template_kwargs', 'tensor_parallel_size', 'data_parallel_size', 'kv_transfer_config', 'seed', 'enable_prefix_caching', 'no_enable_prefix_caching', 'enable_chunked_prefill', 'reasoning_parser', 'no_disable_hybrid_kv_cache_manager', 'speculative_config', 'enforce_eager']
+2026-07-04 18:02:04 [INFO] [core.config_loader] Final engine_config PD topology values (PD_ROLE=P): {'tensor_parallel_size': 4, 'data_parallel_size': 2}
+2026-07-04 18:02:04 [INFO] [core.config_loader] Config merging completed.
+2026-07-04 18:02:04 [INFO] [core.wings_entry] Engine listener host resolved: host=10.254.124.131 port=7100 (distributed=False node_rank=0 POD_IP=10.254.124.131 RANK_IP=10.254.124.131)
+2026-07-04 18:02:04 [INFO] [core.wings_entry] Wrote advanced_features.json: features={'speculative_decode': False, 'sparse_kv': False, 'kv_offload': False, 'rag_acc': False} variants={'speculative_decode': None, 'sparse_kv': None, 'kv_offload': None}
+2026-07-04 18:02:04 [INFO] [core.wings_entry] [AdvFeature] No advanced features enabled
+2026-07-04 18:02:04 [INFO] [core.engine_manager] Loading adapter for engine: vllm_ascend (adapter: vllm)
+2026-07-04 18:02:04 [INFO] [core.engine_manager] Using build_start_script from engines.vllm_adapter
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\fake_model\config.json
+2026-07-04 18:02:04 [INFO] [engines.vllm_adapter] Inlined env script D:\project\wings-k8s-260703\wings_control\config\set_vllm_ascend_env.sh for engine vllm_ascend (47 lines)
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\fake_model\config.json
+2026-07-04 18:02:04 [INFO] [engines.vllm_adapter] [DeepSeek-V4-Flash] Set Ascend A3 environment variables
+2026-07-04 18:02:04 [INFO] [core.hardware_detect] Loaded hardware info from file D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\hardware_info.json: device=ascend, count=8, cards=8
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 0: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 1: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 2: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 3: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 4: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 5: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 6: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 7: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [engines.vllm_adapter] [Ascend910_9362] Detected device from hardware info: Ascend
+2026-07-04 18:02:04 [INFO] [core.wings_entry] [Engine] Generated retry command for default-mode crash recovery
+2026-07-04 18:02:04 [INFO] [core.engine_manager] Loading adapter for engine: vllm_ascend (adapter: vllm)
+2026-07-04 18:02:04 [INFO] [core.engine_manager] Using build_start_script from engines.vllm_adapter
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\fake_model\config.json
+2026-07-04 18:02:04 [INFO] [engines.vllm_adapter] Inlined env script D:\project\wings-k8s-260703\wings_control\config\set_vllm_ascend_env.sh for engine vllm_ascend (47 lines)
+2026-07-04 18:02:04 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\fake_model\config.json
+2026-07-04 18:02:04 [INFO] [engines.vllm_adapter] [DeepSeek-V4-Flash] Set Ascend A3 environment variables
+2026-07-04 18:02:04 [INFO] [core.hardware_detect] Loaded hardware info from file D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\hardware_info.json: device=ascend, count=8, cards=8
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 0: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 1: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 2: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 3: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 4: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 5: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 6: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [core.hardware_detect]   Card 7: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:02:04 [INFO] [engines.vllm_adapter] [Ascend910_9362] Detected device from hardware info: Ascend
+2026-07-04 18:02:04 [INFO] [core.wings_entry] Injected log_analyzer for master node (node_rank=0)
+2026-07-04 18:02:04 [INFO] [core.wings_entry] Accel enabled but no advanced features active; skipping patch injection
+2026-07-04 18:02:04 [INFO] [core.wings_entry] Generated start_command.sh (21505 bytes)
+2026-07-04 18:02:04 [INFO] [wings-launcher] Launcher plan generated successfully (attempt 1/2)
+2026-07-04 18:02:04 [INFO] [wings-launcher] Writing start command to shared volume (attempt 1/2) ...
+2026-07-04 18:02:04 [INFO] [wings-launcher] start command written: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\prefill\start_command.sh
+2026-07-04 18:02:04 [INFO] [wings-launcher] Start command written to: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project\prefill\start_command.sh (attempt 1/2)
+2026-07-04 18:02:04 [INFO] [wings-launcher] Starting 2 managed processes (attempt 1/2) ...
+2026-07-04 18:02:04 [INFO] [wings-launcher] Starting subprocess proxy: python -m uvicorn proxy.gateway:app --host 0.0.0.0 --port 18100 --log-level error --workers 4 --backlog 8192
+2026-07-04 18:02:04 [INFO] [wings-launcher] Starting subprocess health: python -m uvicorn proxy.health_service:app --host 0.0.0.0 --port 19100 --log-level info

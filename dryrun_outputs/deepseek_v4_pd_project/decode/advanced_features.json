@@ -1,0 +1,14 @@
+{
+    "engine": "vllm_ascend",
+    "features": {
+        "speculative_decode": false,
+        "sparse_kv": false,
+        "kv_offload": false,
+        "rag_acc": false
+    },
+    "variants": {
+        "speculative_decode": null,
+        "sparse_kv": null,
+        "kv_offload": null
+    }
+}

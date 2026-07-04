@@ -1,0 +1,47 @@
+{
+  "device": "ascend",
+  "count": 8,
+  "details": [
+    {
+      "device_id": 0,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 1,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 2,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 3,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 4,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 5,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 6,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    },
+    {
+      "device_id": 7,
+      "name": "Ascend",
+      "vendor": "Ascend"
+    }
+  ],
+  "units": "GB"
+}

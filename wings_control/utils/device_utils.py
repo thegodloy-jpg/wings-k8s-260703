@@ -303,11 +303,17 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     Returns:
         str: 小写卡型标识子串，未知返回 ""。
     """
+    def _is_generic_device_name(value: str) -> bool:
+        normalized = (value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        return normalized in {"", "ascend", "npu", "huawei", "huaweiascend", "nvidia", "gpu", "cuda", "unknown"}
+
     name = ""
     if hardware_env:
         details = hardware_env.get("details") or []
         if details and isinstance(details[0], dict):
-            name = str(details[0].get("name", ""))
+            detail_name = str(details[0].get("name", "")).strip()
+            if not _is_generic_device_name(detail_name):
+                name = detail_name
         # ── 兜底：hardware_info.json 的 hardware_family 字段 ──
         # K8s sidecar 模式下 hardware_info.json 常缺少 count/details，
         # 但包含 hardware_family（如 "Ascend910B_64G" → 含 "910b"）。
@@ -315,7 +321,10 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
             hw_family = str(hardware_env.get("hardware_family", "")).strip()
             if hw_family:
                 name = hw_family.lower()
-    name = (name or os.getenv("WINGS_DEVICE_NAME", "")).strip().lower()
+    env_name = os.getenv("WINGS_DEVICE_NAME", "").strip()
+    if not name and not _is_generic_device_name(env_name):
+        name = env_name
+    name = (name or "").strip().lower()
     if name:
         return name
     # Ascend 兜底：无 device name 时按「平台信号」识别芯片（a3/910C、a2/910B）。

@@ -1,0 +1,31 @@
+2026-07-04 18:00:29 [INFO] [wings-launcher] Launcher role: standalone
+2026-07-04 18:00:29 [INFO] [wings-launcher] [Startup] Service starting (attempt 1/2) ...
+2026-07-04 18:00:29 [INFO] [wings-launcher] Starting launcher plan generation (attempt 1/2) ...
+2026-07-04 18:00:29 [INFO] [core.hardware_detect] Loaded hardware info from file D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project_debug\hardware_info.json: device=ascend, count=8, cards=8
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 0: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 1: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 2: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 3: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 4: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 5: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 6: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 7: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.config_loader] Starting config loading and merging...
+2026-07-04 18:00:29 [INFO] [core.config_loader] VRAM details lack free_memory field, skipping VRAM check
+2026-07-04 18:00:29 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project_debug\fake_model\config.json
+2026-07-04 18:00:29 [INFO] [core.config_loader] Set global environment variable WINGS_ENGINE=vllm_ascend
+2026-07-04 18:00:29 [INFO] [core.config_loader] [SmartFeature] PD role detected -> veto: spec/sparse/offload all disabled
+2026-07-04 18:00:29 [INFO] [core.config_loader] Determined default config file for hardware environment 'ascend': D:\project\wings-k8s-260703\wings_control\config\defaults\vllm_default.json
+2026-07-04 18:00:29 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\wings_control\config\defaults\vllm_default.json
+2026-07-04 18:00:29 [INFO] [utils.file_utils] Successfully loaded config file: D:\project\wings-k8s-260703\wings_control\config\defaults\ascend_default.json
+2026-07-04 18:00:29 [INFO] [core.config_loader] Loaded model_deploy_config from device config: D:\project\wings-k8s-260703\wings_control\config\defaults\ascend_default.json
+2026-07-04 18:00:29 [INFO] [core.hardware_detect] Loaded hardware info from file D:\project\wings-k8s-260703\dryrun_outputs\deepseek_v4_pd_project_debug\hardware_info.json: device=ascend, count=8, cards=8
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 0: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 1: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 2: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 3: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 4: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 5: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 6: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.hardware_detect]   Card 7: name=Ascend, total=0.00 GB, free=0.00 GB, used=0.00 GB
+2026-07-04 18:00:29 [INFO] [core.config_loader] Using DeepSeek-V4-Flash Ascend config 'DeepSeek-V4-Flash-A3' (engine_key=vllm_ascend)

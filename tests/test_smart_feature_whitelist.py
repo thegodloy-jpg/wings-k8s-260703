@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from utils import model_utils  # noqa: E402
+from utils.device_utils import resolve_card_token  # noqa: E402
 from core import config_loader  # noqa: E402
 
 
@@ -158,3 +159,35 @@ def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstrea
         "kv_role": "kv_both",
         "kv_connector_module_path": "lmcache_ascend.integration.vllm.lmcache_ascend_connector_v1",
     }
+
+
+def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    hardware_env = {
+        "device": "ascend",
+        "count": 1,
+        "details": [{"name": "Ascend"}],
+        "hardware_family": "Ascend910B_64G",
+    }
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "GLM-5.1-w8a8",
+        "model_path": "/usr/local/serving/models/",
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    assert resolve_card_token(hardware_env) == "ascend910b_64g"
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+
+    assert params["_allowed_smart_feats"] == ["sparse"]
+    assert params["_smart_feats"] == ["sparse"]
+    assert params["enable_sparse"] is True
+    assert params["enable_speculative_decode"] is False
+    assert os.environ["ENABLE_SPARSE"] == "true"
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "false"

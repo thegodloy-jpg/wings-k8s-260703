@@ -1,0 +1,10 @@
+{
+  "architectures": [
+    "DeepseekV4ForCausalLM"
+  ],
+  "num_hidden_layers": 61,
+  "quantization_config": {
+    "quant_method": "w8a8"
+  },
+  "torch_dtype": "bfloat16"
+}
