@@ -182,3 +182,37 @@ def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatc
     )
 
     assert special == ""
+
+
+def test_qwen35_nvfp4_uses_native_kv_offload_cli(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+        },
+        "vllm",
+    )
+
+    assert command == " --kv_offloading_backend native --kv_offloading_size 200"
+
+
+def test_qwen35_nvfp4_native_offload_skips_lmcache_env(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm",
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert commands == []

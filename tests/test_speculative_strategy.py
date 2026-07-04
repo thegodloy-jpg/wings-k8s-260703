@@ -74,7 +74,7 @@ def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypat
     assert "deepseek_mtp" not in command
 
 
-def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num2(monkeypatch):
+def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num1(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
     monkeypatch.setenv("WINGS_DEVICE_NAME", "NVIDIA RTX PRO 5000 72GB Blackwell")
 
@@ -92,7 +92,7 @@ def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num2(monkeyp
     )
 
     assert '"method": "mtp"' in command
-    assert '"num_speculative_tokens": 2' in command
+    assert '"num_speculative_tokens": 1' in command
     assert '"enforce_eager": true' in command
 
 

@@ -666,9 +666,11 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
 _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache 通用路径
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
 _OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv_offloading_backend
+_OFFLOAD_QWEN35_NVFP4_NATIVE = "qwen35_nvfp4_native" # Qwen3.5 NVFP4·NV native --kv_offloading_backend
 _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offload_variant 的 variant 串
     _OFFLOAD_GLM51_NV_DISABLED: "disabled",
     _OFFLOAD_V4_FLASH_NATIVE: "native_kv_offloading_backend",
+    _OFFLOAD_QWEN35_NVFP4_NATIVE: "native_kv_offloading_backend",
 }
 
 
@@ -682,6 +684,8 @@ def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str
         return _OFFLOAD_GLM51_NV_DISABLED
     if params and engine == "vllm" and _is_deepseek_v4_flash_params(params):
         return _OFFLOAD_V4_FLASH_NATIVE
+    if params and is_qwen3_5_397b_nvfp4_vllm(params, engine):
+        return _OFFLOAD_QWEN35_NVFP4_NATIVE
     return _OFFLOAD_NATIVE_NONE
 
 
@@ -702,6 +706,12 @@ def _lmcache_engine_env_skip(special: str) -> bool:
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native --kv_offloading_backend; "
             "skipping LMCache engine-side env exports."
+        )
+        return True
+    if special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
+        logger.info(
+            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 uses native "
+            "--kv_offloading_backend; skipping LMCache engine-side env exports."
         )
         return True
     return False
@@ -3146,19 +3156,12 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         # 仅 vllm_ascend 生效：NV 的 GLM-5.2 是另一套（method=mtp/num=5），不应误产 num=3。
         glm52_ascend = engine == "vllm_ascend" and is_glm52_model(
             params.get("model_name"), params.get("model_path"))
-        _pro5000_v4_flash = (
-            engine == "vllm"
-            and _is_deepseek_v4_flash_params(params)
-            and is_deepseek_v4_flash_rtx_pro_5000(params, engine)
-        )
         _num1_arch = (
             _is_deepseek_v4_pro_params(params)
             or _is_deepseek_v4_flash_params(params)
             or model_info.model_architecture == "GlmMoeDsaForCausalLM"
         )
-        if _pro5000_v4_flash:
-            speculative_config_temp.append('"num_speculative_tokens": 2')
-        elif not glm52_ascend and _num1_arch:
+        if not glm52_ascend and _num1_arch:
             speculative_config_temp.append('"num_speculative_tokens": 1')
         else:
             speculative_config_temp.append('"num_speculative_tokens": 3')
@@ -3332,23 +3335,31 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
 
 
 def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
-    """[V4-Flash-NV-Day0] 构建 NV V4-Flash native KV 卸载 CLI 片段。
+    """构建 NVIDIA/vLLM native KV 卸载 CLI 片段。
 
-    - 仅 ``engine == "vllm"`` 且 V4-Flash 生效（Ascend 0.21 走 LMCache dynamic）。
+    - 仅 ``engine == "vllm"`` 且模型命中特例时生效（Ascend 0.21 走 LMCache dynamic）。
     - 复用 ``ENABLE_KV_OFFLOAD`` 总开关（get_lmcache_env）作为触发条件。
-    - size 复用 ``_resolve_v4_flash_offload_gb``，与 ascend ``cpu_swap_space_gb`` 同源同值。
+    - size 按模型复用对应 native 容量解析器。
     - 与 LMCache env 路径互斥：命中时 ``_build_cache_env_commands`` 跳过 LMCache 导出。
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。
     """
-    if engine != "vllm" or not _is_deepseek_v4_flash_params(params):
+    if engine != "vllm":
         return ""
     if params.get("_wings_fallback_no_kv_offload"):
         return ""
     if not get_lmcache_env():
         return ""
-    size_gb = _resolve_v4_flash_offload_gb(params)
-    logger.info("[KV Offload] DeepSeek-V4-Flash (NV) → native backend, "
-                "--kv_offloading_size=%dGB", size_gb)
+
+    if _is_deepseek_v4_flash_params(params):
+        size_gb = _resolve_v4_flash_offload_gb(params)
+        logger.info("[KV Offload] DeepSeek-V4-Flash (NV) → native backend, "
+                    "--kv_offloading_size=%dGB", size_gb)
+    elif is_qwen3_5_397b_nvfp4_vllm(params, engine):
+        size_gb = _resolve_qwen35_nvfp4_offload_gb(params)
+        logger.info("[KV Offload] Qwen3.5-397B-A17B-NVFP4 → native backend, "
+                    "--kv_offloading_size=%dGB", size_gb)
+    else:
+        return ""
     return f" --kv_offloading_backend native --kv_offloading_size {size_gb}"
 
 
