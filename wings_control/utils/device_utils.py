@@ -82,8 +82,17 @@ def _get_hardware_info() -> Dict[str, Any]:
                 with open(hw_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict) and "device" in data:
-                    data.setdefault("count", 0)
-                    data.setdefault("details", [])
+                    details = data.get("details")
+                    if not isinstance(details, list):
+                        details = []
+                    hardware_family = str(data.get("hardware_family") or "").strip()
+                    if not details and hardware_family:
+                        details = [{"name": hardware_family}]
+                    data["details"] = details
+                    try:
+                        data["count"] = max(int(data.get("count") or 0), 0)
+                    except (TypeError, ValueError):
+                        data["count"] = 0
                     data.setdefault("units", "GB")
                     _hardware_cache.update(data)
                     logger.info("device_utils: loaded hardware info from %s", hw_file)
@@ -91,26 +100,10 @@ def _get_hardware_info() -> Dict[str, Any]:
             except Exception as e:
                 logger.warning("device_utils: failed to load %s: %s", hw_file, e)
 
-        # 策略 2: 回退到环境变量
-        device_raw = os.getenv("WINGS_DEVICE", os.getenv("DEVICE", "nvidia"))
-        device_map = {"nvidia": "nvidia", "gpu": "nvidia", "cuda": "nvidia",
-                      "ascend": "ascend", "npu": "ascend"}
-        device = device_map.get((device_raw or "").strip().lower(), "nvidia")
-
-        count_raw = os.getenv("WINGS_DEVICE_COUNT", os.getenv("DEVICE_COUNT", "1"))
-        try:
-            count = max(int((count_raw or "1").strip()), 0)
-        except (TypeError, ValueError):
-            count = 1
-
-        device_name = os.getenv("WINGS_DEVICE_NAME", "").strip()
-        details: List[Dict[str, Any]] = []
-        if device_name:
-            details.append({"name": device_name})
-
-        fallback = {"device": device, "count": count, "details": details, "units": "GB"}
+        # hardware_info.json 不可用时不再从环境变量推断卡型。
+        fallback = {"device": "unknown", "count": 0, "details": [], "units": "GB"}
         _hardware_cache.update(fallback)
-        logger.info("device_utils: using env-var fallback: %s", fallback)
+        logger.warning("device_utils: hardware info unavailable: %s", fallback)
         return _hardware_cache
 
 
@@ -288,17 +281,18 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
 
     来源优先级：
         1. hardware_env.details[0].name（如 "Ascend910B3" → 含 "910b"）
-        2. WINGS_DEVICE_NAME 环境变量
-        3. engine-version 后缀（Ascend：a3→910C / a2→910B；ENGINE_VERSION 实部署必设、可靠）
-        4. 显存推断（NV 无 device name 时，用 WINGS_DEVICE_MEMORY 回退 H20 型号）
+        2. hardware_env.hardware_family（如 "Ascend910B_64G"）
+        3. 未显式传入 hardware_env 时，读取 hardware_info.json 的同名字段
+        4. ENGINE_VERSION 后缀（只保留 a2/a3 平台兜底，不读取 WINGS_DEVICE_NAME）
 
     解析失败返回空串。此时 Ascend 白名单各行的 910b/910c **永不匹配 → 整条
     Ascend 白名单 miss**（见需求一 §0.1#2：MaaS 须保证 Ascend 部署的
-    hardware_info.json 填 details[0].name，或设置 ENGINE_VERSION 后缀）。
+    hardware_info.json 填 details[0].name/hardware_family，或设置 ENGINE_VERSION 后缀）。
 
     Args:
-        hardware_env: 硬件环境字典（device/count/details）；收口点直接传入最准，
-                      产出口拿不到时省略，走 WINGS_DEVICE_NAME / 显存 env 兜底。
+        hardware_env: 硬件环境字典（device/count/details/hardware_family）；
+                      产出口拿不到时省略，读取 hardware_info.json 后再走
+                      ENGINE_VERSION a2/a3 兜底。
 
     Returns:
         str: 小写卡型标识子串，未知返回 ""。
@@ -306,6 +300,9 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     def _is_generic_device_name(value: str) -> bool:
         normalized = (value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
         return normalized in {"", "ascend", "npu", "huawei", "huaweiascend", "nvidia", "gpu", "cuda", "unknown"}
+
+    if hardware_env is None:
+        hardware_env = _get_hardware_info()
 
     name = ""
     if hardware_env:
@@ -321,38 +318,15 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
             hw_family = str(hardware_env.get("hardware_family", "")).strip()
             if hw_family:
                 name = hw_family.lower()
-    env_name = os.getenv("WINGS_DEVICE_NAME", "").strip()
-    if not name and not _is_generic_device_name(env_name):
-        name = env_name
     name = (name or "").strip().lower()
-    if name:
-        return name
-    # Ascend 兜底：无 device name 时按「平台信号」识别芯片（a3/910C、a2/910B）。
-    #   信号源与 vllm_adapter._get_engine_config_platform 同源同序：显式声明
-    #   （WINGS_ASCEND_PLATFORM / ASCEND_PLATFORM / ENGINE_IMAGE_FLAVOR）→ ENGINE_VERSION 后缀。
-    #   保证白名单卡型口径与引擎平台判定一致（卡型保持现状走 engine-version/平台，需求一 §1.2）。
-    platform = (
-        os.getenv("WINGS_ASCEND_PLATFORM")
-        or os.getenv("ASCEND_PLATFORM")
-        or os.getenv("ENGINE_IMAGE_FLAVOR")
-        or ""
-    ).strip().lower()
-    if not platform:
-        from core.version_util import engine_version_platform  # 局部导入避免底层 util 循环依赖
-        platform = (engine_version_platform() or "")
-    if "a3" in platform or "910c" in platform:
-        return "ascend910c"
-    if "a2" in platform or "910b" in platform:
-        return "ascend910b"
-    # NV 无 device name 时用显存兜底（H20-96G/141G）
-    mem_raw = os.getenv("WINGS_DEVICE_MEMORY", "").strip()
-    if mem_raw:
-        try:
-            return is_h20_gpu(float(mem_raw)).lower()
-        except (TypeError, ValueError):
-            return ""
-    return ""
-
+    if not name:
+        from core.version_util import engine_version_platform
+        platform = engine_version_platform() or ""
+        if platform == "a3":
+            return "ascend910c"
+        if platform == "a2":
+            return "ascend910b"
+    return name
 
 # ── PCIe 设备检测（lspci，不依赖 torch） ─────────────────────────────────────
 

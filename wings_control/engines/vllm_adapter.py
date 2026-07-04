@@ -858,7 +858,7 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
     else:
         _offload_ok = feature_allowed(
             params.get("engine", ""), params.get("model_name"),
-            params.get("model_path"), resolve_card_token(), "offload",
+            params.get("model_path"), params.get("_smart_card_token") or resolve_card_token(), "offload",
         )
     if not _offload_ok:
         logger.info(
@@ -1158,17 +1158,12 @@ def _build_ascend910_9362_env_commands(params: Dict[str, Any], engine: str) -> L
 
     # 从硬件信息 JSON 或环境变量中获取设备名称（不依赖 torch_npu SDK）
     device_name = None
-    try:
-        from core.hardware_detect import detect_hardware
-        hw = detect_hardware()
-        if hw.get("details"):
-            device_name = hw["details"][0].get("name")
-        if not device_name:
-            device_name = os.getenv("WINGS_DEVICE_NAME", "").strip() or None
-        if device_name:
-            logger.info("[Ascend910_9362] Detected device from hardware info: %s", device_name)
-    except Exception as e:
-        logger.warning("[Ascend910_9362] Failed to get device name: %s", e)
+    for detail in params.get("device_details") or []:
+        if isinstance(detail, dict) and detail.get("name"):
+            device_name = str(detail.get("name")).strip()
+            break
+    if device_name:
+        logger.info("[Ascend910_9362] Detected device from hardware info: %s", device_name)
 
     if device_name != "Ascend910_9362":
         return env_commands
@@ -1548,10 +1543,8 @@ def _resolve_deepseek_v4_flash_platform(
       1. 显式声明 (WINGS_ASCEND_PLATFORM / engine_config.ascend_platform 等)
       2. /shared-volume/hardware_info.json 的 details[].name (主路径，由
          config_loader 注入到 params['device_details'])
-      3. ASCEND_A3_ENABLE 环境变量 (legacy)
-      4. WINGS_DEVICE_NAME 环境变量 (device_utils 回退路径)
-      5. V4-Pro 模型需求兜底为 a3（显式 A2 仍优先）
-      6. 默认 a2
+      3. V4-Pro 模型需求兜底为 a3（显式 A2 仍优先）
+      4. 默认 a2
     """
     declared = _get_engine_config_platform(params)
     if declared in {"a2", "atlas-a2", "atlas_a2", "910b"}:
@@ -1568,14 +1561,6 @@ def _resolve_deepseek_v4_flash_platform(
         if "910b" in chip or "a2" in chip:
             return "a2"
 
-    if os.getenv("ASCEND_A3_ENABLE", "").strip().lower() in {"1", "true", "yes"}:
-        return "a3"
-
-    device_name = os.getenv("WINGS_DEVICE_NAME", "").strip().lower()
-    if "a3" in device_name or "910c" in device_name:
-        return "a3"
-    if "a2" in device_name or "910b" in device_name:
-        return "a2"
     if _is_deepseek_v4_pro_params(params, model_info):
         logger.info("[DeepSeek-V4-Pro] Ascend platform not detected; assuming A3 from model identity")
         return "a3"
@@ -2451,7 +2436,8 @@ def resolve_offload_cpu_capacity_gb(params: Dict[str, Any]) -> Optional[int]:
     if not pod_mem:
         return None
     try:
-        m_container = float(pod_mem)
+        # AVAILABLE_POD_MEM_SIZE is supplied by the upper layer in MiB.
+        m_container = float(pod_mem) / 1024.0
     except (TypeError, ValueError):
         logger.warning("[KVCache Offload] Invalid AVAILABLE_POD_MEM_SIZE=%r; auto capacity skipped.", pod_mem)
         return None
@@ -2460,6 +2446,10 @@ def resolve_offload_cpu_capacity_gb(params: Dict[str, Any]) -> Optional[int]:
     m_engine_self = _OFFLOAD_ENGINE_SELF_PER_WORKER_GB * (tp * dp) + _OFFLOAD_ENGINE_SELF_BASE_GB
     m_margin = m_container * _OFFLOAD_MARGIN_RATIO
     m_offload = m_container - m_engine_self - m_margin  # M_swap=0（auto 强制 swap_space=0）
+    logger.info(
+        "[KVCache Offload] AVAILABLE_POD_MEM_SIZE=%sMB -> %.2fG container memory.",
+        pod_mem, m_container,
+    )
     if m_offload < _OFFLOAD_MIN_GB:
         return 0
     return int(m_offload)
@@ -2996,13 +2986,15 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
         # §2.3 白名单 gate：spec 不在白名单 → suffix 地板（恒产 suffix，不返回空）。
         #   修真实 bug：GLM-5.1·Ascend（清单 sparse-only）现状误产 deepseek_mtp，改后回落 suffix。
         #   优先复用 C14 收口（hardware_env 解析卡型最准）stash 的白名单结论；adapter 内拿不到
-        #   hardware_env 时才回退 resolve_card_token() 的 env/engine-version 兜底（需求一 §5）。
+        #   hardware_env 时才回退 resolve_card_token() 读取 hardware_info.json。
         smart_feats = params.get("_smart_feats")
         if smart_feats is not None:
             spec_ok = "spec" in smart_feats
         else:
-            spec_ok = feature_allowed(engine, params.get("model_name"),
-                                      params.get("model_path"), resolve_card_token(), "spec")
+            spec_ok = feature_allowed(
+                engine, params.get("model_name"), params.get("model_path"),
+                params.get("_smart_card_token") or resolve_card_token(), "spec",
+            )
         if not spec_ok:
             logger.info("[SpecDecode] spec not in whitelist -> suffix floor (arch=%s)",
                         model_info.model_architecture)
@@ -3014,7 +3006,7 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
         if lmcache_effective:
             _offload_ok = ("offload" in smart_feats) if smart_feats is not None else feature_allowed(
                 engine, params.get("model_name"), params.get("model_path"),
-                resolve_card_token(), "offload")
+                params.get("_smart_card_token") or resolve_card_token(), "offload")
             if not _offload_ok:
                 lmcache_effective = False
         if lmcache_effective and _is_glm51_nvidia_vllm_params(params, engine, model_info):

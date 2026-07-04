@@ -405,7 +405,7 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
                 engine,
                 merged.get("model_name"),
                 merged.get("model_path"),
-                resolve_card_token(),
+                merged.get("_smart_card_token") or resolve_card_token(),
                 "offload",
             )
         if not offload_allowed:
@@ -1537,7 +1537,7 @@ def build_launcher_plan(launch_args: LaunchArgs, port_plan: PortPlan) -> Launche
     Returns:
         LauncherPlan: 包含完整 shell 脚本、合并参数和硬件信息
     """
-    hardware = detect_hardware()
+    hardware = detect_hardware(launch_args.device_count)
     merged = _prepare_merged_params(launch_args, port_plan, hardware)
 
     engine, has_advanced_feature, active_features_label = _resolve_engine_and_features(

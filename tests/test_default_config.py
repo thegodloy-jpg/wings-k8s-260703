@@ -74,6 +74,25 @@ def test_device_default_config_loads_device_file_directly(tmp_path, monkeypatch)
     )
 
 
+def test_unknown_hardware_uses_explicit_ascend_engine_default_config(tmp_path, monkeypatch):
+    _write_json(
+        tmp_path / "nvidia_default.json",
+        {"device_marker": "nvidia", "model_deploy_config": {"llm": {}}},
+    )
+    _write_json(
+        tmp_path / "ascend_default.json",
+        {"device_marker": "ascend", "model_deploy_config": {"llm": {}}},
+    )
+    monkeypatch.setattr(config_loader, "DEFAULT_CONFIG_DIR", str(tmp_path))
+
+    config = config_loader._load_default_config(
+        {"device": "unknown"},
+        {"engine": "vllm_ascend"},
+    )
+
+    assert config["device_marker"] == "ascend"
+
+
 def test_engine_fallback_defaults_are_not_loaded_when_model_type_is_missing(monkeypatch):
     assert config_loader.DEFAULT_CONFIG_FILES["nvidia"] == "nvidia_default.json"
     assert config_loader.DEFAULT_CONFIG_FILES["ascend"] == "ascend_default.json"

@@ -403,6 +403,7 @@ def _build_common_context(hardware_env: Dict[str, Any],
     return {
         "device": hardware_env.get("device"),
         "device_details": hardware_env.get("details"),
+        "hardware_family": hardware_env.get("hardware_family"),
         "device_count": cmd_known_params.get("device_count", 1),
         "engine": cmd_known_params.get("engine"),
         "distributed": cmd_known_params.get("distributed"),
@@ -415,6 +416,7 @@ def _build_common_context(hardware_env: Dict[str, Any],
         "model_path": cmd_known_params.get("model_path"),
         "_smart_feats": cmd_known_params.get("_smart_feats"),
         "_forced_smart_feats": cmd_known_params.get("_forced_smart_feats"),
+        "_smart_card_token": cmd_known_params.get("_smart_card_token"),
     }
 
 
@@ -1561,7 +1563,7 @@ def _set_kv_cache_config(params, ctx, model_info=None):
         _offload_engine = ctx.get("engine", "")
         _offload_name = ctx.get("model_name", "")
         _offload_path = ctx.get("model_path", "")
-        _offload_card = resolve_card_token()
+        _offload_card = ctx.get("_smart_card_token", "")
         if not feature_allowed(_offload_engine, _offload_name, _offload_path, _offload_card, "offload"):
             logger.info(
                 "[SmartFeature] offload suppressed by whitelist in _set_kv_cache_config "
@@ -2166,7 +2168,10 @@ def _merge_configs(*configs: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
-def _load_default_config(hardware_env: Dict[str, Any]) -> Dict[str, Any]:
+def _load_default_config(
+    hardware_env: Dict[str, Any],
+    cmd_known_params: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     """根据硬件类型（nvidia/ascend）加载对应的设备默认配置文件。
 
     NVIDIA 直接加载 nvidia_default.json，Ascend 直接加载 ascend_default.json。
@@ -2177,8 +2182,14 @@ def _load_default_config(hardware_env: Dict[str, Any]) -> Dict[str, Any]:
     device_key = 'device'
     device_type = hardware_env.get(device_key, "nvidia")
     if device_type not in SUPPORTED_DEVICE_TYPES:
-        logger.warning("Unsupported device type '%s', fallback to 'nvidia'", device_type)
-        device_type = "nvidia"
+        engine = (cmd_known_params or {}).get("engine", "")
+        if "ascend" in str(engine).lower():
+            logger.warning("Unsupported device type '%s'; using explicit engine '%s' to select ascend defaults",
+                           device_type, engine)
+            device_type = "ascend"
+        else:
+            logger.warning("Unsupported device type '%s', fallback to 'nvidia'", device_type)
+            device_type = "nvidia"
     default_file = DEFAULT_CONFIG_FILES.get(device_type)
     default_config_path = os.path.join(DEFAULT_CONFIG_DIR, default_file)
     logger.info("Determined default config file for hardware environment '%s': %s", device_type, default_config_path)
@@ -2523,6 +2534,7 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     """
     engine = p.get("engine", "")
     card = resolve_card_token(hardware_env)
+    p["_smart_card_token"] = card
     name, path = p.get("model_name"), p.get("model_path")
 
     # C6 PD 一票否决：三特性全关，仅留 PD connector（US646 暂不支持 PD×高级特性共存）
@@ -2628,10 +2640,11 @@ def _set_final_device_count(
     cmd_known_params: Dict[str, Any],
 ) -> None:
     """Resolve and validate final device_count."""
-    if cmd_known_params.get("gpu_usage_mode") == "full":
-        device_count = hardware_env.get("count", 1)
-    else:
-        device_count = cmd_known_params.get("device_count", 1)
+    device_count = cmd_known_params.get("device_count", 1)
+    try:
+        device_count = int(device_count)
+    except (TypeError, ValueError):
+        device_count = 0
     if device_count <= 0:
         raise ValueError(f"device_count must be an integer greater than 0. Current value: {device_count}")
     cmd_known_params['device_count'] = device_count
@@ -3038,6 +3051,7 @@ def _match_model_engine_config(
     engine_key: str,
     scenario: _SpecialEngineScenario,
     model_info=None,
+    hardware_env: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """在架构配置字典中按模型名查找引擎参数，支持 H20 卡型适配。
 
@@ -3058,7 +3072,7 @@ def _match_model_engine_config(
         匹配到的引擎参数字典；未匹配则返回空字典
     """
     h20_model = _get_h20_model_hint()
-    card_model = resolve_card_model()
+    card_model = resolve_card_model(hardware_env)
 
     lookup_names = [model_name_lower]
     if model_name_lower.startswith("deepseek-v4-pro-") and model_name_lower.endswith("-mtp1"):
@@ -3130,7 +3144,7 @@ def _load_and_validate_models_dict(
         (models_dict, fallback)：fallback 非 None 时应直接作为引擎默认值使用。
     """
     config_model_key = "model_deploy_config"
-    default_config = _load_default_config(hardware_env)
+    default_config = _load_default_config(hardware_env, {"engine": engine})
     model_deploy_config = default_config.get(config_model_key, {})
     if not isinstance(model_deploy_config, dict):
         logger.warning("Invalid default config structure: %s is not a dict", config_model_key)
@@ -3302,7 +3316,7 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
 
         engine_specific_defaults = _match_model_engine_config(
             model_architecture_dict, model_name_lower, engine_key,
-            scenario, model_info,
+            scenario, model_info, hardware_env,
         )
         if not engine_specific_defaults:
             logger.info("The default deploy configuration of the "

@@ -7,24 +7,21 @@
 
 工作原理:
     在 sidecar 架构中，推理引擎和 sidecar 分属不同容器，因此 sidecar
-    无法直接访问 GPU/NPU 硬件。本模块改为从环境变量读取硬件信息，
-    而不是直接调用 torch/pynvml 进行探测。
+    无法直接访问 GPU/NPU 硬件。本模块改为从 hardware_info.json 读取
+    设备类型/型号信息，而不是直接调用 torch/pynvml 进行探测。
 
-支持的环境变量:
+支持的输入:
     - WINGS_HARDWARE_FILE: 硬件信息 JSON 文件路径
       （优先，默认 /shared-volume/hardware_info.json）
-    - WINGS_DEVICE / DEVICE / HARDWARE_TYPE:
-      设备类型，支持 nvidia|ascend，默认 nvidia
-    - WINGS_DEVICE_COUNT / DEVICE_COUNT: 设备数量，默认 1
-    - WINGS_DEVICE_NAME: 设备型号名称（可选，如 "Ascend910B"）
+    - device_count: 由调用方从 --device-count 传入
 
-探测优先级:
-    JSON 文件 → 环境变量 → 默认值
+探测口径:
+    硬件型号只来自 JSON 文件；设备数量只来自 device_count。
 
 输出格式示例::
 
     {
-        "device": "nvidia" | "ascend",
+        "device": "nvidia" | "ascend" | "unknown",
         "count": int,
         "details": [
             {
@@ -75,7 +72,7 @@ def _normalize_device(raw: str) -> str:
         "ascend": "ascend",
         "npu": "ascend",
     }
-    return mapping.get(val, "nvidia")
+    return mapping.get(val, "unknown")
 
 
 def _parse_count(raw: str) -> int:
@@ -97,7 +94,7 @@ def _parse_count(raw: str) -> int:
         return 1
 
 
-def _load_hardware_from_file(file_path: str) -> Dict[str, Any]:
+def _load_hardware_from_file(file_path: str, device_count: int) -> Dict[str, Any]:
     """从 JSON 文件加载完整硬件信息。
 
     JSON 文件应包含与原始 wings 项目 detect_hardware() 输出一致的格式：
@@ -139,29 +136,24 @@ def _load_hardware_from_file(file_path: str) -> Dict[str, Any]:
         details = [{"name": hardware_family}]
     data["details"] = details
 
-    if data.get("count") is not None:
-        data["count"] = _parse_count(str(data.get("count")))
-    else:
-        env_count = os.getenv("WINGS_DEVICE_COUNT") or os.getenv("DEVICE_COUNT")
-        data["count"] = _parse_count(env_count) if env_count else (len(details) if details else 1)
+    data["count"] = _parse_count(str(device_count))
 
     return data
 
 
-def detect_hardware() -> Dict[str, Any]:
+def detect_hardware(device_count: int = 1) -> Dict[str, Any]:
     """探测硬件环境信息。
 
-    按以下优先级获取硬件信息：
-      1. JSON 文件（由 WINGS_HARDWARE_FILE 指定路径，默认 /shared-volume/hardware_info.json）
-      2. 环境变量（WINGS_DEVICE / DEVICE, WINGS_DEVICE_COUNT / DEVICE_COUNT, WINGS_DEVICE_NAME）
-      3. 默认值（nvidia, 1 卡）
+    硬件型号只从 JSON 文件获取（由 WINGS_HARDWARE_FILE 指定路径，
+    默认 /shared-volume/hardware_info.json）；设备数量只使用调用方传入的
+    device_count。
 
     JSON 文件方式可提供每张卡的完整信息（型号、显存、利用率等），
     激活 VRAM 校验和 CUDA Graph 尺寸自动计算等下游功能。
 
     Returns:
         Dict[str, Any]: 硬件环境描述字典，包含以下字段：
-            - device:  设备类型 ('nvidia' 或 'ascend')
+            - device:  设备类型 ('nvidia'、'ascend' 或 'unknown')
             - count:   设备数量
             - details: 设备详情列表
             - units:   显存单位 (GB)
@@ -173,7 +165,7 @@ def detect_hardware() -> Dict[str, Any]:
     )
     if os.path.isfile(hw_file):
         try:
-            result = _load_hardware_from_file(hw_file)
+            result = _load_hardware_from_file(hw_file, device_count)
             logger.info(
                 "Loaded hardware info from file %s: device=%s, count=%d, cards=%d",
                 hw_file, result["device"], result["count"], len(result["details"]),
@@ -191,51 +183,11 @@ def detect_hardware() -> Dict[str, Any]:
             return result
         except Exception as e:
             logger.warning(
-                "Failed to load hardware file %s: %s — falling back to env vars",
+                "Failed to load hardware file %s: %s; using unknown hardware context",
                 hw_file, e,
             )
 
-    # ── 策略 2: 回退到环境变量（原有逻辑） ────────────────────────────────
-    # 设备类型优先级: WINGS_DEVICE → DEVICE → HARDWARE_TYPE → 默认 nvidia
-    device_raw = os.getenv("WINGS_DEVICE") or os.getenv("DEVICE") or os.getenv("HARDWARE_TYPE", "nvidia")
-    device = _normalize_device(device_raw)
-    count = _parse_count(os.getenv("WINGS_DEVICE_COUNT", os.getenv("DEVICE_COUNT", "1")))
-    device_name = os.getenv("WINGS_DEVICE_NAME", "").strip()
-
-    details = []
-    if device_name:
-        details.append({"name": device_name})
-
-    # ── 兜底：从 hardware_info.json 提取 device / count / hardware_family ──
-    # K8s 环境下的 hardware_info.json 常缺少 count / details 导致文件校验失败，
-    # 但 device 和 hardware_family 字段对白名单卡型匹配至关重要。
-    try:
-        if os.path.isfile(hw_file):
-            with open(hw_file, "r", encoding="utf-8") as f:
-                hw_data = json.load(f)
-            if isinstance(hw_data, dict):
-                if hw_data.get("device"):
-                    device = _normalize_device(str(hw_data["device"]))
-                if hw_data.get("count"):
-                    count = max(int(hw_data["count"]), 1)
-                if hw_data.get("hardware_family"):
-                    hw_family = str(hw_data["hardware_family"]).strip()
-                    if hw_family and not device_name:
-                        device_name = hw_family
-    except Exception:
-        pass
-
-
-
-    result = {
-        "device": device,
-        "count": count,
-        "details": details,
-        "units": "GB",
-    }
-    if device_name and not details:
-        details.append({"name": device_name})
-
-    logger.info("Using static hardware context (env vars): %s", result)
+    result = {"device": "unknown", "count": _parse_count(str(device_count)), "details": [], "units": "GB"}
+    logger.warning("Hardware info file %s unavailable; using %s", hw_file, result)
     return result
 

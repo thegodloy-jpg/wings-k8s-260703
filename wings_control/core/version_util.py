@@ -113,6 +113,9 @@ def _canonical_card_model(raw: Any) -> str:
         return ""
     if token in _CARD_TOKEN_ALIASES:
         return _CARD_TOKEN_ALIASES[token]
+    for alias, canonical in _CARD_TOKEN_ALIASES.items():
+        if alias in token:
+            return canonical
     return ""
 
 
@@ -206,53 +209,20 @@ def engine_version_platform(ver_str: str | None = None) -> str | None:
 def resolve_card_model(
     params: Dict[str, Any] | None = None,
 ) -> str:
-    """获取当前运行环境的卡型号 —— 全局统一归口。
-
-    按以下 4 档优先级依次取卡型，命中即返回，全未命中返回空串 ``""``::
-
-      1. detect_hardware().hardware_family（探测到的硬件真相源）
-      2. WINGS_DEVICE_NAME（显式声明环境变量）
-      3. ENGINE_VERSION 后缀（镜像构建版本号携带的卡型标识）
-      4. engine_config 声明字段：card_model / ascend_platform / hardware_platform
-
-    每档信号经 :func:`_extract_card_token` 处理：命中白名单返回规范名
-    （如 ``rtx_pro_5000_72G``，与 ``nvidia_default.json`` 配置 key 对齐），
-    未命中返回检测到的名称（未登记卡型亦能检出）。
-
-    Args:
-        params: 启动参数字典（可选）；提供时从中读取 engine_config 声明字段。
-
-    Returns:
-        规范卡型名（白名单命中）或检测到的卡型名称（未登记）；无信号时返回 ``""``。
-    """
+    """Resolve card model only from the provided hardware context."""
     params = params or {}
-    engine_config = params.get("engine_config") or {}
-
-    # 1) 探测到的硬件真相源：detect_hardware().hardware_family
-    try:
-        from core.hardware_detect import detect_hardware
-        family = detect_hardware().get("hardware_family")
-        token = _extract_card_token(family)
+    for value in (params.get("hardware_family"),):
+        token = _extract_card_token(value)
         if token:
             return token
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[resolve_card_model] detect_hardware failed: %s", exc)
-
-    # 2) WINGS_DEVICE_NAME（显式声明环境变量）
-    token = _extract_card_token(os.getenv("WINGS_DEVICE_NAME", ""))
-    if token:
-        return token
-
-    # 3) ENGINE_VERSION 后缀（镜像构建版本号携带的卡型标识）
+    for detail in params.get("details") or params.get("device_details") or []:
+        if isinstance(detail, dict):
+            token = _extract_card_token(detail.get("name"))
+            if token:
+                return token
     token = _parse_card_model_from_engine_version()
     if token:
         return token
-
-    # 4) engine_config 声明字段
-    for cfg_key in ("card_model", "ascend_platform", "hardware_platform"):
-        token = _extract_card_token(engine_config.get(cfg_key))
-        if token:
-            return token
 
     return ""
 

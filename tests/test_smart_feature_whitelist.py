@@ -10,6 +10,7 @@ from utils import model_utils  # noqa: E402
 from utils.device_utils import resolve_card_token  # noqa: E402
 from core import config_loader  # noqa: E402
 from core.hardware_detect import detect_hardware  # noqa: E402
+from core.version_util import resolve_card_model  # noqa: E402
 
 
 class _FakeDeepSeekV4Info:
@@ -185,6 +186,7 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
 
     config_loader.apply_effective_feature_enablement(params, hardware_env)
 
+    assert params["_smart_card_token"] == "ascend910b_64g"
     assert params["_allowed_smart_feats"] == ["sparse"]
     assert params["_smart_feats"] == ["sparse"]
     assert params["enable_sparse"] is True
@@ -197,17 +199,59 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
 def test_detect_hardware_accepts_minimal_ascend_hardware_family_file(tmp_path, monkeypatch):
     hardware_file = tmp_path / "hardware_info.json"
     hardware_file.write_text(
-        json.dumps({"device": "ascend", "hardware_family": "Ascend910B_64G"}),
+        json.dumps({"device": "ascend", "hardware_family": "Ascend910B_64G", "count": 2}),
         encoding="utf-8",
     )
     monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
-    monkeypatch.setenv("WINGS_DEVICE_COUNT", "8")
-    monkeypatch.delenv("WINGS_DEVICE_NAME", raising=False)
+    monkeypatch.setenv("WINGS_DEVICE_COUNT", "4")
+    monkeypatch.setenv("WINGS_DEVICE_NAME", "Ascend910C")
 
-    hardware = detect_hardware()
+    hardware = detect_hardware(device_count=8)
 
     assert hardware["device"] == "ascend"
     assert hardware["count"] == 8
     assert hardware["hardware_family"] == "Ascend910B_64G"
     assert hardware["details"] == [{"name": "Ascend910B_64G"}]
     assert resolve_card_token(hardware) == "ascend910b_64g"
+
+
+def test_resolve_card_token_keeps_engine_version_platform_fallback(monkeypatch):
+    monkeypatch.setenv("WINGS_DEVICE_NAME", "Ascend910C")
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
+    monkeypatch.setenv("ENGINE_VERSION", "wings-vllm-ascend:v0.18.0rc1-a2")
+
+    assert resolve_card_token({"device": "ascend", "details": []}) == "ascend910b"
+
+
+def test_resolve_card_model_uses_hardware_env_only(monkeypatch):
+    monkeypatch.setenv("WINGS_DEVICE_NAME", "NVIDIA RTX PRO 5000 72GB Blackwell")
+    monkeypatch.setenv("ENGINE_VERSION", "wings-vllm-ascend:v0.18.0rc1-a3")
+
+    assert resolve_card_model({"hardware_family": ""}) == "a3"
+    assert resolve_card_model(
+        {"hardware_family": "NVIDIA RTX PRO 5000 72GB Blackwell"}
+    ) == "rtx_pro_5000_72G"
+
+
+def test_deepseek_v4_flash_pro5000_detection_uses_source_hardware_only(monkeypatch):
+    monkeypatch.setenv("WINGS_DEVICE_NAME", "NVIDIA RTX PRO 5000 72GB Blackwell")
+
+    source = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+    }
+
+    assert model_utils.is_deepseek_v4_flash_rtx_pro_5000(source) is False
+    assert model_utils.is_deepseek_v4_flash_rtx_pro_5000({
+        **source,
+        "hardware_family": "NVIDIA RTX PRO 5000 72GB Blackwell",
+    }) is True
+
+
+def test_final_device_count_uses_explicit_launch_value_in_full_mode():
+    params = {"gpu_usage_mode": "full", "device_count": 8}
+
+    config_loader._set_final_device_count({"count": 2}, params)
+
+    assert params["device_count"] == 8

@@ -27,7 +27,6 @@ Sidecar 架构契约:
 # -*- coding: utf-8 -*-
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -351,8 +350,7 @@ def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[s
     三者同时满足才命中（与 nvidia_default.json 的 rtx_pro_5000_72G 配置块选择同口径）：
       1. engine == "vllm"
       2. model_name/model_path 含 deepseek-v4-flash 标识（覆盖 -w8a8-mtp 等后缀）
-      3. 硬件为 rtx_pro_5000_72G（detect_hardware() 的 hardware_family，回退
-         WINGS_DEVICE_NAME 含 "rtx pro 5000" + "72"）
+      3. 硬件为 rtx_pro_5000_72G（source.hardware_family 或 device_details/details）
 
     ``source`` 须含 engine / model_name / model_path 键（ctx 与 params 同构）；
     ``engine`` 参数可选，source 缺 engine 时用它兜底。
@@ -371,16 +369,16 @@ def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[s
             break
     if not model_hit:
         return False
-    try:
-        from core.hardware_detect import detect_hardware
-        hw = detect_hardware()
-        family = str(hw.get("hardware_family") or "").lower()
-        if "rtx_pro_5000_72g" in family:
+    hardware_texts = [str(src.get("hardware_family") or "")]
+    for detail in src.get("device_details") or src.get("details") or []:
+        if isinstance(detail, dict):
+            hardware_texts.append(str(detail.get("name") or ""))
+
+    for text in hardware_texts:
+        normalized = text.lower().replace("-", "_").replace(" ", "_")
+        if "rtx_pro_5000" in normalized and "72" in normalized:
             return True
-    except Exception as exc:
-        logger.debug("[DeepSeek-V4-Flash-NV] hardware detect failed: %s", exc)
-    dev_name = os.getenv("WINGS_DEVICE_NAME", "").lower()
-    return "rtx pro 5000" in dev_name and "72" in dev_name
+    return False
 
 
 #
