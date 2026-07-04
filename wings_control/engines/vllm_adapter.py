@@ -3596,12 +3596,14 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
     # bootstrap 端口逐 service 唯一，供 MooncakeConnectorV1/Layerwise/Hybrid；若 strip_env 含
     # VLLM_MOONCAKE_BOOTSTRAP_PORT（如官方 p2p MooncakeConnector 不设），内联前缀也一并省去。
     rt_prefix = "ASCEND_RT_VISIBLE_DEVICES=$CARDS"
-    if "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in strip_env:
-        rt_prefix += " VLLM_MOONCAKE_BOOTSTRAP_PORT=$BOOTSTRAP"
-
     linker_prelude = []
+    process_env_prefix = ""
     if "Mooncake" in connector:
         linker_prelude.append("ldconfig /usr/local/lib >/dev/null 2>&1 || true")
+        process_env_prefix = "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-} "
+    rt_prefix = f"{process_env_prefix}{rt_prefix}"
+    if "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in strip_env:
+        rt_prefix += " VLLM_MOONCAKE_BOOTSTRAP_PORT=$BOOTSTRAP"
 
     # fork 主体包进子 shell，使其作为单个可后台化单元被上层监控
     # （wings_entry._strip_exec_and_backgroundify 给末行 ')' 追加 ' &' + ENGINE_PID=$!）。
@@ -3612,7 +3614,9 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
         _pd_idx = str(pd_index_base)
         svc_cmd = svc_cmd.replace("'\"$PD_INDEX\"'", _pd_idx)
         svc_cmd = svc_cmd.replace("'\"$KVPORT\"'", str(30000 + pd_index_base * 100))
-        rt_prefix_1 = f"ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 $(({tp} - 1)))"
+        rt_prefix_1 = (
+            f"{process_env_prefix}ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 $(({tp} - 1)))"
+        )
         if "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in strip_env:
             rt_prefix_1 += f" VLLM_MOONCAKE_BOOTSTRAP_PORT={bootstrap_base}"
         single_cmd = f"{rt_prefix_1} {svc_cmd} --port {base_port} --tensor-parallel-size {tp}"

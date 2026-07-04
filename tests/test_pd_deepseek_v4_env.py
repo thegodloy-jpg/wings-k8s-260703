@@ -260,6 +260,10 @@ def test_deepseek_v4_pd_refreshes_mooncake_linker_cache_without_env_leak(tmp_pat
     assert "export LD_LIBRARY_PATH" not in script
     assert "LD_LIBRARY_PATH" not in exports
     assert "ldconfig /usr/local/lib >/dev/null 2>&1 || true" in script
+    assert (
+        "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-} "
+        "ASCEND_RT_VISIBLE_DEVICES=$CARDS"
+    ) in script
 
 
 def test_deepseek_v4_pd_env_does_not_use_generic_env_builders(tmp_path, monkeypatch):
