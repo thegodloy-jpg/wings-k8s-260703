@@ -3450,6 +3450,34 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     return cmds
 
 
+def _build_pd_external_lb_env_cmds(params: Dict[str, Any], engine: str) -> List[str]:
+    """Build the minimal env prelude for PD external-lb scripts.
+
+    PD external-lb has role-specific env from pd_config.json. Do not reuse the
+    generic vLLM env chain here, because that chain injects standalone Ascend
+    and model-family defaults before PD role settings are applied.
+    """
+    current_ip = os.getenv("POD_IP", get_local_ip())
+    net_if = os.getenv("NETWORK_INTERFACE", os.getenv("GLOO_SOCKET_IFNAME", "eth0"))
+    cmds: List[str] = []
+
+    if engine == "vllm":
+        cmds.append(f"export VLLM_NIXL_SIDE_CHANNEL_HOST={shlex.quote(current_ip)}")
+    elif engine == "vllm_ascend":
+        cmds.extend([
+            f"export HCCL_IF_IP={shlex.quote(current_ip)}",
+            f"export GLOO_SOCKET_IFNAME={shlex.quote(net_if)}",
+            f"export TP_SOCKET_IFNAME={shlex.quote(net_if)}",
+            f"export HCCL_SOCKET_IFNAME={shlex.quote(net_if)}",
+        ])
+        if _is_deepseek_v4_flash_params(params):
+            cmds.append(
+                'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"'
+            )
+
+    return dedupe_env_exports(cmds)
+
+
 def _build_vllm_single_script(
     params: Dict[str, Any],
     cmd: str,
@@ -3623,15 +3651,16 @@ def build_start_script(params: Dict[str, Any]) -> str:
     cmd = _build_vllm_cmd_parts(params)
     is_distributed = params.get("distributed", False)
     nnodes = params.get("nnodes", 1)
-    common_env_cmds = _build_vllm_common_env_cmds(params, engine)
-
     pd_ext = params.get("_pd_external_lb")
     if pd_ext:
         # PD external-lb（模式 A）：pod 内 fork dp_size_local 个独立 vllm serve
+        common_env_cmds = _build_pd_external_lb_env_cmds(params, engine)
         script = _build_vllm_pd_external_lb_script(params, cmd, common_env_cmds, pd_ext)
     elif is_distributed and nnodes > 1:
+        common_env_cmds = _build_vllm_common_env_cmds(params, engine)
         script = _build_vllm_distributed_script(params, cmd, common_env_cmds, engine, sparse_args)
     else:
+        common_env_cmds = _build_vllm_common_env_cmds(params, engine)
         script = _build_vllm_single_script(params, cmd, common_env_cmds, engine, sparse_args)
 
     script = _inject_env_echo(script)
