@@ -1459,6 +1459,25 @@ def _apply_pd_external_lb(cmd_known_params, model_info):
     cmd_known_params["_pd_strip_env"] = list(entry.get("strip_env", [])) + list(
         (entry.get(role_key) or {}).get("strip_env", []))
     cmd_known_params["distributed"] = False
+    logger.info(
+        "[PD external-lb trigger] enabled=True role=%s arch=%s platform=%s "
+        "connector=%s topology=%s env_keys=%s strip_env=%s engine_override_keys=%s",
+        role,
+        arch,
+        plat or "<none>",
+        entry["connector"],
+        {
+            "tp_size": ext["tp_size"],
+            "dp_size": ext["dp_size"],
+            "dp_size_local": ext["dp_size_local"],
+            "dp_rank_start": ext["dp_rank_start"],
+            "dp_address": ext["dp_address"],
+            "pd_index_base": ext["pd_index_base"],
+        },
+        sorted(cmd_known_params["_pd_env"].keys()),
+        sorted(cmd_known_params["_pd_strip_env"]),
+        sorted(cmd_known_params["_pd_engine_overrides"].keys()),
+    )
     logger.info("[PD external-lb] arch=%s role=%s connector=%s dp_size=%d local=%d rank_start=%d addr=%s",
                 arch, role, entry["connector"], ext["dp_size"], ext["dp_size_local"],
                 ext["dp_rank_start"], ext["dp_address"])

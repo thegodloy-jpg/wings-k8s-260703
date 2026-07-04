@@ -3475,7 +3475,17 @@ def _build_pd_external_lb_env_cmds(params: Dict[str, Any], engine: str) -> List[
                 'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"'
             )
 
-    return dedupe_env_exports(cmds)
+    cmds = dedupe_env_exports(cmds)
+    logger.info(
+        "[PD external-lb env] isolated_builder=True engine=%s env_names=%s",
+        engine,
+        sorted(
+            line.split(" ", 1)[1].split("=", 1)[0]
+            for line in cmds
+            if line.startswith("export ") and "=" in line
+        ),
+    )
+    return cmds
 
 
 def _build_vllm_single_script(
@@ -3559,11 +3569,29 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
     # 对齐官方"不设某些 env"的口径。仅声明了 strip_env 的条目（如 GLM5 A2）生效，
     # 空集 → 不过滤，其它 PD 模型行为不变。
     strip_env = set(params.get("_pd_strip_env") or [])
+    def _export_name(line: str):
+        m = _re.match(r"\s*export ([A-Za-z_][A-Za-z0-9_]*)=", line)
+        return m.group(1) if m else None
+
+    env_names_before_strip = [
+        name for name in (_export_name(line) for line in env_lines) if name
+    ]
     if strip_env:
-        def _export_name(line: str):
-            m = _re.match(r"\s*export ([A-Za-z_][A-Za-z0-9_]*)=", line)
-            return m.group(1) if m else None
         env_lines = [c for c in env_lines if _export_name(c) not in strip_env]
+    env_names_after_strip = [
+        name for name in (_export_name(line) for line in env_lines) if name
+    ]
+    logger.info(
+        "[PD external-lb env merge] role=%s connector=%s base_env=%s role_env=%s "
+        "strip_env=%s stripped_env=%s final_env=%s",
+        pd_ext.get("role"),
+        connector,
+        sorted(name for name in (_export_name(line) for line in common_env_cmds) if name),
+        sorted(role_env.keys()),
+        sorted(strip_env),
+        sorted(set(env_names_before_strip) - set(env_names_after_strip)),
+        sorted(env_names_after_strip),
+    )
 
     # bootstrap 端口逐 service 唯一，供 MooncakeConnectorV1/Layerwise/Hybrid；若 strip_env 含
     # VLLM_MOONCAKE_BOOTSTRAP_PORT（如官方 p2p MooncakeConnector 不设），内联前缀也一并省去。
@@ -3654,12 +3682,37 @@ def build_start_script(params: Dict[str, Any]) -> str:
     pd_ext = params.get("_pd_external_lb")
     if pd_ext:
         # PD external-lb（模式 A）：pod 内 fork dp_size_local 个独立 vllm serve
+        logger.info(
+            "[vllm_adapter.env_path] selected=pd_external_lb_isolated engine=%s "
+            "role=%s tp_size=%s dp_size=%s dp_size_local=%s distributed=%s nnodes=%s",
+            engine,
+            pd_ext.get("role"),
+            pd_ext.get("tp_size"),
+            pd_ext.get("dp_size"),
+            pd_ext.get("dp_size_local"),
+            is_distributed,
+            nnodes,
+        )
         common_env_cmds = _build_pd_external_lb_env_cmds(params, engine)
         script = _build_vllm_pd_external_lb_script(params, cmd, common_env_cmds, pd_ext)
     elif is_distributed and nnodes > 1:
+        logger.info(
+            "[vllm_adapter.env_path] selected=distributed_common engine=%s "
+            "distributed=%s nnodes=%s",
+            engine,
+            is_distributed,
+            nnodes,
+        )
         common_env_cmds = _build_vllm_common_env_cmds(params, engine)
         script = _build_vllm_distributed_script(params, cmd, common_env_cmds, engine, sparse_args)
     else:
+        logger.info(
+            "[vllm_adapter.env_path] selected=single_common engine=%s "
+            "distributed=%s nnodes=%s",
+            engine,
+            is_distributed,
+            nnodes,
+        )
         common_env_cmds = _build_vllm_common_env_cmds(params, engine)
         script = _build_vllm_single_script(params, cmd, common_env_cmds, engine, sparse_args)
 

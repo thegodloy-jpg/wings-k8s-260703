@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -270,3 +271,17 @@ def test_deepseek_v4_pd_env_does_not_use_generic_env_builders(tmp_path, monkeypa
     assert "SHOULD_NOT_LEAK_FROM_MODEL_ENV" not in script
     assert "export HCCL_IF_IP=10.254.124.131" in script
     assert "export VLLM_RPC_TIMEOUT=3600000" in script
+
+
+def test_deepseek_v4_pd_logs_env_trigger_path(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+
+    _render_pd_deepseek_v4_script(tmp_path, monkeypatch, "D", _DECODE_IP, 1)
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "[PD external-lb trigger]" in logs
+    assert "[vllm_adapter.env_path] selected=pd_external_lb_isolated" in logs
+    assert "[PD external-lb env] isolated_builder=True" in logs
+    assert "[PD external-lb env merge]" in logs
+    assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" in logs
+    assert "stripped_env=[]" in logs
