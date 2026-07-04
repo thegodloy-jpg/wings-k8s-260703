@@ -41,7 +41,7 @@ from utils.env_utils import get_master_ip, get_node_ips, get_lmcache_env, get_pd
 from utils.file_utils import check_torch_dtype, get_directory_size, check_permission_640, load_json_config
 from utils.model_utils import (ModelIdentifier,
                                is_glm_moe_dsa_glm51, is_glm52_single_node_even, resolve_thinking_off_policy,
-                               resolve_feature_whitelist, feature_allowed,
+                               resolve_feature_whitelist, resolve_forced_feature_whitelist, feature_allowed,
                                is_deepseek_v4_flash_rtx_pro_5000,
                                is_qwen3_5_397b_nvfp4_vllm,
                                THINKING_ALWAYS_ON, THINKING_HYBRID, THINKING_NONE)
@@ -706,10 +706,23 @@ def _set_common_params(params, engine_cmd_parameter, config_path):
 
     优先级保护：仅当用户通过 CLI 参数或环境变量 **显式** 指定了某个参数时，
     才覆盖模型默认配置（nvidia_default.json / model_deploy_config）中的已有值。
-    对于用户未显式指定的参数，若模型配置中已有值则保留，否则用 argparse 默认值补充。
+    对于页面已删除的调优参数，用户未显式指定且模型配置没有值时不再用 argparse
+    默认值补充；其他参数仍按旧逻辑补充。
     """
     vllm_param_map_config = _load_mapping(config_path, 'default_to_vllm_parameter_mapping')
     explicit_keys = _detect_explicit_cli_keys()
+    removed_page_tuning_keys = {
+        "dtype",
+        "kv_cache_dtype",
+        "quantization",
+        "quantization_param_path",
+        "gpu_memory_utilization",
+        "enable_chunked_prefill",
+        "block_size",
+        "seed",
+        "enable_expert_parallel",
+        "enable_prefix_caching",
+    }
     for key, value in vllm_param_map_config.items():
         if not value:
             continue
@@ -721,6 +734,8 @@ def _set_common_params(params, engine_cmd_parameter, config_path):
             params[value] = cli_val
         # 模型默认配置中不存在的参数：用 argparse 默认值补充
         elif value not in params:
+            if key in removed_page_tuning_keys:
+                continue
             params[value] = cli_val
         # 否则：保留模型默认配置中的值，不被 argparse 默认值覆盖
 
@@ -2553,10 +2568,12 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
         )
 
     feats = resolve_feature_whitelist(engine, name, path, card)
+    forced_feats = resolve_forced_feature_whitelist(engine, name, path, card)
     # stash 供产出口（§2.3 resolve_speculative_strategy）复用：收口点用 hardware_env 解析卡型最准，
     # 而 adapter 内产出口拿不到 hardware_env、env 兜底可能解析不到卡型（尤其 Ascend）→ 误判 suffix。
     # 让产出口直接复用收口结论，消除「收口点 vs 产出口」双入口卡型不一致（需求一 §5）。
     p["_smart_feats"] = sorted(feats)
+    p["_forced_smart_feats"] = sorted(forced_feats)
 
     # 记录「请求开关」原值，供收口 req->eff 对照日志（排障白名单收窄结果，需求一 §4 状态监控）。
     sparse_req = bool(p.get("enable_sparse"))
@@ -2564,7 +2581,7 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     offload_req = get_lmcache_env()
 
     # 稀疏：有效 = 开关 on AND 命中白名单（无 forced）
-    sparse_eff = sparse_req and "sparse" in feats
+    sparse_eff = (sparse_req and "sparse" in feats) or "sparse" in forced_feats
     p["enable_sparse"] = sparse_eff
     os.environ["ENABLE_SPARSE"] = os.environ["SPARSE_ENABLE"] = "true" if sparse_eff else "false"
     if sparse_req and not sparse_eff:
@@ -2572,8 +2589,11 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
                     "-> suppressed (ENABLE_SPARSE=false)", engine, card or "(empty)")
 
     # 卸载：白名单外收口为关（容量 auto/custom 仍由产出口 _build_cache_env_commands 处理）
-    offload_eff = offload_req and "offload" in feats
-    if offload_req and "offload" not in feats:
+    offload_eff = (offload_req and "offload" in feats) or "offload" in forced_feats
+    if offload_eff:
+        os.environ["ENABLE_KV_OFFLOAD"] = "true"
+        os.environ["LMCACHE_OFFLOAD"] = "true"
+    elif offload_req and "offload" not in feats:
         os.environ["ENABLE_KV_OFFLOAD"] = "false"
         os.environ["LMCACHE_OFFLOAD"] = "false"   # 过渡期兼容旧 ENV 名
         logger.info("[SmartFeature] offload requested but not in whitelist (engine=%s card=%s) "
@@ -2582,6 +2602,10 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     # 投机：suffix 地板恒产 → 开关不收口（保持 true 是诚实的）；
     #   MTP-vs-suffix 由 §2.3 在 resolve_speculative_strategy 内按白名单 gate。
     # 收口摘要：一行打全三特性 req->eff（spec 不收口，附白名单 gate 结果，suffix 地板恒产）。
+    spec_eff = spec_req or "spec" in forced_feats
+    p["enable_speculative_decode"] = spec_eff
+    os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
+
     logger.info(
         "[SmartFeature] effective enablement: engine=%s card=%s feats=%s | "
         "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix floor 恒产)",
@@ -3321,6 +3345,8 @@ def _merge_final_config(engine_config: Dict[str, Any],
     Returns:
         追加了 engine_config 字段的 cmd_known_params 字典。
     """
+    if cmd_known_params.get("engine") in {"vllm", "vllm_ascend"}:
+        engine_config.pop("chat_template", None)
     cmd_known_params['engine_config'] = engine_config
     cmd_known_params['_explicit_cli_keys'] = sorted(_detect_explicit_cli_keys())
 

@@ -128,6 +128,18 @@ def resolve_feature_whitelist(engine, model_name, model_path, card_token):
     )
 
 
+def resolve_forced_feature_whitelist(engine, model_name, model_path, card_token):
+    """Return whitelisted smart features whose matching row explicitly forces enablement."""
+    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
+    ct = (card_token or "").lower()
+    forced = []
+    for feat in SMART_FEATURES:
+        row = _whitelist_table_match(_SMART_WHITELISTS[feat], engine, hay, ct)
+        if row and row.get("forced") is True:
+            forced.append(feat)
+    return frozenset(forced)
+
+
 def resolve_sparse_topk(engine, model_name, model_path, card_token, sparse_level, default: int = 4) -> int:
     """返回 sparse 表当前匹配行在指定档位下的 index_topk_freq。
 

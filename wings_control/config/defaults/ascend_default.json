@@ -26,12 +26,14 @@
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "deepseek_v3"
+            "tool_call_parser": "deepseek_v3",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "deepseek_v3"
+            "tool_call_parser": "deepseek_v3",
+            "enable_expert_parallel": true
           },
           "mindie": {
             "maxSeqLen": 4096,
@@ -53,12 +55,14 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "tool_call_parser": "deepseek_v3",
-            "reasoning_parser": "deepseek_r1"
+            "reasoning_parser": "deepseek_r1",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "deepseek_v3"
+            "tool_call_parser": "deepseek_v3",
+            "enable_expert_parallel": true
           },
           "mindie": {
             "maxSeqLen": 4096,
@@ -83,12 +87,14 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "tool_call_parser": "deepseek_v31",
-            "reasoning_parser": "deepseek_v3"
+            "reasoning_parser": "deepseek_v3",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "deepseek_v31"
+            "tool_call_parser": "deepseek_v31",
+            "enable_expert_parallel": true
           },
           "mindie": {
             "maxSeqLen": 4096,
@@ -253,6 +259,8 @@
             "quantization": "ascend",
             "block_size": 128,
             "async_scheduling": true,
+            "enable_chunked_prefill": true,
+            "enable_prefix_caching": true,
             "safetensors_load_strategy": "prefetch",
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {
@@ -274,12 +282,14 @@
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "hermes"
+            "tool_call_parser": "hermes",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "hermes"
+            "tool_call_parser": "hermes",
+            "enable_expert_parallel": true
           },
           "mindie": {
             "maxSeqLen": 4096,
@@ -300,12 +310,14 @@
           "vllm_ascend": {
             "max_model_len": 4096,
             "trust_remote_code": true,
-            "tool_call_parser": "hermes"
+            "tool_call_parser": "hermes",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "max_model_len": 4096,
             "trust_remote_code": true,
-            "tool_call_parser": "hermes"
+            "tool_call_parser": "hermes",
+            "enable_expert_parallel": true
           },
           "mindie": {
             "maxSeqLen": 4096,
@@ -387,12 +399,14 @@
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "deepseek_v32"
+            "tool_call_parser": "deepseek_v32",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "deepseek_v32"
+            "tool_call_parser": "deepseek_v32",
+            "enable_expert_parallel": true
           }
         }
       },
@@ -401,12 +415,14 @@
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "glm47"
+            "tool_call_parser": "glm47",
+            "enable_expert_parallel": true
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
-            "tool_call_parser": "glm47"
+            "tool_call_parser": "glm47",
+            "enable_expert_parallel": true
           }
         }
       },
@@ -421,6 +437,7 @@
             "max_num_seqs": 8,
             "max_num_batched_tokens": 4096,
             "gpu_memory_utilization": 0.95,
+            "enable_expert_parallel": true,
             "enable_chunked_prefill": true,
             "enable_prefix_caching": true,
             "additional_config": {
@@ -443,6 +460,7 @@
             "max_num_seqs": 8,
             "max_num_batched_tokens": 4096,
             "gpu_memory_utilization": 0.95,
+            "enable_expert_parallel": true,
             "enable_chunked_prefill": true,
             "enable_prefix_caching": true,
             "additional_config": {
@@ -466,7 +484,7 @@
             "seed": 1024,
             "max_num_seqs": 16,
             "max_num_batched_tokens": 4096,
-            "gpu_memory_utilization": 0.98,
+            "gpu_memory_utilization": 0.95,
             "enable_expert_parallel": true,
             "async_scheduling": true,
             "additional_config": {
@@ -488,7 +506,7 @@
             "seed": 1024,
             "max_num_seqs": 30,
             "max_num_batched_tokens": 4096,
-            "gpu_memory_utilization": 0.95,
+            "gpu_memory_utilization": 0.93,
             "enable_expert_parallel": true,
             "enable_prefix_caching": true,
             "async_scheduling": true,
@@ -511,7 +529,6 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "task": "generate",
-            "enable_prefix_caching": true,
             "async_scheduling": true,
             "compilation_config": "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
             "additional_config": "{\"enable_cpu_binding\":true}",
@@ -521,11 +538,38 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "task": "generate",
-            "enable_prefix_caching": true,
             "async_scheduling": true,
             "compilation_config": "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
             "additional_config": "{\"enable_cpu_binding\":true}",
             "tool_call_parser": "qwen3_coder"
+          }
+        },
+        "Qwen3.5-27B-w8a8": {
+          "vllm_ascend": {
+            "seed": 1024,
+            "quantization": "ascend",
+            "gpu_memory_utilization": 0.9,
+            "no_enable_prefix_caching": true
+          },
+          "vllm_ascend_distributed": {
+            "seed": 1024,
+            "quantization": "ascend",
+            "gpu_memory_utilization": 0.9,
+            "no_enable_prefix_caching": true
+          }
+        },
+        "Qwen3.6-27B-w8a8": {
+          "vllm_ascend": {
+            "seed": 1024,
+            "quantization": "ascend",
+            "gpu_memory_utilization": 0.9,
+            "no_enable_prefix_caching": true
+          },
+          "vllm_ascend_distributed": {
+            "seed": 1024,
+            "quantization": "ascend",
+            "gpu_memory_utilization": 0.9,
+            "no_enable_prefix_caching": true
           }
         }
       },
@@ -535,12 +579,9 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "task": "generate",
-            "quantization": "ascend",
             "enable_expert_parallel": true,
             "max_num_seqs": 128,
             "max_num_batched_tokens": 16384,
-            "gpu_memory_utilization": 0.9,
-            "enable_prefix_caching": true,
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {"enable_cpu_binding": true},
@@ -550,12 +591,9 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "task": "generate",
-            "quantization": "ascend",
             "enable_expert_parallel": true,
             "max_num_seqs": 128,
             "max_num_batched_tokens": 16384,
-            "gpu_memory_utilization": 0.9,
-            "enable_prefix_caching": true,
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {"enable_cpu_binding": true},
@@ -568,6 +606,7 @@
             "max_model_len": 262144,
             "task": "generate",
             "quantization": "ascend",
+            "seed": 1024,
             "enable_expert_parallel": true,
             "max_num_seqs": 128,
             "max_num_batched_tokens": 16384,
@@ -583,6 +622,7 @@
             "max_model_len": 262144,
             "task": "generate",
             "quantization": "ascend",
+            "seed": 1024,
             "enable_expert_parallel": true,
             "max_num_seqs": 128,
             "max_num_batched_tokens": 16384,
@@ -599,6 +639,7 @@
             "trust_remote_code": true,
             "max_model_len": 262144,
             "gpu_memory_utilization": 0.9,
+            "enable_expert_parallel": true,
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
@@ -608,6 +649,7 @@
             "trust_remote_code": true,
             "max_model_len": 262144,
             "gpu_memory_utilization": 0.9,
+            "enable_expert_parallel": true,
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
@@ -678,11 +720,13 @@
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 4096,
+            "gpu_memory_utilization": 0.8,
             "tool_call_parser": "hermes"
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
+            "gpu_memory_utilization": 0.8,
             "tool_call_parser": "hermes"
           }
         }
@@ -695,6 +739,8 @@
             "max_num_seqs": 16,
             "max_num_batched_tokens": 16384,
             "gpu_memory_utilization": 0.9,
+            "quantization": "ascend",
+            "seed": 1024,
             "enable_expert_parallel": true,
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
@@ -710,6 +756,8 @@
             "max_num_seqs": 16,
             "max_num_batched_tokens": 16384,
             "gpu_memory_utilization": 0.9,
+            "quantization": "ascend",
+            "seed": 1024,
             "enable_expert_parallel": true,
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
