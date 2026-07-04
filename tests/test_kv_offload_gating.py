@@ -118,7 +118,7 @@ def test_deepseek_v4_flash_ascend_lmcache_auto_size_is_computed_per_card(monkeyp
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "200")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
 
     commands = vllm_adapter._build_cache_env_commands(
@@ -139,6 +139,33 @@ def test_deepseek_v4_flash_ascend_lmcache_auto_size_is_computed_per_card(monkeyp
     assert "export LMCACHE_LOCAL_CPU=True" in rendered
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=15" in rendered
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=auto" not in rendered
+
+
+def test_deepseek_v4_flash_ascend_lmcache_auto_size_treats_available_pod_mem_as_mb(monkeypatch):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "241664")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=19" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=27179" not in rendered
 
 
 def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
