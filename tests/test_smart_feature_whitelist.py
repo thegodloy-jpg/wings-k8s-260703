@@ -36,12 +36,24 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
         "910c",
     ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "910b",
+    ) == frozenset({"spec", "offload"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
         "/models/deepseek-ai/DeepSeek-V4-Flash",
-        "nvidia rtx pro 5000 72gb",
+        "h20-141",
+    ) == frozenset({"spec"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "pro5000-72",
     ) == frozenset({"spec", "sparse"})
 
     whitelist = json.loads(model_utils._SMART_WHITELIST_PATH.read_text(encoding="utf-8"))
@@ -54,19 +66,52 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ]
     assert "deepseek-ai/deepseek-v4-flash-fp4" not in deepseek_tokens
     assert "deepseek-v4-flash-fp4" not in deepseek_tokens
+    nvidia_card_tokens = [
+        token.lower()
+        for feature in ("spec", "sparse", "offload")
+        for entry in whitelist[feature]
+        if entry.get("engine") == "vllm"
+        for token in entry.get("card_tokens", [])
+    ]
+    assert "h20-141" in nvidia_card_tokens
+    assert "pro5000-72" in nvidia_card_tokens
+    for non_chip_token in (
+        "nh02",
+        "nrp0500",
+        "g6550 v8",
+        "g8600 v7",
+        "rtx pro 5000 72",
+        "rtx_pro_5000_72g",
+    ):
+        assert non_chip_token not in nvidia_card_tokens
+    for feature in ("spec", "sparse", "offload"):
+        for entry in whitelist[feature]:
+            assert len(entry.get("card_tokens", [])) == 1
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.5-397B-A17B-NVFP4",
         "/models/Qwen3.5-397B-A17B-NVFP4",
-        "nvidia rtx pro 5000 72gb",
+        "pro5000-72",
     ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.5-397B-A17B-NVFP4",
+        "/models/Qwen3.5-397B-A17B-NVFP4",
+        "h20-141",
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen/Qwen3.5-397B-A17B",
+        "/models/Qwen/Qwen3.5-397B-A17B",
+        "pro5000-72",
+    ) == frozenset({"spec", "sparse"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.5-397B-A17B",
         "/models/Qwen3.5-397B-A17B",
-        "nvidia rtx pro 5000 72gb",
-    ) == frozenset()
+        "pro5000-72",
+    ) == frozenset({"spec", "sparse"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -74,6 +119,30 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/GLM-4.7",
         "",
     ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "ZhipuAI/GLM-4.7-FP8",
+        "/models/ZhipuAI/GLM-4.7-FP8",
+        "h20-141",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "ZhipuAI/GLM-4.7-FP8",
+        "/models/ZhipuAI/GLM-4.7-FP8",
+        "pro5000-72",
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "MiniMax/MiniMax-M2.7",
+        "/models/MiniMax/MiniMax-M2.7",
+        "pro5000-72",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "ZhipuAI/GLM-5.1-FP8",
+        "/models/ZhipuAI/GLM-5.1-FP8",
+        "h20-141",
+    ) == frozenset({"sparse"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
@@ -211,6 +280,37 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     assert os.environ["ENABLE_SPARSE"] == "true"
     assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
+
+
+def test_nvidia_card_token_uses_chip_name_not_server_or_board_code():
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "NH02(141GB) / G8600 V7"}],
+    }) == "h20-141"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "NVIDIA H20 NH02 141GB G8600 V7"}],
+    }) == "h20-141"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "NRP0500(72GB) / G6550 V8"}],
+    }) == "pro5000-72"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "RTX PRO 5000 72GB"}],
+    }) == "pro5000-72"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "NVIDIA RTX PRO 5000 72GB Blackwell"}],
+    }) == "pro5000-72"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "hardware_family": "NH02(141GB) / G8600 V7",
+    }) == "h20-141"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "hardware_family": "NRP0500(72GB) / G6550 V8",
+    }) == "pro5000-72"
 
 
 def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkeypatch):

@@ -234,22 +234,24 @@ def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
     assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in ld_preload
 
 
-def test_deepseek_v4_flash_ascend_v021_defers_lmcache_patch(monkeypatch):
+def test_deepseek_v4_flash_ascend_v021_uses_lmcache_patch(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
-    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0-a2")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "_smart_feats": ["offload"],
+    }
 
-    target = wings_entry._resolve_lmcache_install_target(
-        "vllm_ascend",
-        {
-            "engine": "vllm_ascend",
-            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
-            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
-            "model_type": "llm",
-            "_smart_feats": ["offload"],
-        },
-    )
+    for engine_version in ("v0.21.0-a2", "v0.21.0-a3"):
+        monkeypatch.setenv("ENGINE_VERSION", engine_version)
 
-    assert target is None
+        target = wings_entry._resolve_lmcache_install_target("vllm_ascend", params)
+        snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
+
+        assert target == "ascend-arm"
+        assert "python3 /accel-volume/install.py --lmcache-target ascend-arm" in snippet
 
 
 def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkeypatch):

@@ -72,6 +72,7 @@ def _load_smart_feature_whitelists(path: Path = _SMART_WHITELIST_PATH) -> dict:
                 **row,
                 "engine": str(row.get("engine", "")),
                 "name_tokens": tuple(str(tok).lower() for tok in row.get("name_tokens", ())),
+                "exclude_name_tokens": tuple(str(tok).lower() for tok in row.get("exclude_name_tokens", ())),
                 "card_tokens": tuple(str(tok).lower() for tok in row.get("card_tokens", ())),
             })
         tables[feat] = tuple(normalized)
@@ -92,6 +93,8 @@ def _whitelist_table_match(table, engine: str, hay: str, ct: str) -> Optional[di
         if row["engine"] != engine:
             continue
         if not any(tok in hay for tok in row["name_tokens"]):
+            continue
+        if any(tok in hay for tok in row.get("exclude_name_tokens", ())):
             continue
         card_tokens = row["card_tokens"]
         if not (("*" in card_tokens) or any(c in ct for c in card_tokens)):
