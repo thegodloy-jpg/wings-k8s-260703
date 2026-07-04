@@ -89,6 +89,30 @@ def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkey
     assert "CPUOffloadingConnector" not in rendered
 
 
+def test_deepseek_v4_flash_ascend_lmcache_defaults_cpu_pool_when_whitelist_forces_offload(monkeypatch):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.delenv("ENABLE_KV_MEM_OFFLOAD", raising=False)
+    monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 8,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export LMCACHE_LOCAL_CPU=True" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=40" in rendered
+
+
 def test_deepseek_v4_flash_ascend_lmcache_auto_size_is_computed_per_card(monkeypatch):
     _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")

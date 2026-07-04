@@ -778,21 +778,28 @@ def _resolve_offload_backend(params: Optional[Dict[str, Any]]) -> Tuple[str, str
 def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any]]) -> List[str]:
     """Build vLLM-Ascend 0.21 LMCache dynamic offload env for DeepSeek-V4-Flash."""
     env_commands = ["export PYTHONHASHSEED=0"]
-    mem_enabled = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    offload_enabled = os.getenv("ENABLE_KV_OFFLOAD", "false").strip().lower() == "true"
+    mem_offload_raw = os.getenv("ENABLE_KV_MEM_OFFLOAD")
+    mem_enabled = (mem_offload_raw or "").strip().lower() == "true"
+    mem_explicitly_disabled = (
+        mem_offload_raw is not None
+        and mem_offload_raw.strip().lower() in {"false", "0", "no", "off"}
+    )
     auto_requested = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() == "auto"
+    default_cpu_pool = offload_enabled and not mem_explicitly_disabled and not auto_requested
     resolved_local_cpu, resolved_max_cpu_size = _resolve_lmcache_cpu_env(params)
 
     local_cpu = os.getenv("LMCACHE_LOCAL_CPU", "").strip()
     if not local_cpu:
         if resolved_local_cpu:
             local_cpu = "True" if resolved_local_cpu.lower() == "true" else resolved_local_cpu
-        elif mem_enabled and not auto_requested:
+        elif mem_enabled or default_cpu_pool:
             local_cpu = "True"
 
     max_cpu_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
     if not max_cpu_size:
         max_cpu_size = resolved_max_cpu_size
-    if not max_cpu_size and mem_enabled and not auto_requested:
+    if not max_cpu_size and (mem_enabled or default_cpu_pool):
         max_cpu_size = "40"
 
     _append_lmcache_env_export(env_commands, "LMCACHE_TRACK_USAGE", os.getenv("LMCACHE_TRACK_USAGE", "false"))
