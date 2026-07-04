@@ -39,23 +39,28 @@ def test_default_smart_feature_whitelist_file_is_loaded():
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
-        "deepseek-ai/DeepSeek-V4-Flash-FP4",
-        "/models/deepseek-ai/DeepSeek-V4-Flash-FP4",
-        "nvidia rtx pro 5000 72gb",
-    ) == frozenset({"spec", "sparse", "offload"})
-    assert model_utils.resolve_feature_whitelist(
-        "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
         "/models/deepseek-ai/DeepSeek-V4-Flash",
         "nvidia rtx pro 5000 72gb",
-    ) == frozenset()
+    ) == frozenset({"spec", "sparse"})
+
+    whitelist = json.loads(model_utils._SMART_WHITELIST_PATH.read_text(encoding="utf-8"))
+    deepseek_tokens = [
+        token.lower()
+        for feature in ("spec", "sparse", "offload")
+        for entry in whitelist[feature]
+        if entry.get("arch") == "DeepseekV4ForCausalLM"
+        for token in entry.get("name_tokens", [])
+    ]
+    assert "deepseek-ai/deepseek-v4-flash-fp4" not in deepseek_tokens
+    assert "deepseek-v4-flash-fp4" not in deepseek_tokens
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.5-397B-A17B-NVFP4",
         "/models/Qwen3.5-397B-A17B-NVFP4",
         "nvidia rtx pro 5000 72gb",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.5-397B-A17B",

@@ -388,7 +388,7 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
 
     命中下列任一情况返回 None（跳过安装）：
       * ``ENABLE_KV_OFFLOAD`` 未开启；
-      * V4-Flash on NV/vllm → 用 native ``--kv_offloading_backend``（构建期 CLI flag）；
+      * V4-Flash on NV/vllm → 用 native ``--kv-offloading-backend``（构建期 CLI flag）；
       * GLM-5.1 on NV/vllm → 强制关闭 LMCache；
       * 引擎无已知 lmcache-target 映射。
     """
@@ -415,12 +415,12 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
             )
             return None
 
-    # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv_offloading_backend（构建期 CLI flag），
+    # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv-offloading-backend（构建期 CLI flag），
     # 与 LMCache 互斥：跳过 LMCache 补丁安装，避免两套卸载机制并存。
     if merged and engine == "vllm" and _is_deepseek_v4_flash_params(merged):
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
-            "--kv_offloading_backend; skipping LMCache patch install despite "
+            "--kv-offloading-backend; skipping LMCache patch install despite "
             "ENABLE_KV_OFFLOAD=true."
         )
         return None
@@ -531,7 +531,8 @@ def _collect_ears_patch_features(engine: str, merged: dict) -> list[str]:
         return []
     if not merged.get("enable_speculative_decode"):
         return []
-    if merged.get("speculative_decode_model_path"):
+    draft_path = merged.get("speculative_decode_model_path")
+    if draft_path and str(draft_path).strip().lower() not in ("none", ""):
         return []
 
     strategy = resolve_speculative_strategy(merged, engine)
@@ -1358,7 +1359,7 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
                 "from engine_config for fallback (LMCache Offload was enabled)"
             )
         # [V4-Flash-NV-Day0] NV V4-Flash native 卸载是构建期 CLI flag（非 kv_transfer_config），
-        # 需显式抑制，否则 fallback 重建命令仍会带上 --kv_offloading_backend。
+        # 需显式抑制，否则 fallback 重建命令仍会带上 --kv-offloading-backend。
         merged_no_features["_wings_fallback_no_kv_offload"] = True
     fallback_body = start_engine_service(merged_no_features)
     fallback_cmd = _strip_exec_and_backgroundify(fallback_body)

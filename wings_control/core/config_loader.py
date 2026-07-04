@@ -1520,7 +1520,7 @@ def _is_deepseek_v4_flash_offload(ctx, model_info) -> bool:
 def _is_deepseek_v4_flash_nv(ctx, model_info) -> bool:
     """[V4-Flash-NV-Day0] Return True for V4-Flash on NVIDIA/vllm.
 
-    该路径用 native ``--kv_offloading_backend``（在 vllm_adapter 生成 CLI），
+    该路径用 native ``--kv-offloading-backend``（在 vllm_adapter 生成 CLI），
     因此 config 合并阶段不注入 LMCacheConnectorV1 kv_transfer_config。
     """
     if ctx.get("engine") != "vllm":
@@ -1594,7 +1594,7 @@ def _set_kv_cache_config(params, ctx, model_info=None):
     if lmcache_offload and model_info is not None and _is_deepseek_v4_flash_nv(ctx, model_info):
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash on NVIDIA/vllm uses native "
-            "--kv_offloading_backend; not injecting LMCacheConnectorV1."
+            "--kv-offloading-backend; not injecting LMCacheConnectorV1."
         )
         return
 
@@ -1602,7 +1602,7 @@ def _set_kv_cache_config(params, ctx, model_info=None):
             is_qwen3_5_397b_nvfp4_vllm(ctx, ctx.get("engine")):
         logger.info(
             "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 on NVIDIA/vllm uses native "
-            "--kv_offloading_backend; not injecting LMCacheConnectorV1."
+            "--kv-offloading-backend; not injecting LMCacheConnectorV1."
         )
         return
 

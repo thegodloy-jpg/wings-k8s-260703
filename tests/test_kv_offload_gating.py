@@ -296,11 +296,30 @@ def test_qwen35_nvfp4_uses_native_kv_offload_cli(monkeypatch):
             "model_name": "Qwen3.5-397B-A17B-NVFP4",
             "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
             "device_count": 8,
+            "_smart_feats": ["spec", "offload"],
         },
         "vllm",
     )
 
-    assert command == " --kv_offloading_backend native --kv_offloading_size 200"
+    assert command == " --kv-offloading-backend native --kv-offloading-size 200"
+
+
+def test_deepseek_v4_flash_pro5000_without_offload_whitelist_omits_native_kv_offload_cli(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+            "device_count": 8,
+            "_smart_feats": ["spec", "sparse"],
+        },
+        "vllm",
+    )
+
+    assert command == ""
 
 
 def test_qwen35_nvfp4_native_offload_skips_lmcache_env(monkeypatch):

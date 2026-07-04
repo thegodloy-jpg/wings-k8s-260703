@@ -11,7 +11,7 @@
     {"engine": "vllm", "name_tokens": ["qwen/qwen3.5-397b-a17b-nvfp4", "qwen3.5-397b-a17b-nvfp4"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
-    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash-fp4", "deepseek-v4-flash-fp4"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash", "deepseek-v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "0.21"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b"], "arch": "DeepseekV4ForCausalLM", "source": "0.21"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.2-w8a8", "glm-5.2-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0"},
@@ -24,15 +24,13 @@
     {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v3.2-w8a8", "deepseek-v3.2-w8a8"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "23.6.0"}
   ],
   "sparse": [
-    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash-fp4", "deepseek-v4-flash-fp4"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
-    {"engine": "vllm", "name_tokens": ["qwen/qwen3.5-397b-a17b-nvfp4", "qwen3.5-397b-a17b-nvfp4"], "card_tokens": ["*"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0", "topk": {"accuracy_first": 4}},
+    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash", "deepseek-v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-5.1-fp8", "glm-5.1-fp8"], "card_tokens": ["*"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 4}},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910b", "910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "topk": {"accuracy_first": 8}}
   ],
   "offload": [
-    {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash-fp4", "deepseek-v4-flash-fp4"], "card_tokens": ["rtx pro 5000 72", "rtx_pro_5000_72g"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["qwen/qwen3.5-397b-a17b-nvfp4", "qwen3.5-397b-a17b-nvfp4"], "card_tokens": ["rtx pro 5000 72", "rtx_pro_5000_72g"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},

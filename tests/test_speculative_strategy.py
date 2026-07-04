@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
+from core import wings_entry  # noqa: E402
 from engines import vllm_adapter  # noqa: E402
 
 
@@ -55,6 +56,24 @@ class _FakeQwen2Identifier:
         self.model_name = model_name
         self.model_path = model_path
         self.model_type = model_type
+
+
+class _FakePro5000Identifier:
+    model_quantize = ""
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+        text = f"{model_name} {model_path}".lower()
+        if "qwen3.5-397b-a17b-nvfp4" in text:
+            self.model_architecture = "Qwen3_5MoeForConditionalGeneration"
+            self.model_quantize = "nvfp4"
+        elif "deepseek-v4-flash" in text:
+            self.model_architecture = "DeepseekV4ForCausalLM"
+            self.model_quantize = "fp4"
+        else:
+            self.model_architecture = "unknown_architecture"
 
 
 def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
@@ -115,6 +134,58 @@ def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num1(monkeyp
     assert '"method": "mtp"' in command
     assert '"num_speculative_tokens": 1' in command
     assert '"enforce_eager": true' in command
+
+
+def test_qwen35_nvfp4_native_offload_keeps_mtp_strategy(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    strategy = vllm_adapter.resolve_speculative_strategy(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "model_type": "llm",
+            "speculative_decode_model_path": "none",
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert strategy == "mtp"
+
+
+def test_pro5000_spec_models_emit_ears_env_and_patch(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+    monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
+
+    scenarios = [
+        {
+            "engine": "vllm",
+            "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "enable_sparse": True,
+            "speculative_decode_model_path": "none",
+            "_smart_feats": ["spec", "sparse"],
+        },
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "enable_sparse": False,
+            "speculative_decode_model_path": "none",
+            "_smart_feats": ["spec", "offload"],
+        },
+    ]
+
+    for params in scenarios:
+        env_commands = vllm_adapter._build_speculative_env_commands(params, "vllm")
+        assert "export VLLM_EARS_TOLERANCE=0.5" in env_commands
+        assert "ears" in wings_entry._collect_required_patch_features("vllm", params)
 
 
 def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):
@@ -189,3 +260,20 @@ def test_glm51_ascend_indexcache_uses_model_name_when_config_missing(monkeypatch
     variant = vllm_adapter.resolve_sparse_variant(params, "vllm_ascend")
 
     assert variant == "indexcache_use_index_cache_topk8"
+
+
+def test_glm51_ascend_preserves_explicit_expert_parallel_in_command(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
+
+    command = vllm_adapter.build_start_command(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "GLM-5.1-w8a8",
+            "model_path": "/models/GLM-5.1-w8a8",
+            "model_type": "llm",
+            "engine_config": {"enable_expert_parallel": True},
+            "_explicit_cli_keys": ["enable_expert_parallel"],
+        },
+    )
+
+    assert " --enable-expert-parallel" in f" {command}"

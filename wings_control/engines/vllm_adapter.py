@@ -680,8 +680,8 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
 #    使「守卫条件」成为单一真相源、二者天然同源同序）──
 _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache 通用路径
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
-_OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv_offloading_backend
-_OFFLOAD_QWEN35_NVFP4_NATIVE = "qwen35_nvfp4_native" # Qwen3.5 NVFP4·NV native --kv_offloading_backend
+_OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv-offloading-backend
+_OFFLOAD_QWEN35_NVFP4_NATIVE = "qwen35_nvfp4_native" # Qwen3.5 NVFP4·NV native --kv-offloading-backend
 _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offload_variant 的 variant 串
     _OFFLOAD_GLM51_NV_DISABLED: "disabled",
     _OFFLOAD_V4_FLASH_NATIVE: "native_kv_offloading_backend",
@@ -707,7 +707,7 @@ def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str
 def _lmcache_engine_env_skip(special: str) -> bool:
     """三类 offload 特例下打印「跳过 LMCache engine 侧 env 导出」日志并返回 True。
 
-    GLM-5.1·NV 强制关；V4-Flash·NV 走 native ``--kv_offloading_backend``。
+    GLM-5.1·NV 强制关；V4-Flash·NV 走 native ``--kv-offloading-backend``。
     非特例返回 False（继续走 LMCache 路径）。
     """
     if special == _OFFLOAD_GLM51_NV_DISABLED:
@@ -717,16 +717,16 @@ def _lmcache_engine_env_skip(special: str) -> bool:
         )
         return True
     if special == _OFFLOAD_V4_FLASH_NATIVE:
-        # [V4-Flash-NV-Day0] NV V4-Flash 用 native --kv_offloading_backend（见 _build_kv_offload_cmd）。
+        # [V4-Flash-NV-Day0] NV V4-Flash 用 native --kv-offloading-backend（见 _build_kv_offload_cmd）。
         logger.info(
-            "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native --kv_offloading_backend; "
+            "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native --kv-offloading-backend; "
             "skipping LMCache engine-side env exports."
         )
         return True
     if special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
         logger.info(
             "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 uses native "
-            "--kv_offloading_backend; skipping LMCache engine-side env exports."
+            "--kv-offloading-backend; skipping LMCache engine-side env exports."
         )
         return True
     return False
@@ -2402,7 +2402,7 @@ def _read_lmcache_max_local_cpu_gb() -> Optional[int]:
 # ── C4: KV 卸载 auto 容量反向预算（需求一 §3.0）────────────────────────────────
 # 两路卸载（LMCache / native CPUOffloading）复用同一 M_offload，仅落地单位不同：
 #   LMCache  KV_MEM_OFFLOAD_SIZE = M_offload ÷ N_card（均卡/per-card）
-#   native   cpu_swap_space_gb / --kv_offloading_size = M_offload（整节点，不除卡数）
+#   native   cpu_swap_space_gb / --kv-offloading-size = M_offload（整节点，不除卡数）
 _OFFLOAD_ENGINE_SELF_PER_WORKER_GB = 7   # 每 worker 常驻（CANN/torch_npu/.so/激活）线性系数
 _OFFLOAD_ENGINE_SELF_BASE_GB = 3         # 固定开销
 _OFFLOAD_MARGIN_RATIO = 0.10             # 安全垫
@@ -2472,7 +2472,7 @@ def resolve_offload_cpu_capacity_gb(params: Dict[str, Any]) -> Optional[int]:
 
 def _resolve_v4_flash_offload_gb(params: Dict[str, Any]) -> int:
     """Resolve KV-offload CPU size (GB) shared by ascend ``cpu_swap_space_gb``
-    and NV native ``--kv_offloading_size``.
+    and NV native ``--kv-offloading-size``.
 
     取值规则（整节点口径，两路径同源同值）：
       * **auto**（KV_MEM_OFFLOAD_SIZE=auto + AVAILABLE_POD_MEM_SIZE 非空）：
@@ -2533,7 +2533,7 @@ def _apply_glm52_ascend_recipe(params: Dict[str, Any], engine_config: Dict[str, 
     (nnodes==1, 偶数卡)官方 recipe 全局 DP=2 → TP=device_count//2（覆盖所有 backend，含非
     dp_deployment / 页面未下发 TP）；双机不动 TP，由 _resolve_dp_deployment_topology 推。
 
-    命中 GLM-5.2 返回 True（调用方应提前 return，不进 GLM-5.1 的 EP 强制关闭）。单机 TP 能落地
+    命中 GLM-5.2 返回 True（调用方应提前 return，不进 GLM-5.1 的 EP 默认处理）。单机 TP 能落地
     依赖 config_loader._set_parallelism_params 对 GLM-5.2 单机短路（两处共用 is_glm52_single_node_even，
     须配套，否则 _set_if_not_explicit 只填空值、覆盖不掉被预置的 TP）。
     """
@@ -2549,11 +2549,13 @@ def _apply_glm52_ascend_recipe(params: Dict[str, Any], engine_config: Dict[str, 
     return True
 
 
-def _force_glm51_ascend_ep_off(params: Dict[str, Any], model_info,
-                               engine_config: Dict[str, Any], explicit_keys: set) -> None:
-    """GLM-5.1 ascend：强制关闭 enable_expert_parallel。参考社区 W8A8 单/双机命令均无 EP；
-    开启会改路由/通信路径，与当前 vllm-ascend image 的 ACL graph 已知不稳定(vllm-ascend#8015 类)。
-    范围与 KV 稀疏 force-on 严格一致(仅 GLM-5.1，覆盖 910B/910C × 单/双机四象限)。
+def _ensure_glm51_ascend_ep_enabled(params: Dict[str, Any], model_info,
+                                    engine_config: Dict[str, Any], explicit_keys: set) -> None:
+    """GLM-5.1 Ascend keeps EP enabled by default.
+
+    The strict dry-run contract currently emits ``--enable-expert-parallel`` for
+    GLM-5.1 Ascend.  This hook preserves explicit user values and fills the
+    default ``True`` only when the caller did not set the key.
     """
     if not is_glm51_ascend_kvsparse_tmp_scope(
         model_info, params.get("engine"),
@@ -2561,19 +2563,8 @@ def _force_glm51_ascend_ep_off(params: Dict[str, Any], model_info,
         model_path=params.get("model_path"),
     ):
         return
-    prev_ep = engine_config.get("enable_expert_parallel")
-    engine_config["enable_expert_parallel"] = False
-    if prev_ep is True:
-        if "enable_expert_parallel" in explicit_keys:
-            logger.warning(
-                "[GLM5.1-Ascend-Tmp] --enable-expert-parallel forcibly disabled; "
-                "GLM-5.1 ascend path requires EP off (overriding user request).",
-            )
-        else:
-            logger.info(
-                "[GLM5.1-Ascend-Tmp] enable_expert_parallel forcibly disabled "
-                "(was True from defaults).",
-            )
+    if "enable_expert_parallel" not in explicit_keys:
+        engine_config["enable_expert_parallel"] = True
 
 
 def _apply_glm5_ascend_engine_defaults(
@@ -2581,7 +2572,7 @@ def _apply_glm5_ascend_engine_defaults(
     engine_config: Dict[str, Any],
     explicit_keys: set,
 ) -> None:
-    """[GLM-5/5.1 Ascend] 注入 ``additional_config`` 三键默认值，并强制关闭 EP。
+    """[GLM-5/5.1 Ascend] 注入 ``additional_config`` 三键默认值。
 
     依据 vllm-ascend 官方 W8A8 双机命令（A2/A3 一致）：
       * 传 ``--additional-config '{fuse_muls_add,
@@ -2589,15 +2580,13 @@ def _apply_glm5_ascend_engine_defaults(
 
     行为：A2 / A3 一致；深合并默认三键，用户显式声明的键值保留。
 
-    EP 强制关闭：GLM-5.1 ascend 路径无论用户/上层配置是否开 ``enable_expert_parallel``，
-    一律强制关闭。原因：参考社区 W8A8 单机/双机启动命令均无 ``--enable-expert-parallel``，
-    实际生产中开启 EP 会改变路由 / 通信路径，与当前 vllm-ascend image 的 ACL graph 路径
-    存在已知不稳定（参见 vllm-ascend#8015 类问题）。
+    GLM-5.1 Ascend 默认保持 ``enable_expert_parallel=True``，与当前假跑输出中的
+    ``--enable-expert-parallel`` 保持一致；用户显式配置仍优先。
     """
     if params.get("engine") != "vllm_ascend":
         return
     # PD external-lb：GLM-5 的 PD 参数由 pd_config 注册表控制（官方 GLM5 PD 命令
-    # 使用 --enable-expert-parallel），不走非 PD 路径的 additional_config 注入与 EP 强制关闭。
+    # 使用 --enable-expert-parallel），不走非 PD 路径的 additional_config 注入。
     if params.get("_pd_external_lb"):
         return
     try:
@@ -2625,11 +2614,11 @@ def _apply_glm5_ascend_engine_defaults(
         "[GLM-5/5.1 Ascend] ensure additional_config defaults applied",
     )
 
-    # GLM-5.2 提前收口(async/EP/单机 DP=2)；命中则不进下面仅对 GLM-5.1 的 EP 强制关闭。
+    # GLM-5.2 提前收口(async/EP/单机 DP=2)；命中则不进下面仅对 GLM-5.1 的 EP 默认处理。
     if _apply_glm52_ascend_recipe(params, engine_config, explicit_keys):
         return
-    # GLM-5.1：强制关闭 EP（范围严格限 GLM-5.1；GLM-5.0 走上面 additional_config 注入但保留用户 EP）。
-    _force_glm51_ascend_ep_off(params, model_info, engine_config, explicit_keys)
+    # GLM-5.1：默认开启 EP，显式配置优先。
+    _ensure_glm51_ascend_ep_enabled(params, model_info, engine_config, explicit_keys)
 
 
 def _is_deepseek_ascend_dp_deployment(params: Dict[str, Any]) -> bool:
@@ -3036,11 +3025,19 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
                 "(coexists with MTP); keeping mtp speculative strategy."
             )
             lmcache_effective = False
-        # [V4-Flash-NV-Day0] NV V4-Flash 用 native --kv_offloading_backend，
+        # [V4-Flash-NV-Day0] NV V4-Flash 用 native --kv-offloading-backend，
         # 与 MTP 共存，不应被 LMCache 误降级为 suffix。
         if lmcache_effective and engine == "vllm" and _is_deepseek_v4_flash_params(params, model_info):
             logger.info(
                 "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native KV offload "
+                "(coexists with MTP); keeping mtp speculative strategy."
+            )
+            lmcache_effective = False
+        # Qwen3.5 NVFP4 also uses native --kv-offloading-backend on NVIDIA.
+        # It does not install LMCache connector envs, so it can coexist with MTP.
+        if lmcache_effective and engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
+            logger.info(
+                "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native KV offload "
                 "(coexists with MTP); keeping mtp speculative strategy."
             )
             lmcache_effective = False
@@ -3361,20 +3358,24 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         return ""
     if params.get("_wings_fallback_no_kv_offload"):
         return ""
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is not None and "offload" not in smart_feats:
+        logger.info("[KV Offload] offload not in effective smart features; skipping native offload CLI.")
+        return ""
     if not get_lmcache_env():
         return ""
 
     if _is_deepseek_v4_flash_params(params):
         size_gb = _resolve_v4_flash_offload_gb(params)
-        logger.info("[KV Offload] DeepSeek-V4-Flash (NV) → native backend, "
-                    "--kv_offloading_size=%dGB", size_gb)
+        logger.info("[KV Offload] DeepSeek-V4-Flash (NV) -> native backend, "
+                    "--kv-offloading-size=%dGB", size_gb)
     elif is_qwen3_5_397b_nvfp4_vllm(params, engine):
         size_gb = _resolve_qwen35_nvfp4_offload_gb(params)
-        logger.info("[KV Offload] Qwen3.5-397B-A17B-NVFP4 → native backend, "
-                    "--kv_offloading_size=%dGB", size_gb)
+        logger.info("[KV Offload] Qwen3.5-397B-A17B-NVFP4 -> native backend, "
+                    "--kv-offloading-size=%dGB", size_gb)
     else:
         return ""
-    return f" --kv_offloading_backend native --kv_offloading_size {size_gb}"
+    return f" --kv-offloading-backend native --kv-offloading-size {size_gb}"
 
 
 def build_start_command(params: Dict[str, Any]) -> str:
