@@ -3035,9 +3035,13 @@ def _is_deepseek_v4_flash_lookup(lookup_names: list) -> bool:
 
 def _resolve_deepseek_v4_flash_ascend_config_key(arch_dict: Dict[str, Any]) -> str:
     platform = _resolve_ascend_platform() or "a2"
-    candidate = f"DeepSeek-V4-Flash-{platform.upper()}"
-    if candidate in arch_dict:
-        return candidate
+    candidate_by_platform = {
+        "a2": ("DeepSeek-V4-Flash-Ascend910B", "DeepSeek-V4-Flash-A2"),
+        "a3": ("DeepSeek-V4-Flash-Ascend910C", "DeepSeek-V4-Flash-A3"),
+    }
+    for candidate in candidate_by_platform.get(platform, ()):
+        if candidate in arch_dict:
+            return candidate
     return ""
 
 

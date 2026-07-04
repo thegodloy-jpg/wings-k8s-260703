@@ -60,6 +60,7 @@ def test_lmcache_env_exports_do_not_leak_l2_child_values_when_l2_switches_are_of
 
 
 def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkeypatch):
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
@@ -87,6 +88,56 @@ def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkey
     assert "export LMCACHE_CHUNK_SIZE=1024" in rendered
     assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=0,1,2,3" in rendered
     assert "CPUOffloadingConnector" not in rendered
+
+
+def test_deepseek_v4_flash_ascend_lmcache_worker_ids_follow_tensor_parallel_size(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=0,1,2,3,4,5,6,7" in rendered
+
+
+def test_deepseek_v4_flash_ascend_lmcache_worker_ids_keep_explicit_env(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("LMCACHE_LOOKUP_SERVER_WORKER_IDS", "1,3")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=1,3" in rendered
+    assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=0,1,2,3,4,5,6,7" not in rendered
 
 
 def test_deepseek_v4_flash_ascend_lmcache_defaults_cpu_pool_when_whitelist_forces_offload(monkeypatch):

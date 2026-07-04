@@ -127,7 +127,7 @@
             "tool_call_parser": "deepseek_v4"
           }
         },
-        "DeepSeek-V4-Flash-A2": {
+        "DeepSeek-V4-Flash-Ascend910B": {
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 133120,
@@ -187,7 +187,7 @@
             "use_vllm_serve": true
           }
         },
-        "DeepSeek-V4-Flash-A3": {
+        "DeepSeek-V4-Flash-Ascend910C": {
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 1048576,

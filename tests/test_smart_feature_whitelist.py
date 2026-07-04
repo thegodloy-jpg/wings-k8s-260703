@@ -39,10 +39,16 @@ def test_default_smart_feature_whitelist_file_is_loaded():
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
+        "deepseek-ai/DeepSeek-V4-Flash-FP4",
+        "/models/deepseek-ai/DeepSeek-V4-Flash-FP4",
+        "nvidia rtx pro 5000 72gb",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
         "/models/deepseek-ai/DeepSeek-V4-Flash",
         "nvidia rtx pro 5000 72gb",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset()
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -50,6 +56,12 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/Qwen3.5-397B-A17B-NVFP4",
         "nvidia rtx pro 5000 72gb",
     ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.5-397B-A17B",
+        "/models/Qwen3.5-397B-A17B",
+        "nvidia rtx pro 5000 72gb",
+    ) == frozenset()
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",

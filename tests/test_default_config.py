@@ -365,10 +365,12 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
     )
 
     deepseek_v4 = llm["DeepseekV4ForCausalLM"]
-    assert deepseek_v4["DeepSeek-V4-Flash-A2"]["vllm_ascend"]["no_enable_prefix_caching"] is True
-    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-A2"]["vllm_ascend"]
-    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-A3"]["vllm_ascend"]
-    assert "no_enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-A3"]["vllm_ascend"]
+    assert "DeepSeek-V4-Flash-A2" not in deepseek_v4
+    assert "DeepSeek-V4-Flash-A3" not in deepseek_v4
+    assert deepseek_v4["DeepSeek-V4-Flash-Ascend910B"]["vllm_ascend"]["no_enable_prefix_caching"] is True
+    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910B"]["vllm_ascend"]
+    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910C"]["vllm_ascend"]
+    assert "no_enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910C"]["vllm_ascend"]
     _assert_engine_fields(
         deepseek_v4["DeepSeek-V4-Pro"]["vllm_ascend_distributed"],
         {"enable_chunked_prefill": True, "enable_prefix_caching": True},

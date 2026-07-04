@@ -640,6 +640,21 @@ def _append_lmcache_env_export(env_commands: List[str], name: str, value: Option
         env_commands.append(f"export {name}={shlex.quote(value)}")
 
 
+def _resolve_lmcache_lookup_server_worker_ids(params: Optional[Dict[str, Any]]) -> str:
+    """Resolve LMCache lookup workers from the final DeepSeek-V4-Flash TP size."""
+    explicit = os.getenv("LMCACHE_LOOKUP_SERVER_WORKER_IDS", "").strip()
+    if explicit:
+        return explicit
+
+    tp_size = _safe_int((params or {}).get("tensor_parallel_size"))
+    if not tp_size and params:
+        platform = _resolve_deepseek_v4_flash_platform(params)
+        tp_size = _default_deepseek_v4_flash_tensor_parallel_size(platform)
+    if not tp_size or tp_size < 1:
+        tp_size = 4
+    return ",".join(str(index) for index in range(tp_size))
+
+
 def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
                                  model_info: Optional[ModelIdentifier] = None) -> bool:
     """Return True when current params describe GLM-5.1 on NVIDIA vLLM."""
@@ -817,7 +832,7 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
     _append_lmcache_env_export(
         env_commands,
         "LMCACHE_LOOKUP_SERVER_WORKER_IDS",
-        os.getenv("LMCACHE_LOOKUP_SERVER_WORKER_IDS", "0,1,2,3"),
+        _resolve_lmcache_lookup_server_worker_ids(params),
     )
     return env_commands
 
