@@ -417,6 +417,8 @@ def _build_common_context(hardware_env: Dict[str, Any],
         "distributed_executor_backend": cmd_known_params.get("distributed_executor_backend"),
         "model_name": cmd_known_params.get("model_name"),
         "model_path": cmd_known_params.get("model_path"),
+        "_smart_feats": cmd_known_params.get("_smart_feats"),
+        "_forced_smart_feats": cmd_known_params.get("_forced_smart_feats"),
     }
 
 
@@ -1552,6 +1554,9 @@ def _set_kv_cache_config(params, ctx, model_info=None):
                 _offload_engine, _offload_name, _offload_card or "(empty)",
             )
             lmcache_offload = False
+
+    if ctx.get("_smart_feats") is not None:
+        lmcache_offload = "offload" in ctx.get("_smart_feats")
 
     if (
         lmcache_offload

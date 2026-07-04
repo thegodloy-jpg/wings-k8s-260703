@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from pathlib import Path
 
 
@@ -7,6 +8,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from utils import model_utils  # noqa: E402
 from core import config_loader  # noqa: E402
+
+
+class _FakeDeepSeekV4Info:
+    model_name = "DeepSeek-V4-Flash-w8a8-mtp"
+    model_path = "/usr/local/serving/models/"
+    model_architecture = "DeepseekV4ForCausalLM"
+
+    @staticmethod
+    def identify_model_architecture():
+        return "DeepseekV4ForCausalLM"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
 
 
 def test_default_smart_feature_whitelist_file_is_loaded():
@@ -80,3 +95,36 @@ def test_deepseek_v4_flash_a3_forces_whitelisted_smart_features(monkeypatch):
     assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
     assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
     assert os.environ["LMCACHE_OFFLOAD"] == "true"
+
+
+def test_deepseek_v4_flash_kv_transfer_reuses_effective_offload_from_upstream_model_name(monkeypatch):
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "distributed": False,
+        "enable_speculative_decode": False,
+    }
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+    config = config_loader._get_model_specific_config(
+        hardware_env,
+        params,
+        _FakeDeepSeekV4Info(),
+    )
+
+    kv_transfer = json.loads(config["kv_transfer_config"])
+    assert params["model_name"] == "DeepSeek-V4-Flash-w8a8-mtp"
+    assert config["served_model_name"] == "DeepSeek-V4-Flash-w8a8-mtp"
+    assert kv_transfer == {
+        "kv_connector": "LMCacheAscendConnectorV1Dynamic",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "lmcache_ascend.integration.vllm.lmcache_ascend_connector_v1",
+    }
