@@ -8,6 +8,20 @@ from engines import vllm_adapter  # noqa: E402
 from core import wings_entry  # noqa: E402
 
 
+def _clear_deepseek_v4_flash_lmcache_env(monkeypatch):
+    for key in (
+        "LMCACHE_LOCAL_CPU",
+        "LMCACHE_MAX_LOCAL_CPU_SIZE",
+        "LMCACHE_TRACK_USAGE",
+        "LMCACHE_USE_LAYERWISE",
+        "LMCACHE_NUMA_MODE",
+        "LMCACHE_EXTRA_CONFIG",
+        "LMCACHE_LOOKUP_SERVER_WORKER_IDS",
+        "AVAILABLE_POD_MEM_SIZE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 class _FakeDeepSeekV4ProIdentifier:
     model_architecture = "DeepseekV4ForCausalLM"
     model_quantize = "w4a8"
@@ -50,16 +64,7 @@ def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkey
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
-    for key in (
-        "LMCACHE_LOCAL_CPU",
-        "LMCACHE_MAX_LOCAL_CPU_SIZE",
-        "LMCACHE_TRACK_USAGE",
-        "LMCACHE_USE_LAYERWISE",
-        "LMCACHE_NUMA_MODE",
-        "LMCACHE_EXTRA_CONFIG",
-        "LMCACHE_LOOKUP_SERVER_WORKER_IDS",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
 
     commands = vllm_adapter._build_cache_env_commands(
         "vllm_ascend",
@@ -84,8 +89,70 @@ def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkey
     assert "CPUOffloadingConnector" not in rendered
 
 
-def test_deepseek_v4_flash_ascend_installs_lmcache_patch(monkeypatch):
+def test_deepseek_v4_flash_ascend_lmcache_auto_size_is_computed_per_card(monkeypatch):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "200")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export LMCACHE_LOCAL_CPU=True" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=15" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=auto" not in rendered
+
+
+def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
+    env_commands = vllm_adapter._build_deepseek_v4_flash_env(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+        },
+    )
+
+    ld_preload = next(cmd for cmd in env_commands if cmd.startswith("export LD_PRELOAD="))
+    assert "${LD_PRELOAD:+" in ld_preload
+    assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in ld_preload
+
+
+def test_deepseek_v4_flash_ascend_v021_defers_lmcache_patch(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0-a2")
+
+    target = wings_entry._resolve_lmcache_install_target(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert target is None
+
+
+def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.22.0-a2")
 
     target = wings_entry._resolve_lmcache_install_target(
         "vllm_ascend",

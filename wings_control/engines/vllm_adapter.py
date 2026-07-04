@@ -769,13 +769,20 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
     """Build vLLM-Ascend 0.21 LMCache dynamic offload env for DeepSeek-V4-Flash."""
     env_commands = ["export PYTHONHASHSEED=0"]
     mem_enabled = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    auto_requested = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() == "auto"
+    resolved_local_cpu, resolved_max_cpu_size = _resolve_lmcache_cpu_env(params)
+
     local_cpu = os.getenv("LMCACHE_LOCAL_CPU", "").strip()
-    if not local_cpu and mem_enabled:
-        local_cpu = "True"
+    if not local_cpu:
+        if resolved_local_cpu:
+            local_cpu = "True" if resolved_local_cpu.lower() == "true" else resolved_local_cpu
+        elif mem_enabled and not auto_requested:
+            local_cpu = "True"
+
     max_cpu_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
     if not max_cpu_size:
-        max_cpu_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
-    if not max_cpu_size and mem_enabled:
+        max_cpu_size = resolved_max_cpu_size
+    if not max_cpu_size and mem_enabled and not auto_requested:
         max_cpu_size = "40"
 
     _append_lmcache_env_export(env_commands, "LMCACHE_TRACK_USAGE", os.getenv("LMCACHE_TRACK_USAGE", "false"))
@@ -1684,7 +1691,7 @@ def _build_deepseek_v4_flash_env(params: Dict[str, Any]) -> List[str]:
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=10",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
         "export HCCL_BUFFSIZE=1024",
         "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
         "export TASK_QUEUE_ENABLE=1",

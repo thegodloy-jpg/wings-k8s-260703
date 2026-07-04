@@ -26,7 +26,7 @@ from core.engine_manager import start_engine_service
 from core.hardware_detect import detect_hardware
 from core.port_plan import PortPlan
 from core.start_args_compat import LaunchArgs
-from core.version_util import normalize_engine_version
+from core.version_util import normalize_engine_version, parse_engine_version_tuple
 from engines.vllm_adapter import (
     resolve_speculative_strategy,
     resolve_sparse_variant,
@@ -93,6 +93,11 @@ _ENGINE_LMCACHE_TARGET_MAP = {
     "vllm": "nvidia-x86",
     "vllm_ascend": "ascend-arm",
 }
+
+# v0.21 DeepSeek-V4-Flash on vllm_ascend uses the built-in dynamic connector
+# for now. Keep this as a narrow version gate so later patch packages can be
+# enabled by removing the version from this set.
+_DEEPSEEK_V4_FLASH_ASCEND_LMCACHE_PATCH_DEFERRED_VERSIONS = {(0, 21)}
 
 
 def _shell_escape_single_quote(value: str) -> str:
@@ -369,6 +374,15 @@ def _is_glm51_nvidia_vllm_merged(engine: str, merged: dict | None) -> bool:
     )
 
 
+def _defer_deepseek_v4_flash_ascend_lmcache_patch(engine: str, merged: dict | None) -> bool:
+    """Return True when v0.21 dynamic LMCache should skip install.py patching."""
+    if engine != "vllm_ascend" or not merged:
+        return False
+    if not _is_deepseek_v4_flash_params(merged):
+        return False
+    return parse_engine_version_tuple() in _DEEPSEEK_V4_FLASH_ASCEND_LMCACHE_PATCH_DEFERRED_VERSIONS
+
+
 def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | None:
     """决定是否安装 LMCache 补丁，并返回目标平台（vllm→nvidia-x86 / vllm_ascend→ascend-arm）。
 
@@ -408,6 +422,13 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
             "--kv_offloading_backend; skipping LMCache patch install despite "
             "ENABLE_KV_OFFLOAD=true."
+        )
+        return None
+
+    if _defer_deepseek_v4_flash_ascend_lmcache_patch(engine, merged):
+        logger.info(
+            "[LMCache] DeepSeek-V4-Flash on vLLM-Ascend 0.21 uses dynamic "
+            "LMCache connector; deferring LMCache patch install."
         )
         return None
 
