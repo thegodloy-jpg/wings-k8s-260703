@@ -2596,15 +2596,18 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
         logger.info("[SmartFeature] offload requested but not in whitelist (engine=%s card=%s) "
                     "-> suppressed (ENABLE_KV_OFFLOAD=false)", engine, card or "(empty)")
 
-    # 投机：有效 = 页面开关 on AND 命中白名单；miss 不产 MTP，回落到后续 suffix 地板。
-    spec_eff = (spec_req and "spec" in feats) or "spec" in forced_feats
+    # 投机：请求开关控制是否产出 speculative_config；白名单只控制是否允许模型专属 MTP。
+    # miss 时保留 enable_speculative_decode=True，让 adapter 通过 _smart_feats 缺少
+    # "spec" 回落到 suffix 地板，而不是在收口层直接关闭投机。
+    spec_whitelisted = "spec" in feats or "spec" in forced_feats
+    spec_eff = spec_req or "spec" in forced_feats
     p["enable_speculative_decode"] = spec_eff
     os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
-    if spec_eff:
+    if spec_eff and spec_whitelisted:
         effective_feats.add("spec")
-    if spec_req and not spec_eff:
+    if spec_req and not spec_whitelisted:
         logger.info("[SmartFeature] spec requested but not in whitelist (engine=%s card=%s) "
-                    "-> suppressed (ENABLE_SPECULATIVE_DECODE=false)", engine, card or "(empty)")
+                    "-> suffix fallback (ENABLE_SPECULATIVE_DECODE=true)", engine, card or "(empty)")
 
     p["_smart_feats"] = sorted(effective_feats)
 
@@ -2613,7 +2616,7 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
         "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix floor 恒产)",
         engine, card or "(empty)", sorted(feats), sorted(effective_feats), sorted(forced_feats),
         sparse_req, sparse_eff, offload_req, offload_eff,
-        spec_req, "spec" in feats,
+        spec_req, spec_whitelisted,
     )
 
 

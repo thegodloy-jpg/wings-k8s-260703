@@ -47,6 +47,16 @@ class _FakeUnknownGlm51Identifier:
         self.model_type = model_type
 
 
+class _FakeQwen2Identifier:
+    model_architecture = "Qwen2ForCausalLM"
+    model_quantize = ""
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
 
@@ -105,6 +115,27 @@ def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num1(monkeyp
     assert '"method": "mtp"' in command
     assert '"num_speculative_tokens": 1' in command
     assert '"enforce_eager": true' in command
+
+
+def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen2Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-R1-Distill-Qwen-1.5B",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": [],
+    }
+
+    assert vllm_adapter.should_append_auto_speculative_config(params) is True
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+
+    assert '"method" : "suffix"' in command
+    assert '"num_speculative_tokens": 5' in command
 
 
 def test_glm51_ascend_indexcache_hf_overrides_enable_index_cache(monkeypatch):

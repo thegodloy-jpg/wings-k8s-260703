@@ -190,9 +190,36 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     assert params["_allowed_smart_feats"] == ["sparse"]
     assert params["_smart_feats"] == ["sparse"]
     assert params["enable_sparse"] is True
-    assert params["enable_speculative_decode"] is False
+    assert params["enable_speculative_decode"] is True
     assert os.environ["ENABLE_SPARSE"] == "true"
-    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
+
+
+def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkeypatch):
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-R1-Distill-Qwen-1.5B",
+        "model_path": "/usr/local/serving/models/",
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "ascend", "count": 1, "details": [{"name": "Ascend910B_64G"}]},
+    )
+
+    assert params["_allowed_smart_feats"] == []
+    assert params["_smart_feats"] == []
+    assert params["enable_sparse"] is False
+    assert params["enable_speculative_decode"] is True
+    assert os.environ["ENABLE_SPARSE"] == "false"
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
 
 
