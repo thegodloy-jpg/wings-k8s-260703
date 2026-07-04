@@ -253,6 +253,15 @@ def test_deepseek_v4_pd_decode_env_matches_official_recipe(tmp_path, monkeypatch
     assert "VLLM_MOONCAKE_BOOTSTRAP_PORT=" not in script
 
 
+def test_deepseek_v4_pd_refreshes_mooncake_linker_cache_without_env_leak(tmp_path, monkeypatch):
+    script = _render_pd_deepseek_v4_script(tmp_path, monkeypatch, "D", _DECODE_IP, 1)
+    exports = _extract_exports(script)
+
+    assert "export LD_LIBRARY_PATH" not in script
+    assert "LD_LIBRARY_PATH" not in exports
+    assert "ldconfig /usr/local/lib >/dev/null 2>&1 || true" in script
+
+
 def test_deepseek_v4_pd_env_does_not_use_generic_env_builders(tmp_path, monkeypatch):
     monkeypatch.setattr(
         vllm_adapter,

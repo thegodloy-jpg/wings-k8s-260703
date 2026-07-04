@@ -3599,6 +3599,10 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
     if "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in strip_env:
         rt_prefix += " VLLM_MOONCAKE_BOOTSTRAP_PORT=$BOOTSTRAP"
 
+    linker_prelude = []
+    if "Mooncake" in connector:
+        linker_prelude.append("ldconfig /usr/local/lib >/dev/null 2>&1 || true")
+
     # fork 主体包进子 shell，使其作为单个可后台化单元被上层监控
     # （wings_entry._strip_exec_and_backgroundify 给末行 ')' 追加 ' &' + ENGINE_PID=$!）。
     # 任一 service 退出 → 子 shell exit 1 → 上层 crash-retry 整 pod 重启（EP all-to-all 语义）。
@@ -3612,7 +3616,7 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
         if "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in strip_env:
             rt_prefix_1 += f" VLLM_MOONCAKE_BOOTSTRAP_PORT={bootstrap_base}"
         single_cmd = f"{rt_prefix_1} {svc_cmd} --port {base_port} --tensor-parallel-size {tp}"
-        return "\n".join(env_lines + [single_cmd]) + "\n"
+        return "\n".join(env_lines + linker_prelude + [single_cmd]) + "\n"
 
     fork_body = [
         "(",
@@ -3638,7 +3642,7 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
         "  exit 1",
         ")",
     ]
-    return "\n".join(env_lines + fork_body) + "\n"
+    return "\n".join(env_lines + linker_prelude + fork_body) + "\n"
 
 
 def build_start_script(params: Dict[str, Any]) -> str:
