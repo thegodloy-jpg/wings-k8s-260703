@@ -12,7 +12,7 @@
     {"engine": "vllm", "name_tokens": ["zhipuai/glm-4.7-fp8", "glm-4.7-fp8"], "card_tokens": ["*"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["minimax/minimax-m2.7", "minimax-m2.7"], "card_tokens": ["*"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm", "name_tokens": ["deepseek-ai/deepseek-v4-flash", "deepseek-v4-flash"], "card_tokens": ["*"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
-    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "0.21", "forced": true},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "0.21"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b"], "arch": "DeepseekV4ForCausalLM", "source": "0.21"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.2-w8a8", "glm-5.2-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/qwen3.6-27b-w8a8", "qwen3.6-27b-w8a8"], "card_tokens": ["910b"], "arch": "Qwen3_5ForConditionalGeneration", "source": "23.6.0"},
@@ -39,7 +39,7 @@
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-4.7-w8a8-floatmtp", "glm-4.7-w8a8-floatmtp"], "card_tokens": ["910b", "910c"], "arch": "Glm4MoeForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/minimax-m2.5-w8a8-quarot", "minimax-m2.5-w8a8-quarot"], "card_tokens": ["910b", "910c"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v3.2-w8a8", "deepseek-v3.2-w8a8"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "23.6.0"},
-    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0", "forced": true},
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"}
   ]
 }

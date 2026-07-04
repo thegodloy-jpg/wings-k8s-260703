@@ -70,7 +70,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset({"spec"})
 
 
-def test_deepseek_v4_flash_a3_forces_whitelisted_smart_features(monkeypatch):
+def test_deepseek_v4_flash_a3_respects_upper_smart_feature_switches_when_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
     monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "false")
@@ -88,16 +88,17 @@ def test_deepseek_v4_flash_a3_forces_whitelisted_smart_features(monkeypatch):
         {"device": "ascend", "details": [{"name": "Ascend910C"}]},
     )
 
-    assert params["_smart_feats"] == ["offload", "spec"]
-    assert params["_forced_smart_feats"] == ["offload", "spec"]
-    assert params["enable_speculative_decode"] is True
+    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_smart_feats"] == []
+    assert params["_forced_smart_feats"] == []
+    assert params["enable_speculative_decode"] is False
     assert params["enable_sparse"] is False
-    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
-    assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
-    assert os.environ["LMCACHE_OFFLOAD"] == "true"
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
+    assert os.environ["LMCACHE_OFFLOAD"] == "false"
 
 
-def test_deepseek_v4_flash_kv_transfer_reuses_effective_offload_from_upstream_model_name(monkeypatch):
+def test_deepseek_v4_flash_kv_transfer_is_not_injected_when_upper_offload_disabled(monkeypatch):
     monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
     monkeypatch.delenv("ENGINE_VERSION", raising=False)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
@@ -120,7 +121,36 @@ def test_deepseek_v4_flash_kv_transfer_reuses_effective_offload_from_upstream_mo
         _FakeDeepSeekV4Info(),
     )
 
+    assert params["model_name"] == "DeepSeek-V4-Flash-w8a8-mtp"
+    assert config["served_model_name"] == "DeepSeek-V4-Flash-w8a8-mtp"
+    assert "kv_transfer_config" not in config
+
+
+def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstream_model_name(monkeypatch):
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "distributed": False,
+        "enable_speculative_decode": False,
+    }
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+    config = config_loader._get_model_specific_config(
+        hardware_env,
+        params,
+        _FakeDeepSeekV4Info(),
+    )
+
     kv_transfer = json.loads(config["kv_transfer_config"])
+    assert params["_smart_feats"] == ["offload"]
     assert params["model_name"] == "DeepSeek-V4-Flash-w8a8-mtp"
     assert config["served_model_name"] == "DeepSeek-V4-Flash-w8a8-mtp"
     assert kv_transfer == {

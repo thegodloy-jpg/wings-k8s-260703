@@ -2555,7 +2555,9 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     if get_pd_role_env():
         p["enable_sparse"] = False
         p["enable_speculative_decode"] = False
+        p["_allowed_smart_feats"] = []
         p["_smart_feats"] = []
+        p["_forced_smart_feats"] = []
         for env_name in ("ENABLE_SPARSE", "SPARSE_ENABLE",
                          "ENABLE_SPECULATIVE_DECODE", "SD_ENABLE",
                          "ENABLE_KV_OFFLOAD", "LMCACHE_OFFLOAD"):
@@ -2574,10 +2576,9 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
 
     feats = resolve_feature_whitelist(engine, name, path, card)
     forced_feats = resolve_forced_feature_whitelist(engine, name, path, card)
-    # stash 供产出口（§2.3 resolve_speculative_strategy）复用：收口点用 hardware_env 解析卡型最准，
-    # 而 adapter 内产出口拿不到 hardware_env、env 兜底可能解析不到卡型（尤其 Ascend）→ 误判 suffix。
-    # 让产出口直接复用收口结论，消除「收口点 vs 产出口」双入口卡型不一致（需求一 §5）。
-    p["_smart_feats"] = sorted(feats)
+    # stash 供产出口（§2.3 resolve_speculative_strategy / LMCache env / connector）复用：
+    # _allowed_smart_feats 记录白名单能力；_smart_feats 记录页面开关+白名单后的有效开启项。
+    p["_allowed_smart_feats"] = sorted(feats)
     p["_forced_smart_feats"] = sorted(forced_feats)
 
     # 记录「请求开关」原值，供收口 req->eff 对照日志（排障白名单收窄结果，需求一 §4 状态监控）。
@@ -2585,10 +2586,14 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     spec_req = bool(p.get("enable_speculative_decode"))
     offload_req = get_lmcache_env()
 
+    effective_feats = set()
+
     # 稀疏：有效 = 开关 on AND 命中白名单（无 forced）
     sparse_eff = (sparse_req and "sparse" in feats) or "sparse" in forced_feats
     p["enable_sparse"] = sparse_eff
     os.environ["ENABLE_SPARSE"] = os.environ["SPARSE_ENABLE"] = "true" if sparse_eff else "false"
+    if sparse_eff:
+        effective_feats.add("sparse")
     if sparse_req and not sparse_eff:
         logger.info("[SmartFeature] sparse requested but not in whitelist (engine=%s card=%s) "
                     "-> suppressed (ENABLE_SPARSE=false)", engine, card or "(empty)")
@@ -2598,23 +2603,29 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     if offload_eff:
         os.environ["ENABLE_KV_OFFLOAD"] = "true"
         os.environ["LMCACHE_OFFLOAD"] = "true"
+        effective_feats.add("offload")
     elif offload_req and "offload" not in feats:
         os.environ["ENABLE_KV_OFFLOAD"] = "false"
         os.environ["LMCACHE_OFFLOAD"] = "false"   # 过渡期兼容旧 ENV 名
         logger.info("[SmartFeature] offload requested but not in whitelist (engine=%s card=%s) "
                     "-> suppressed (ENABLE_KV_OFFLOAD=false)", engine, card or "(empty)")
 
-    # 投机：suffix 地板恒产 → 开关不收口（保持 true 是诚实的）；
-    #   MTP-vs-suffix 由 §2.3 在 resolve_speculative_strategy 内按白名单 gate。
-    # 收口摘要：一行打全三特性 req->eff（spec 不收口，附白名单 gate 结果，suffix 地板恒产）。
-    spec_eff = spec_req or "spec" in forced_feats
+    # 投机：有效 = 页面开关 on AND 命中白名单；miss 不产 MTP，回落到后续 suffix 地板。
+    spec_eff = (spec_req and "spec" in feats) or "spec" in forced_feats
     p["enable_speculative_decode"] = spec_eff
     os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
+    if spec_eff:
+        effective_feats.add("spec")
+    if spec_req and not spec_eff:
+        logger.info("[SmartFeature] spec requested but not in whitelist (engine=%s card=%s) "
+                    "-> suppressed (ENABLE_SPECULATIVE_DECODE=false)", engine, card or "(empty)")
+
+    p["_smart_feats"] = sorted(effective_feats)
 
     logger.info(
-        "[SmartFeature] effective enablement: engine=%s card=%s feats=%s | "
+        "[SmartFeature] effective enablement: engine=%s card=%s allowed=%s effective=%s forced=%s | "
         "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix floor 恒产)",
-        engine, card or "(empty)", sorted(feats),
+        engine, card or "(empty)", sorted(feats), sorted(effective_feats), sorted(forced_feats),
         sparse_req, sparse_eff, offload_req, offload_eff,
         spec_req, "spec" in feats,
     )
