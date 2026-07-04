@@ -493,7 +493,7 @@ _LMCACHE_CONFIG_FILENAME = "lmcache_config.yaml"
 _LMCACHE_SHARED_VOLUME = os.getenv("SHARED_VOLUME_PATH", "/shared-volume")
 
 
-def _build_lmcache_yaml_dict(engine: str) -> dict:
+def _build_lmcache_yaml_dict(engine: str, max_cpu_size: Optional[str] = None) -> dict:
     """根据环境变量构建 LMCache 的 YAML 配置字典。
 
     配置结构参考 LMCache 官方 YAML schema，包含以下可选段：
@@ -524,7 +524,7 @@ def _build_lmcache_yaml_dict(engine: str) -> dict:
 
     # ── local_cpu（仅在 L2 mem=true 时处理）──
     if mem_enabled:
-        max_cpu_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+        max_cpu_size = (max_cpu_size if max_cpu_size is not None else os.getenv("KV_MEM_OFFLOAD_SIZE", "")).strip()
         config["local_cpu"] = True
         if max_cpu_size and max_cpu_size.lower() != "auto":
             try:
@@ -595,7 +595,7 @@ def _need_lmcache_config_yaml() -> bool:
     return False
 
 
-def _write_lmcache_config_yaml(engine: str) -> Optional[str]:
+def _write_lmcache_config_yaml(engine: str, max_cpu_size: Optional[str] = None) -> Optional[str]:
     """生成并写入 LMCache YAML 配置文件到共享卷。
 
     条件：见 _need_lmcache_config_yaml()，覆盖 cold_start / QAT /
@@ -611,7 +611,7 @@ def _write_lmcache_config_yaml(engine: str) -> Optional[str]:
     if not _need_lmcache_config_yaml():
         return None
 
-    config = _build_lmcache_yaml_dict(engine)
+    config = _build_lmcache_yaml_dict(engine, max_cpu_size=max_cpu_size)
     yaml_content = yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     file_path = os.path.join(_LMCACHE_SHARED_VOLUME, _LMCACHE_CONFIG_FILENAME)
@@ -746,6 +746,19 @@ def _resolve_lmcache_cpu_env(params: Optional[Dict[str, Any]]) -> Tuple[str, str
 
     auto_total = resolve_offload_cpu_capacity_gb(params)
     if auto_total is None:
+        if max_cpu_size and max_cpu_size.lower() != "auto":
+            try:
+                n_card = _safe_int(params.get("device_count")) if params else 1
+                n_card = n_card or 1
+                per_card = max(1, int(max_cpu_size) // n_card)
+                logger.info(
+                    "[KVCache Offload] custom CPU per-card = M_offload(%sG) / N_card(%d) = %dG "
+                    "(KV_MEM_OFFLOAD_SIZE).",
+                    max_cpu_size, n_card, per_card,
+                )
+                return local_cpu_value, str(per_card)
+            except ValueError:
+                logger.warning("[KVCache Offload] Invalid KV_MEM_OFFLOAD_SIZE=%r; using raw value.", max_cpu_size)
         return local_cpu_value, max_cpu_size
     if auto_total <= 0:
         # 熔断：容量低于下限 → 不建 CPU 卸载池（offload 退化为无 CPU 池）。
@@ -907,7 +920,7 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_SIZE")
 
     # 任何 LMCache 容量/功能段配置都会触发 YAML 生成并导出路径
-    yaml_path = _write_lmcache_config_yaml(engine)
+    yaml_path = _write_lmcache_config_yaml(engine, max_cpu_size=max_cpu_size)
     if yaml_path:
         env_commands.append(f'export LMCACHE_CONFIG_FILE={shlex.quote(yaml_path)}')
         logger.info("[KVCache Offload] LMCACHE_CONFIG_FILE exported -> %s", yaml_path)
@@ -2378,13 +2391,13 @@ def _force_deepseek_v4_flash_nv_block_size(
 
 
 def _read_lmcache_max_local_cpu_gb() -> Optional[int]:
-    """读取 ``LMCACHE_MAX_LOCAL_CPU_SIZE``（每卡 CPU 卸载内存，GB）。
+    """读取页面传入的 ``LMCACHE_MAX_LOCAL_CPU_SIZE``（GB）。
 
-    仅负责 env 解析，不掺入缺省值/放大策略——后者由各模型 caller 自行决定，
-    因为 V4-Flash（未设→平铺 200）与 Qwen3.5（未设→每卡 200×卡数）口径不同。
+    仅负责 env 解析，不掺入缺省值策略。native offload 会直接复用该 GB 值；
+    只有 LMCache env 渲染路径需要把整节点容量折算成每卡容量。
 
     Returns:
-        int: env 已设且合法时的每卡容量；``None``: 未设或非法（caller 按各自缺省处理）。
+        int: env 已设且合法时的页面容量；``None``: 未设或非法（caller 按各自缺省处理）。
     """
     raw_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
     if not raw_size:
@@ -2422,11 +2435,14 @@ def _offload_parallel_size(params: Dict[str, Any], key: str) -> int:
     return 1
 
 
-def resolve_offload_cpu_capacity_gb(params: Dict[str, Any]) -> Optional[int]:
+def resolve_offload_cpu_capacity_gb(
+    params: Dict[str, Any],
+    size_env_name: str = "KV_MEM_OFFLOAD_SIZE",
+) -> Optional[int]:
     """C4：auto 模式反向预算「本节点总」CPU 卸载容量 M_offload (GiB)。需求一 §3.0。
 
-    判定（靠字面值 =auto）：
-        KV_MEM_OFFLOAD_SIZE == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto；
+    判定（靠 size_env_name 对应 env 的字面值 =auto；默认 KV_MEM_OFFLOAD_SIZE）：
+        <size_env_name> == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto；
         否则（custom 带 GB 值 / 无 POD_MEM_SIZE）→ 返回 None，调用方走原透传逻辑。
 
     公式（M_swap=0 由 swap_space=0 原子绑定保证）：
@@ -2440,10 +2456,10 @@ def resolve_offload_cpu_capacity_gb(params: Dict[str, Any]) -> Optional[int]:
         0:    auto 命中但 M_offload < 熔断下限 → 调用方不建卸载池。
         >0:   auto「本节点总」容量 M_offload。
     """
-    max_cpu = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+    max_cpu = os.getenv(size_env_name, "").strip()
     pod_mem = os.getenv("AVAILABLE_POD_MEM_SIZE", "").strip()
 
-    # 判定: ENABLE_KV_MEM_OFFLOAD=true 且 KV_MEM_OFFLOAD_SIZE == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto 自算
+    # 判定: ENABLE_KV_MEM_OFFLOAD=true 且 size_env_name 对应 env == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto 自算
     if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
         return None
     if max_cpu.lower() != "auto":
@@ -2478,46 +2494,50 @@ def _resolve_v4_flash_offload_gb(params: Dict[str, Any]) -> int:
       * **auto**（KV_MEM_OFFLOAD_SIZE=auto + AVAILABLE_POD_MEM_SIZE 非空）：
         直接用反向预算「本节点总」M_offload，native **不除卡数**（需求一 §3.0）；
       * ``KV_MEM_OFFLOAD_SIZE`` 未设/非法 → 200（默认平铺，不乘）；
-      * **V4-Flash**：该值视作「每卡」，乘本节点卡数 ``device_count``；
-      * V4-Pro / 其它：直接使用该值（维持原行为）。
+      * 自定义值来自页面，单位 GB，native **直接复用**，不按卡数放大。
     """
-    # auto 命中且未熔断（>0）：native 复用整节点总额 M_offload，不除卡数。
+    # auto 命中：native 复用整节点总额 M_offload，不除卡数；0 表示公式熔断结果。
     auto_total = resolve_offload_cpu_capacity_gb(params)
-    if auto_total:
+    if auto_total is not None:
         logger.info("[KVCache Offload] native auto size = M_offload(%dG) (整节点，不除卡数).", auto_total)
         return int(auto_total)
-    _size_env = os.getenv("KV_MEM_OFFLOAD_SIZE")
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     if raw_size.lower() == "auto":
         raw_size = ""  # auto 已由上面 auto_total 处理，此处兜底回退缺省
     try:
-        per_card_gb = int(raw_size) if raw_size else None
+        size_gb = int(raw_size) if raw_size else None
     except ValueError:
         logger.warning(
             "[DeepSeek-V4 KV Offload] Invalid KV_MEM_OFFLOAD_SIZE=%r; "
             "falling back to 200 GB.", raw_size,
         )
-        per_card_gb = None
-    if per_card_gb is None:
+        size_gb = None
+    if size_gb is None:
         return 200
-    if _is_deepseek_v4_flash_params(params):
-        device_count = _safe_int(params.get("device_count")) or 1
-        return int(device_count * per_card_gb)
-    return int(per_card_gb)
+    return int(size_gb)
 
 
 def _resolve_qwen35_nvfp4_offload_gb(params: Dict[str, Any]) -> int:
     """Qwen3.5-397B-A17B-NVFP4 native KV 卸载容量(GB)。
 
-    取值规则（与 V4-Flash 同口径）：
-      * ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 未设/非法 → 200（整节点平铺，不乘卡数；
-      * 已设 → 视作「每卡」，乘本节点卡数 ``device_count``。
+    取值规则：
+      * ``LMCACHE_MAX_LOCAL_CPU_SIZE=auto`` → 复用原内存卸载公式，native 直接取整节点 GB；
+      * ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 未设/非法 → 200；
+      * 已设 → 页面传入的整节点 GB 值，native 直接复用，不按卡数放大。
     """
-    per_card_gb = _read_lmcache_max_local_cpu_gb()
-    if per_card_gb is None:
+    raw_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
+    if raw_size.lower() == "auto":
+        auto_total = resolve_offload_cpu_capacity_gb(
+            params,
+            size_env_name="LMCACHE_MAX_LOCAL_CPU_SIZE",
+        )
+        if auto_total is not None:
+            return int(auto_total)
         return 200
-    device_count = _safe_int(params.get("device_count")) or 1
-    return device_count * int(per_card_gb)
+    size_gb = _read_lmcache_max_local_cpu_gb()
+    if size_gb is None:
+        return 200
+    return int(size_gb)
 
 
 _GLM5_A2_ADDITIONAL_CONFIG: Dict[str, Any] = {
@@ -3152,15 +3172,21 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     if strategy == "mtp" or strategy.endswith("_mtp"):
         logger.info("[AdvFeature-SpecDecode] Architecture %s → MTP strategy (%s)",
                     model_info.model_architecture, strategy)
+        is_v4_flash = _is_deepseek_v4_flash_params(params, model_info)
+        is_v4_flash_pro5000 = (
+            engine == "vllm"
+            and is_deepseek_v4_flash_rtx_pro_5000(params, engine)
+        )
         if model_info.model_architecture == "Glm4MoeForCausalLM" and _is_w8a8_quantize(model_info.model_quantize):
             strategy = "mtp"
         # [V4-Flash-NV-Day0] NV 上 V4-Flash 用裸 "mtp"；Ascend 维持 "deepseek_mtp"
         # （官方模板要求，见 _resolve_mtp_method 注释），故按 engine 收口覆盖。
-        if engine in {"vllm", "vllm_ascend"} and strategy.endswith("_mtp") and _is_deepseek_v4_flash_params(params, model_info):
+        if engine in {"vllm", "vllm_ascend"} and strategy.endswith("_mtp") and is_v4_flash:
             strategy = "mtp"
         speculative_config_temp.append(f'"method": "{strategy}"')
-        # DeepSeek-V4-Pro / V4-Flash / GLM-5/5.1 官方推荐 num=1；默认不启用，只有
+        # DeepSeek-V4-Pro / Ascend V4-Flash / GLM-5/5.1 官方推荐 num=1；默认不启用，只有
         # enable_speculative_decode=True 时由 launcher 合成。
+        # V4-Flash + Pro5000 follows the tokenbox NVIDIA recipe: method=mtp, num=2.
         # 其余 MTP（GLM-4.7 / 通用 DeepSeek-V3）保持 num=3。
         # GLM-5.2 与 GLM-5/5.1 同架构(GlmMoeDsa) 但官方推荐 num=3，按名称标识切出，
         # 不落入上面的 num=1 分支（GLM-5/5.1 维持 num=1 不回归）。
@@ -3169,10 +3195,12 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
             params.get("model_name"), params.get("model_path"))
         _num1_arch = (
             _is_deepseek_v4_pro_params(params)
-            or _is_deepseek_v4_flash_params(params)
+            or is_v4_flash
             or model_info.model_architecture == "GlmMoeDsaForCausalLM"
         )
-        if not glm52_ascend and _num1_arch:
+        if is_v4_flash_pro5000:
+            speculative_config_temp.append('"num_speculative_tokens": 2')
+        elif not glm52_ascend and _num1_arch:
             speculative_config_temp.append('"num_speculative_tokens": 1')
         else:
             speculative_config_temp.append('"num_speculative_tokens": 3')
@@ -3180,7 +3208,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         # 会把 MTP 头一并捕获，触发 MTE 越界类崩溃（参见 GLM-5 aclgraph 案例）。这里只让
         # MTP/草稿头退回 eager（spec config 内部开关），主模型仍享受全图编译性能；与顶层
         # --enforce-eager（ASCEND_ENFORCE_EAGER 控制、整模型退 eager）是两个不同的旋钮。
-        if _is_qwen35_arch(model_info.model_architecture) or _is_deepseek_v4_flash_params(params, model_info):
+        if _is_qwen35_arch(model_info.model_architecture) or (is_v4_flash and not is_v4_flash_pro5000):
             speculative_config_temp.append('"enforce_eager": true')
         if model_info.model_architecture == "Glm4MoeForCausalLM" and _is_w8a8_quantize(model_info.model_quantize):
             speculative_config_temp.append('"speculative_token_range": "256,512"')

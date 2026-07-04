@@ -46,6 +46,7 @@ from utils.model_utils import (
     INDEXCACHE_ARCHS,
     is_glm_moe_dsa_glm51,
     feature_allowed,
+    is_qwen3_5_397b_nvfp4_vllm,
 )
 
 logger = logging.getLogger(__name__)
@@ -405,6 +406,14 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
     if merged and engine == "vllm" and _is_deepseek_v4_flash_params(merged):
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
+            "--kv-offloading-backend; skipping LMCache patch install despite "
+            "ENABLE_KV_OFFLOAD=true."
+        )
+        return None
+
+    if merged and engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(merged, engine):
+        logger.info(
+            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native "
             "--kv-offloading-backend; skipping LMCache patch install despite "
             "ENABLE_KV_OFFLOAD=true."
         )

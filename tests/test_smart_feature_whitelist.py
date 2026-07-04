@@ -11,6 +11,7 @@ from utils.device_utils import resolve_card_token  # noqa: E402
 from core import config_loader  # noqa: E402
 from core.hardware_detect import detect_hardware  # noqa: E402
 from core.version_util import resolve_card_model  # noqa: E402
+from engines import vllm_adapter  # noqa: E402
 
 
 class _FakeDeepSeekV4Info:
@@ -25,6 +26,16 @@ class _FakeDeepSeekV4Info:
     @staticmethod
     def identify_model_type():
         return "llm"
+
+
+class _FakeDeepSeekV4Identifier:
+    model_architecture = "DeepseekV4ForCausalLM"
+    model_quantize = "fp4"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
 
 
 def test_default_smart_feature_whitelist_file_is_loaded():
@@ -53,7 +64,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
         "/models/deepseek-ai/DeepSeek-V4-Flash",
-        "pro5000-72",
+        "rtxpro5000-72",
     ) == frozenset({"spec", "sparse"})
 
     whitelist = json.loads(model_utils._SMART_WHITELIST_PATH.read_text(encoding="utf-8"))
@@ -74,7 +85,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         for token in entry.get("card_tokens", [])
     ]
     assert "h20-141" in nvidia_card_tokens
-    assert "pro5000-72" in nvidia_card_tokens
+    assert "rtxpro5000-72" in nvidia_card_tokens
     for non_chip_token in (
         "nh02",
         "nrp0500",
@@ -92,7 +103,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "vllm",
         "Qwen3.5-397B-A17B-NVFP4",
         "/models/Qwen3.5-397B-A17B-NVFP4",
-        "pro5000-72",
+        "rtxpro5000-72",
     ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -104,13 +115,13 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "vllm",
         "Qwen/Qwen3.5-397B-A17B",
         "/models/Qwen/Qwen3.5-397B-A17B",
-        "pro5000-72",
+        "rtxpro5000-72",
     ) == frozenset({"spec", "sparse"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.5-397B-A17B",
         "/models/Qwen3.5-397B-A17B",
-        "pro5000-72",
+        "rtxpro5000-72",
     ) == frozenset({"spec", "sparse"})
 
     assert model_utils.resolve_feature_whitelist(
@@ -129,13 +140,13 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "vllm",
         "ZhipuAI/GLM-4.7-FP8",
         "/models/ZhipuAI/GLM-4.7-FP8",
-        "pro5000-72",
+        "rtxpro5000-72",
     ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "MiniMax/MiniMax-M2.7",
         "/models/MiniMax/MiniMax-M2.7",
-        "pro5000-72",
+        "rtxpro5000-72",
     ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -282,35 +293,39 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
 
 
-def test_nvidia_card_token_uses_chip_name_not_server_or_board_code():
+def test_nvidia_card_token_only_normalizes_chip_names():
     assert resolve_card_token({
         "device": "nvidia",
-        "details": [{"name": "NH02(141GB) / G8600 V7"}],
+        "details": [{"name": "NVIDIA H20 141GB"}],
     }) == "h20-141"
     assert resolve_card_token({
         "device": "nvidia",
-        "details": [{"name": "NVIDIA H20 NH02 141GB G8600 V7"}],
-    }) == "h20-141"
-    assert resolve_card_token({
-        "device": "nvidia",
-        "details": [{"name": "NRP0500(72GB) / G6550 V8"}],
-    }) == "pro5000-72"
+        "details": [{"name": "h20 96 gb"}],
+    }) == "h20-96"
     assert resolve_card_token({
         "device": "nvidia",
         "details": [{"name": "RTX PRO 5000 72GB"}],
-    }) == "pro5000-72"
+    }) == "rtxpro5000-72"
     assert resolve_card_token({
         "device": "nvidia",
         "details": [{"name": "NVIDIA RTX PRO 5000 72GB Blackwell"}],
-    }) == "pro5000-72"
+    }) == "rtxpro5000-72"
     assert resolve_card_token({
         "device": "nvidia",
-        "hardware_family": "NH02(141GB) / G8600 V7",
-    }) == "h20-141"
+        "details": [{"name": "rTx-pro_5000 72 gb"}],
+    }) == "rtxpro5000-72"
     assert resolve_card_token({
         "device": "nvidia",
-        "hardware_family": "NRP0500(72GB) / G6550 V8",
-    }) == "pro5000-72"
+        "hardware_family": "RTX PRO 5000 72GB",
+    }) == "rtxpro5000-72"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "NH02(141GB) / G8600 V7"}],
+    }) == "nh02(141gb) / g8600 v7"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "NRP0500(72GB) / G6550 V8"}],
+    }) == "nrp0500(72gb) / g6550 v8"
 
 
 def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkeypatch):
@@ -377,7 +392,7 @@ def test_resolve_card_model_uses_hardware_env_only(monkeypatch):
     ) == "rtx_pro_5000_72G"
 
 
-def test_deepseek_v4_flash_pro5000_detection_uses_source_hardware_only(monkeypatch):
+def test_deepseek_v4_flash_pro5000_detection_uses_source_hardware_or_resolved_token(monkeypatch):
     monkeypatch.setenv("WINGS_DEVICE_NAME", "NVIDIA RTX PRO 5000 72GB Blackwell")
 
     source = {
@@ -391,6 +406,27 @@ def test_deepseek_v4_flash_pro5000_detection_uses_source_hardware_only(monkeypat
         **source,
         "hardware_family": "NVIDIA RTX PRO 5000 72GB Blackwell",
     }) is True
+    assert model_utils.is_deepseek_v4_flash_rtx_pro_5000({
+        **source,
+        "_smart_card_token": "rtxpro5000-72",
+    }) is True
+
+
+def test_deepseek_v4_flash_pro5000_token_drives_nv_parallel_defaults(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+
+    command = vllm_adapter.build_start_command({
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["spec", "sparse"],
+    })
+
+    assert " --tensor-parallel-size 4" in f" {command}"
+    assert " --data-parallel-size 2" in f" {command}"
 
 
 def test_final_device_count_uses_explicit_launch_value_in_full_mode():

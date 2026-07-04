@@ -81,13 +81,36 @@ def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkey
 
     rendered = "\n".join(commands)
     assert "export LMCACHE_LOCAL_CPU=True" in rendered
-    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=40" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=5" in rendered
     assert "export LMCACHE_TRACK_USAGE=false" in rendered
     assert "export LMCACHE_USE_LAYERWISE=False" in rendered
     assert "export LMCACHE_NUMA_MODE=auto" in rendered
     assert "export LMCACHE_CHUNK_SIZE=1024" in rendered
     assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=0,1,2,3" in rendered
     assert "CPUOffloadingConnector" not in rendered
+
+
+def test_lmcache_custom_size_is_computed_per_card(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.setattr(vllm_adapter, "_write_lmcache_config_yaml", lambda engine, max_cpu_size=None: None)
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm",
+        {
+            "engine": "vllm",
+            "model_name": "GLM-4.7-FP8",
+            "model_path": "/models/ZhipuAI/GLM-4.7-FP8",
+            "model_type": "llm",
+            "device_count": 8,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export KV_MEM_OFFLOAD_SIZE=25" in rendered
 
 
 def test_deepseek_v4_flash_ascend_lmcache_worker_ids_follow_tensor_parallel_size(monkeypatch):
@@ -304,6 +327,125 @@ def test_qwen35_nvfp4_uses_native_kv_offload_cli(monkeypatch):
     )
 
     assert command == " --kv-offloading-backend native --kv-offloading-size 200"
+
+
+def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "200")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 200"
+
+
+def test_qwen35_nvfp4_native_offload_auto_uses_formula_without_per_card_scaling(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 121"
+
+
+def test_deepseek_v4_flash_native_offload_reuses_page_size_without_per_card_scaling(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
+    monkeypatch.delenv("AVAILABLE_POD_MEM_SIZE", raising=False)
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+            "device_count": 8,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 200"
+
+
+def test_deepseek_v4_flash_native_offload_auto_uses_formula_without_per_card_scaling(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 121"
+
+
+def test_deepseek_v4_flash_native_offload_auto_reuses_formula_floor(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 0"
+
+
+def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    target = wings_entry._resolve_lmcache_install_target(
+        "vllm",
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "_smart_feats": ["spec", "offload"],
+        },
+    )
+
+    assert target is None
 
 
 def test_deepseek_v4_flash_pro5000_without_offload_whitelist_omits_native_kv_offload_cli(monkeypatch):

@@ -277,20 +277,6 @@ def is_h20_gpu(total_memory: float, tolerance_gb: float = 10.0) -> str:
     return ""
 
 
-def _normalize_nvidia_card_token(name: str) -> str:
-    text = (name or "").strip().lower()
-    compact = re.sub(r"[^a-z0-9]+", "", text)
-    if ("nh02" in compact or "h20" in compact) and "141" in compact:
-        return "h20-141"
-    if ("nh02" in compact or "h20" in compact) and "96" in compact:
-        return "h20-96"
-    if ("nrp0500" in compact or ("pro5000" in compact and "rtx" in compact)) and "72" in compact:
-        return "pro5000-72"
-    if ("nrp0500" in compact or ("pro5000" in compact and "rtx" in compact)) and "48" in compact:
-        return "pro5000-48"
-    return ""
-
-
 def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     """返回小写卡型标识，用于 Smart 三特性白名单匹配。
 
@@ -335,9 +321,15 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
                 name = hw_family.lower()
     name = (name or "").strip().lower()
     if str((hardware_env or {}).get("device") or "").lower() == "nvidia":
-        nvidia_token = _normalize_nvidia_card_token(name)
-        if nvidia_token:
-            return nvidia_token
+        compact = re.sub(r"[^a-z0-9]+", "", name)
+        if "h20" in compact and "141" in compact:
+            return "h20-141"
+        if "h20" in compact and "96" in compact:
+            return "h20-96"
+        if "rtxpro5000" in compact and "72" in compact:
+            return "rtxpro5000-72"
+        if "rtxpro5000" in compact and "48" in compact:
+            return "rtxpro5000-48"
     if not name:
         from core.version_util import engine_version_platform
         platform = engine_version_platform() or ""

@@ -353,7 +353,8 @@ def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[s
     三者同时满足才命中（与 nvidia_default.json 的 rtx_pro_5000_72G 配置块选择同口径）：
       1. engine == "vllm"
       2. model_name/model_path 含 deepseek-v4-flash 标识（覆盖 -w8a8-mtp 等后缀）
-      3. 硬件为 rtx_pro_5000_72G（source.hardware_family 或 device_details/details）
+      3. 硬件为 rtx_pro_5000_72G（source.hardware_family/device_details/details，
+         或 loader 已解析出的 _smart_card_token=rtxpro5000-72）
 
     ``source`` 须含 engine / model_name / model_path 键（ctx 与 params 同构）；
     ``engine`` 参数可选，source 缺 engine 时用它兜底。
@@ -372,6 +373,9 @@ def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[s
             break
     if not model_hit:
         return False
+    card_token = str(src.get("_smart_card_token") or src.get("card_token") or "").lower()
+    if "rtxpro5000-72" in card_token:
+        return True
     hardware_texts = [str(src.get("hardware_family") or "")]
     for detail in src.get("device_details") or src.get("details") or []:
         if isinstance(detail, dict):

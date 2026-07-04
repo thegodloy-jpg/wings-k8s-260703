@@ -114,9 +114,8 @@ def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypat
     assert "deepseek_mtp" not in command
 
 
-def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num1(monkeypatch):
+def test_deepseek_v4_flash_pro5000_vllm_speculative_config_matches_tokenbox(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
-    monkeypatch.setenv("WINGS_DEVICE_NAME", "NVIDIA RTX PRO 5000 72GB Blackwell")
 
     command = vllm_adapter.build_speculative_cmd(
         {
@@ -127,13 +126,14 @@ def test_deepseek_v4_flash_pro5000_vllm_speculative_config_uses_mtp_num1(monkeyp
             "enable_speculative_decode": True,
             "speculative_decode_model_path": "none",
             "_smart_feats": ["spec", "sparse"],
+            "_smart_card_token": "rtxpro5000-72",
         },
         "vllm",
     )
 
     assert '"method": "mtp"' in command
-    assert '"num_speculative_tokens": 1' in command
-    assert '"enforce_eager": true' in command
+    assert '"num_speculative_tokens": 2' in command
+    assert '"enforce_eager": true' not in command
 
 
 def test_qwen35_nvfp4_native_offload_keeps_mtp_strategy(monkeypatch):

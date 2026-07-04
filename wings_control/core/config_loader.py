@@ -3314,7 +3314,7 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
             and hardware_env.get("device") == "nvidia"
             and engine == "vllm"
             and not cmd_known_params.get("distributed")
-            and model_name_lower == "deepseek-v4-flash"
+            and _is_deepseek_v4_flash_lookup([model_name_lower])
         )
         scenario = _SpecialEngineScenario(
             deepseek_sglang_nvidia=is_deepseek_sglang_nvidia,

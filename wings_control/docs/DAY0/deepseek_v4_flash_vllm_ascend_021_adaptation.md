@@ -106,14 +106,14 @@ Therefore the smart-feature whitelist must include DeepSeek-V4-Flash under both:
 Offload env mapping:
 
 - upper switch `ENABLE_KV_MEM_OFFLOAD=true` maps to `LMCACHE_LOCAL_CPU=True`
-- upper size `KV_MEM_OFFLOAD_SIZE=40` maps to `LMCACHE_MAX_LOCAL_CPU_SIZE=40`
+- upper size `KV_MEM_OFFLOAD_SIZE=40` maps to per-card `LMCACHE_MAX_LOCAL_CPU_SIZE=5` on 8 cards
 
 Default LMCache env:
 
 ```bash
 export PYTHONHASHSEED=0
 export LMCACHE_TRACK_USAGE=false
-export LMCACHE_MAX_LOCAL_CPU_SIZE=40
+export LMCACHE_MAX_LOCAL_CPU_SIZE=5
 export LMCACHE_LOCAL_CPU=True
 export LMCACHE_LOG_LEVEL=INFO
 export LMCACHE_USE_LAYERWISE=False

@@ -31,6 +31,54 @@ def _as_dict(value):
     return value
 
 
+def test_deepseek_v4_flash_repo_name_selects_pro5000_vllm_defaults():
+    arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV4ForCausalLM"]
+    scenario = config_loader._SpecialEngineScenario(
+        deepseek_v4_flash_vllm_nvidia=True,
+    )
+
+    config = config_loader._match_model_engine_config(
+        arch_dict,
+        "deepseek-ai/deepseek-v4-flash",
+        "vllm",
+        scenario,
+        _FakeDeepSeekV4Info(),
+        {
+            "device": "nvidia",
+            "hardware_family": "NVIDIA RTX PRO 5000 72GB Blackwell",
+        },
+    )
+
+    assert config["use_vllm_serve"] is True
+    assert config["attention_backend"] == "FLASHMLA_SPARSE_DSV4"
+    assert "rtx_pro_5000_72G" not in config
+
+
+def test_deepseek_v4_flash_repo_name_gets_pro5000_defaults_through_real_selector():
+    params = config_loader._get_model_specific_config(
+        {
+            "device": "nvidia",
+            "count": 8,
+            "details": [{"name": "NVIDIA RTX PRO 5000 72GB Blackwell"}],
+            "hardware_family": "NVIDIA RTX PRO 5000 72GB Blackwell",
+        },
+        {
+            "engine": "vllm",
+            "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+            "model_type": "llm",
+            "distributed": False,
+            "device_count": 8,
+        },
+        _FakeDeepSeekV4Info(),
+    )
+
+    assert params["use_vllm_serve"] is True
+    assert params["attention_backend"] == "FLASHMLA_SPARSE_DSV4"
+    assert "default" not in params
+    assert "rtx_pro_5000_72G" not in params
+
+
 def test_device_default_config_loads_device_file_directly(tmp_path, monkeypatch):
     _write_json(
         tmp_path / "nvidia_default.json",
