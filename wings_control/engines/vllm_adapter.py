@@ -493,7 +493,11 @@ _LMCACHE_CONFIG_FILENAME = "lmcache_config.yaml"
 _LMCACHE_SHARED_VOLUME = os.getenv("SHARED_VOLUME_PATH", "/shared-volume")
 
 
-def _build_lmcache_yaml_dict(engine: str, max_cpu_size: Optional[str] = None) -> dict:
+def _build_lmcache_yaml_dict(
+    engine: str,
+    max_cpu_size: Optional[str] = None,
+    local_cpu_enabled: Optional[bool] = None,
+) -> dict:
     """根据环境变量构建 LMCache 的 YAML 配置字典。
 
     配置结构参考 LMCache 官方 YAML schema，包含以下可选段：
@@ -512,7 +516,11 @@ def _build_lmcache_yaml_dict(engine: str, max_cpu_size: Optional[str] = None) ->
     config: dict = {}
 
     # ── L2 门控（需求一 §A.1）──
-    mem_enabled = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    mem_enabled = (
+        local_cpu_enabled
+        if local_cpu_enabled is not None
+        else os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    )
     disk_enabled = os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true"
 
     # ── chunk_size ──
@@ -571,7 +579,7 @@ def _build_lmcache_yaml_dict(engine: str, max_cpu_size: Optional[str] = None) ->
     return config
 
 
-def _need_lmcache_config_yaml() -> bool:
+def _need_lmcache_config_yaml(local_cpu_enabled: Optional[bool] = None) -> bool:
     """判断是否需要生成 LMCache YAML 配置文件。
 
     触发条件（任一满足即生成）：
@@ -588,14 +596,21 @@ def _need_lmcache_config_yaml() -> bool:
     """
     if get_cold_start_env() or get_qat_env():
         return True
-    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true":
+    if (
+        local_cpu_enabled is not False
+        and os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    ):
         return True
     if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true":
         return True
     return False
 
 
-def _write_lmcache_config_yaml(engine: str, max_cpu_size: Optional[str] = None) -> Optional[str]:
+def _write_lmcache_config_yaml(
+    engine: str,
+    max_cpu_size: Optional[str] = None,
+    local_cpu_enabled: Optional[bool] = None,
+) -> Optional[str]:
     """生成并写入 LMCache YAML 配置文件到共享卷。
 
     条件：见 _need_lmcache_config_yaml()，覆盖 cold_start / QAT /
@@ -608,10 +623,14 @@ def _write_lmcache_config_yaml(engine: str, max_cpu_size: Optional[str] = None) 
     Returns:
         str | None: 写入成功返回文件路径，无需写入或失败返回 None
     """
-    if not _need_lmcache_config_yaml():
+    if not _need_lmcache_config_yaml(local_cpu_enabled=local_cpu_enabled):
         return None
 
-    config = _build_lmcache_yaml_dict(engine, max_cpu_size=max_cpu_size)
+    config = _build_lmcache_yaml_dict(
+        engine,
+        max_cpu_size=max_cpu_size,
+        local_cpu_enabled=local_cpu_enabled,
+    )
     yaml_content = yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     file_path = os.path.join(_LMCACHE_SHARED_VOLUME, _LMCACHE_CONFIG_FILENAME)
@@ -778,6 +797,21 @@ def _resolve_lmcache_cpu_env(params: Optional[Dict[str, Any]]) -> Tuple[str, str
     return local_cpu_value, str(per_card)
 
 
+def _is_lmcache_auto_cpu_floor_disabled(
+    params: Optional[Dict[str, Any]],
+    local_cpu_value: str,
+    max_cpu_size: str,
+) -> bool:
+    """Return True when auto CPU capacity is below the minimum and must stay disabled."""
+    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
+        return False
+    if os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() != "auto":
+        return False
+    if local_cpu_value or max_cpu_size:
+        return False
+    return resolve_offload_cpu_capacity_gb(params or {}) == 0
+
+
 def _resolve_offload_backend(params: Optional[Dict[str, Any]]) -> Tuple[str, str]:
     """LMCache 后端选择，返回 ``(backend, cpu_mode)``。
 
@@ -818,9 +852,16 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
     kv_mem_size_authoritative = mem_enabled and kv_mem_size_set
     default_cpu_pool = offload_enabled and not mem_explicitly_disabled and not auto_requested
     resolved_local_cpu, resolved_max_cpu_size = _resolve_lmcache_cpu_env(params)
+    auto_cpu_floor_disabled = _is_lmcache_auto_cpu_floor_disabled(
+        params,
+        resolved_local_cpu,
+        resolved_max_cpu_size,
+    )
 
     local_cpu = os.getenv("LMCACHE_LOCAL_CPU", "").strip()
-    if not local_cpu:
+    if auto_cpu_floor_disabled:
+        local_cpu = ""
+    elif not local_cpu:
         if resolved_local_cpu:
             local_cpu = "True" if resolved_local_cpu.lower() == "true" else resolved_local_cpu
         elif mem_enabled or default_cpu_pool:
@@ -915,6 +956,11 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
 
     # C4：auto 模式反向预算并写回「均卡」CPU 容量（LMCache 每 rank 一池，需 per-card）。需求一 §3.0。
     local_cpu_value, max_cpu_size = _resolve_lmcache_cpu_env(params)
+    auto_cpu_floor_disabled = _is_lmcache_auto_cpu_floor_disabled(
+        params,
+        local_cpu_value,
+        max_cpu_size,
+    )
     if local_cpu_value or max_cpu_size:
         _append_lmcache_env_export(env_commands, "ENABLE_KV_MEM_OFFLOAD", local_cpu_value or "true")
         _append_lmcache_env_export(env_commands, "KV_MEM_OFFLOAD_SIZE", max_cpu_size)
@@ -925,7 +971,11 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_SIZE")
 
     # 任何 LMCache 容量/功能段配置都会触发 YAML 生成并导出路径
-    yaml_path = _write_lmcache_config_yaml(engine, max_cpu_size=max_cpu_size)
+    yaml_path = _write_lmcache_config_yaml(
+        engine,
+        max_cpu_size=max_cpu_size,
+        local_cpu_enabled=False if auto_cpu_floor_disabled else None,
+    )
     if yaml_path:
         env_commands.append(f'export LMCACHE_CONFIG_FILE={shlex.quote(yaml_path)}')
         logger.info("[KVCache Offload] LMCACHE_CONFIG_FILE exported -> %s", yaml_path)
