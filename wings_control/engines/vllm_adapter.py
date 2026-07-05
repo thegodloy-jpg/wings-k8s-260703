@@ -814,6 +814,8 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
         and mem_offload_raw.strip().lower() in {"false", "0", "no", "off"}
     )
     auto_requested = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() == "auto"
+    kv_mem_size_set = bool(os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip())
+    kv_mem_size_authoritative = mem_enabled and kv_mem_size_set
     default_cpu_pool = offload_enabled and not mem_explicitly_disabled and not auto_requested
     resolved_local_cpu, resolved_max_cpu_size = _resolve_lmcache_cpu_env(params)
 
@@ -824,10 +826,13 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
         elif mem_enabled or default_cpu_pool:
             local_cpu = "True"
 
-    max_cpu_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
-    if not max_cpu_size:
+    if kv_mem_size_authoritative:
         max_cpu_size = resolved_max_cpu_size
-    if not max_cpu_size and (mem_enabled or default_cpu_pool):
+    else:
+        max_cpu_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
+        if not max_cpu_size:
+            max_cpu_size = resolved_max_cpu_size
+    if not max_cpu_size and (mem_enabled or default_cpu_pool) and not kv_mem_size_authoritative:
         max_cpu_size = "40"
 
     _append_lmcache_env_export(env_commands, "LMCACHE_TRACK_USAGE", os.getenv("LMCACHE_TRACK_USAGE", "false"))

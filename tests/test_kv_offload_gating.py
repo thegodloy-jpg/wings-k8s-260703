@@ -242,6 +242,34 @@ def test_deepseek_v4_flash_ascend_lmcache_auto_size_treats_available_pod_mem_as_
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=27179" not in rendered
 
 
+def test_deepseek_v4_flash_ascend_custom_kv_mem_size_wins_over_lmcache_size(monkeypatch):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "21")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "262144")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "true")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    rendered = "\n".join(commands)
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=10" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=21" not in rendered
+
+
 def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
     env_commands = vllm_adapter._build_deepseek_v4_flash_env(
         {
