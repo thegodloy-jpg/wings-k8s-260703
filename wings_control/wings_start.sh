@@ -385,7 +385,11 @@ fi
 # 注意: /opt 必须位于 APP_WORKDIR 之前，否则 wings_control.py 文件
 # 会遮蔽 /opt/wings_control 包（通过符号链接），导致 'wings_control' 被识别为
 # 模块文件而非包，引发 ModuleNotFoundError
-export PYTHONPATH="${PYTHONPATH:-/opt}:${APP_WORKDIR:-/opt/wings-control}"
+# Clear application bytecode before Python imports launcher modules. The app is
+# exposed through both the flattened workdir and the /opt package alias.
+find "${APP_WORKDIR:-/opt/wings-control}" "${WINGS_PACKAGE_DIR:-/opt/wings_control}" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+
+export PYTHONPATH="/opt:${APP_WORKDIR:-/opt/wings-control}${PYTHONPATH:+:${PYTHONPATH}}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 
