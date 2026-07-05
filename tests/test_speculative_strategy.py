@@ -209,6 +209,27 @@ def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):
     assert '"num_speculative_tokens": 5' in command
 
 
+def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "GLM-5.1-w8a8",
+        "model_path": "/models/GLM-5.1-w8a8",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["sparse", "spec"],
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+
+    assert '"method": "deepseek_mtp"' in command
+    assert '"num_speculative_tokens": 1' in command
+    assert "suffix" not in command
+
+
 def test_glm51_ascend_indexcache_hf_overrides_enable_index_cache(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
 

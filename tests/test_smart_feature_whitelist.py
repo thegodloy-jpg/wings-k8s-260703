@@ -168,6 +168,18 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/Qwen3.6-35B-A3B",
         "910c",
     ) == frozenset({"spec"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Eco-Tech/GLM-5.1-w8a8",
+        "/models/Eco-Tech/GLM-5.1-w8a8",
+        "910b",
+    ) == frozenset({"spec", "sparse"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Eco-Tech/GLM-5.1-w8a8",
+        "/models/Eco-Tech/GLM-5.1-w8a8",
+        "910c",
+    ) == frozenset({"spec", "sparse"})
 
 
 def test_deepseek_v4_flash_a3_respects_upper_smart_feature_switches_when_disabled(monkeypatch):
@@ -284,8 +296,8 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     config_loader.apply_effective_feature_enablement(params, hardware_env)
 
     assert params["_smart_card_token"] == "ascend910b_64g"
-    assert params["_allowed_smart_feats"] == ["sparse"]
-    assert params["_smart_feats"] == ["sparse"]
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
+    assert params["_smart_feats"] == ["sparse", "spec"]
     assert params["enable_sparse"] is True
     assert params["enable_speculative_decode"] is True
     assert os.environ["ENABLE_SPARSE"] == "true"

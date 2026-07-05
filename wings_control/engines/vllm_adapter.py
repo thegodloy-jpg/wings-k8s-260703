@@ -3008,7 +3008,8 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     mtp_method = _resolve_mtp_method(model_info.model_architecture, engine)
     if mtp_method:
         # §2.3 白名单 gate：spec 不在白名单 → suffix 地板（恒产 suffix，不返回空）。
-        #   修真实 bug：GLM-5.1·Ascend（清单 sparse-only）现状误产 deepseek_mtp，改后回落 suffix。
+        #   GLM-5.1·Ascend 命中 spec 白名单后使用自身 MTP 方法 deepseek_mtp；
+        #   未命中时仍回落 suffix，避免非白名单模型误产 MTP。
         #   优先复用 C14 收口（hardware_env 解析卡型最准）stash 的白名单结论；adapter 内拿不到
         #   hardware_env 时才回退 resolve_card_token() 读取 hardware_info.json。
         smart_feats = params.get("_smart_feats")
