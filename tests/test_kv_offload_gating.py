@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 
@@ -271,6 +272,7 @@ def test_deepseek_v4_flash_ascend_lmcache_auto_floor_disables_cpu_pool(monkeypat
     rendered = "\n".join(commands)
     assert "export LMCACHE_LOCAL_CPU" not in rendered
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE" not in rendered
+    assert "export KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED=true" in rendered
 
 
 def test_lmcache_auto_floor_omits_generic_cpu_yaml(monkeypatch, tmp_path):
@@ -298,8 +300,72 @@ def test_lmcache_auto_floor_omits_generic_cpu_yaml(monkeypatch, tmp_path):
     rendered = "\n".join(commands)
     assert "export ENABLE_KV_MEM_OFFLOAD" not in rendered
     assert "export KV_MEM_OFFLOAD_SIZE" not in rendered
+    assert "export KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED=true" in rendered
     assert "export LMCACHE_CONFIG_FILE" not in rendered
     assert not (tmp_path / "lmcache_config.yaml").exists()
+
+
+def test_lmcache_auto_floor_keeps_status_but_skips_patch(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.delenv("ENABLE_KV_QAT", raising=False)
+    monkeypatch.delenv("ENABLE_COLD_START", raising=False)
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_feats": ["offload"],
+    }
+
+    target = wings_entry._resolve_lmcache_install_target("vllm_ascend", params)
+    snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
+    wings_entry._write_advanced_features_json("vllm_ascend", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert target is None
+    assert snippet == ""
+    assert data["features"]["kv_offload"] is True
+    assert data["variants"]["kv_offload"] == "lmcache_cpu+auto+floor_disabled"
+
+
+def test_lmcache_auto_floor_with_disk_keeps_patch_and_disk_variant(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "true")
+    monkeypatch.setenv("KV_DISK_OFFLOAD_PATH", "/mnt/kvcache_offload")
+    monkeypatch.setenv("KV_DISK_OFFLOAD_SIZE", "8")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_feats": ["offload"],
+    }
+
+    target = wings_entry._resolve_lmcache_install_target("vllm_ascend", params)
+    variant = vllm_adapter.resolve_offload_variant(params, "vllm_ascend")
+
+    assert target == "ascend-arm"
+    assert variant == "lmcache_disk+cpu_auto_floor_disabled"
 
 
 def test_deepseek_v4_flash_ascend_custom_kv_mem_size_wins_over_lmcache_size(monkeypatch):
@@ -517,7 +583,7 @@ def test_deepseek_v4_flash_native_offload_auto_reuses_formula_floor(monkeypatch)
         "vllm",
     )
 
-    assert command == " --kv-offloading-backend native --kv-offloading-size 0"
+    assert command == ""
 
 
 def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):

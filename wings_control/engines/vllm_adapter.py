@@ -701,6 +701,9 @@ _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
 _OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv-offloading-backend
 _OFFLOAD_QWEN35_NVFP4_NATIVE = "qwen35_nvfp4_native" # Qwen3.5 NVFP4·NV native --kv-offloading-backend
+KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV = "KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED"
+_OFFLOAD_AUTO_FLOOR_VARIANT = "lmcache_cpu+auto+floor_disabled"
+_OFFLOAD_CPU_AUTO_FLOOR_MODIFIER = "cpu_auto_floor_disabled"
 _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offload_variant 的 variant 串
     _OFFLOAD_GLM51_NV_DISABLED: "disabled",
     _OFFLOAD_V4_FLASH_NATIVE: "native_kv_offloading_backend",
@@ -803,13 +806,29 @@ def _is_lmcache_auto_cpu_floor_disabled(
     max_cpu_size: str,
 ) -> bool:
     """Return True when auto CPU capacity is below the minimum and must stay disabled."""
+    if local_cpu_value or max_cpu_size:
+        return False
+    return is_kv_mem_offload_auto_floor_disabled(params)
+
+
+def is_kv_mem_offload_auto_floor_disabled(params: Optional[Dict[str, Any]]) -> bool:
+    """Return True when KV memory offload auto mode is fused by the 100G floor."""
     if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
         return False
     if os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() != "auto":
         return False
-    if local_cpu_value or max_cpu_size:
-        return False
     return resolve_offload_cpu_capacity_gb(params or {}) == 0
+
+
+def lmcache_auto_floor_disables_all_backends(params: Optional[Dict[str, Any]]) -> bool:
+    """True when auto memory floor leaves no LMCache backend that needs a patch."""
+    if not is_kv_mem_offload_auto_floor_disabled(params):
+        return False
+    if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true":
+        return False
+    if get_qat_env() or get_cold_start_env():
+        return False
+    return True
 
 
 def _resolve_offload_backend(params: Optional[Dict[str, Any]]) -> Tuple[str, str]:
@@ -877,6 +896,8 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
         max_cpu_size = "40"
 
     _append_lmcache_env_export(env_commands, "LMCACHE_TRACK_USAGE", os.getenv("LMCACHE_TRACK_USAGE", "false"))
+    if auto_cpu_floor_disabled:
+        _append_lmcache_env_export(env_commands, KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV, "true")
     _append_lmcache_env_export(env_commands, "LMCACHE_LOCAL_CPU", local_cpu)
     _append_lmcache_env_export(env_commands, "LMCACHE_MAX_LOCAL_CPU_SIZE", max_cpu_size)
     _append_lmcache_env_export(env_commands, "LMCACHE_LOG_LEVEL", os.getenv("LMCACHE_LOG_LEVEL", "INFO"))
@@ -964,6 +985,8 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
     if local_cpu_value or max_cpu_size:
         _append_lmcache_env_export(env_commands, "ENABLE_KV_MEM_OFFLOAD", local_cpu_value or "true")
         _append_lmcache_env_export(env_commands, "KV_MEM_OFFLOAD_SIZE", max_cpu_size)
+    elif auto_cpu_floor_disabled:
+        _append_lmcache_env_export(env_commands, KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV, "true")
 
     if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true":
         _append_lmcache_env_export(env_commands, "ENABLE_KV_DISK_OFFLOAD", "true")
@@ -1008,14 +1031,25 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     # GLM-5.1·NV 强制关 → disabled；V4 → native 后端。
     special = _classify_offload_special_case(params, engine)
     if special:
-        return _OFFLOAD_VARIANT_BY_SPECIAL[special]
+        variant = _OFFLOAD_VARIANT_BY_SPECIAL[special]
+        if (
+            special in {_OFFLOAD_V4_FLASH_NATIVE, _OFFLOAD_QWEN35_NVFP4_NATIVE}
+            and is_kv_mem_offload_auto_floor_disabled(params)
+        ):
+            return f"{variant}+auto+floor_disabled"
+        return variant
     # LMCache 路径：CPU(auto/custom) / Disk / 分层（后端选择见 _resolve_offload_backend）
     backend, cpu_mode = _resolve_offload_backend(params)
+    auto_cpu_floor_disabled = is_kv_mem_offload_auto_floor_disabled(params)
     if backend == "disabled":            # offload on 但无任何容量段（含熔断）
+        if auto_cpu_floor_disabled:
+            return _OFFLOAD_AUTO_FLOOR_VARIANT
         return "disabled"
     variant = backend
     if cpu_mode and backend in ("lmcache_cpu", "lmcache_cpu_disk"):
         variant += "+" + cpu_mode
+    if auto_cpu_floor_disabled:
+        variant += "+" + _OFFLOAD_CPU_AUTO_FLOOR_MODIFIER
     if get_qat_env():
         variant += "+qat"
     if get_cold_start_env():
@@ -3406,6 +3440,12 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         logger.info("[KV Offload] Qwen3.5-397B-A17B-NVFP4 -> native backend, "
                     "--kv-offloading-size=%dGB", size_gb)
     else:
+        return ""
+    if size_gb <= 0:
+        logger.warning(
+            "[KV Offload] native offload auto capacity below floor; "
+            "skipping --kv-offloading-backend."
+        )
         return ""
     return f" --kv-offloading-backend native --kv-offloading-size {size_gb}"
 

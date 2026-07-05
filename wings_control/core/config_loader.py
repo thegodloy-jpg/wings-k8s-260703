@@ -50,6 +50,10 @@ try:
     from wings_control.core.version_util import resolve_card_model
 except ImportError:
     from core.version_util import resolve_card_model  # noqa: F401
+try:
+    from wings_control.engines.vllm_adapter import lmcache_auto_floor_disables_all_backends
+except ImportError:
+    from engines.vllm_adapter import lmcache_auto_floor_disables_all_backends  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -1574,6 +1578,13 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 
     if ctx.get("_smart_feats") is not None:
         lmcache_offload = "offload" in ctx.get("_smart_feats")
+
+    if lmcache_offload and lmcache_auto_floor_disables_all_backends(ctx):
+        logger.info(
+            "[KVCache Offload] auto memory offload capacity below floor and no "
+            "disk/QAT/cold-start backend is active; not injecting LMCache kv_transfer_config."
+        )
+        lmcache_offload = False
 
     if (
         lmcache_offload

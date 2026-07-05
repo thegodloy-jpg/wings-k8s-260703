@@ -272,6 +272,40 @@ def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstrea
     }
 
 
+def test_deepseek_v4_flash_auto_floor_skips_lmcache_connector(monkeypatch):
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "distributed": False,
+        "enable_speculative_decode": False,
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+    }
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+    config = config_loader._get_model_specific_config(
+        hardware_env,
+        params,
+        _FakeDeepSeekV4Info(),
+    )
+
+    assert params["_smart_feats"] == ["offload"]
+    assert "kv_transfer_config" not in config
+
+
 def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     monkeypatch.setenv("ENABLE_SPARSE", "true")
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")

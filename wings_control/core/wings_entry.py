@@ -31,6 +31,7 @@ from engines.vllm_adapter import (
     resolve_speculative_strategy,
     resolve_sparse_variant,
     resolve_offload_variant,
+    lmcache_auto_floor_disables_all_backends,
     _is_deepseek_v4_flash_params,
     _inject_env_echo,
     _need_triton_patch,
@@ -400,6 +401,13 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
                 "_resolve_lmcache_install_target — skipping LMCache patch install."
             )
             return None
+
+    if lmcache_auto_floor_disables_all_backends(merged):
+        logger.info(
+            "[KVCache Offload] auto memory offload capacity below floor and no "
+            "disk/QAT/cold-start backend is active; skipping LMCache patch install."
+        )
+        return None
 
     # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv-offloading-backend（构建期 CLI flag），
     # 与 LMCache 互斥：跳过 LMCache 补丁安装，避免两套卸载机制并存。
