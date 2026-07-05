@@ -169,6 +169,31 @@ async def health_head():
     return Response(status_code=code, headers=headers)
 
 
+async def _detect_engine_version(client: httpx.AsyncClient) -> str | None:
+    """尝试从运行中的后端获取真实引擎版本号。
+
+    向后端 /version 端点发起 GET 请求（vLLM/vLLM-Ascend 标准接口）。
+    成功后将结果缓存在 app.state 中，后续调用直接返回缓存值。
+
+    Returns:
+        str | None: 引擎版本字符串（如 "0.17.0rc1"），失败时返回 None。
+    """
+    cached = getattr(app.state, "cached_engine_version", None)
+    if cached:
+        return cached
+    try:
+        url = f"http://{settings.ENGINE_HOST}:{settings.ENGINE_PORT}/version"
+        resp = await client.get(url, timeout=3.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            version = data.get("version", "")
+            if version:
+                app.state.cached_engine_version = version
+                return version
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Failed to detect engine version: %s", exc)
+    return None
+
 @app.get("/v1/startup/progress")
 async def get_startup_progress():
     """获取部署进度信息
@@ -196,6 +221,207 @@ async def get_startup_progress():
             error_data, f"Failed to get progress info: {str(e)}"
         )
         return JSONResponse(status_code=200, content=response_body)
+
+
+def _is_endpoint_allowed(path: str) -> bool:
+    """检查请求路径是否在白名单中。
+
+    Args:
+        path: 请求路径
+
+    Returns:
+        bool: 是否允许访问
+    """
+    return path in ALLOWED_ENGINE_ENDPOINTS
+
+
+def _create_forbidden_response(full_path: str) -> JSONResponse:
+    """创建403禁止访问响应。
+
+    Args:
+        full_path: 请求路径
+
+    Returns:
+        JSONResponse: 403错误响应
+    """
+    _logger.warning(f"Rejected unauthorized engine endpoint proxy: {full_path}")
+    return JSONResponse(
+        status_code=403,
+        content={
+            "code": 403,
+            "msg": f"Endpoint '{full_path}' is not allowed for proxying",
+            "data": None,
+        },
+    )
+
+
+def _create_timeout_error_response(target_url: str, error: Exception) -> JSONResponse:
+    """创建504超时错误响应。
+
+    Args:
+        target_url: 目标URL
+        error: 异常对象
+
+    Returns:
+        JSONResponse: 504错误响应
+    """
+    _logger.error(f"Engine request timeout: {target_url}, error: {error}")
+    return JSONResponse(
+        status_code=504,
+        content={
+            "code": 504,
+            "msg": "Engine request timeout",
+            "data": None
+        }
+    )
+
+
+def _create_connection_error_response(error: Exception) -> JSONResponse:
+    """创建503连接错误响应。
+
+    Args:
+        error: 异常对象
+
+    Returns:
+        JSONResponse: 503错误响应
+    """
+    _logger.error(f"Cannot connect to engine: {settings.ENGINE_HOST}:{settings.ENGINE_PORT}, error: {error}")
+    return JSONResponse(
+        status_code=503,
+        content={
+            "code": 503,
+            "msg": "Engine connection failed",
+            "data": None
+        }
+    )
+
+
+def _create_generic_error_response(error: Exception) -> JSONResponse:
+    """创建500通用错误响应。
+
+    Args:
+        error: 异常对象
+
+    Returns:
+        JSONResponse: 500错误响应
+    """
+    _logger.error(f"Engine request failed: {error}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": 500,
+            "msg": f"Engine request failed: {str(error)}",
+            "data": None
+        }
+    )
+
+
+async def _proxy_get_once(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: Dict[str, str],
+    timeout: httpx.Timeout | float,
+    path: str,
+) -> Response:
+    """统一的一次性 GET 透传实现。
+
+    Args:
+        client: httpx 异步客户端
+        url: 目标 URL
+        headers: 请求头
+        timeout: 超时配置
+        path: 请求路径（用于判断是否为 /metrics 接口）
+    """
+    resp = await client.get(url, headers=headers, timeout=timeout)
+    entity_headers = _copy_entity_headers(resp)
+
+    # 对于 /metrics 接口，添加 POD_NAME 到响应头
+    if path == "/metrics":
+        pod_name = os.getenv("POD_NAME", "")
+        entity_headers["X-Pod-Name"] = pod_name
+
+    # 直接把下游返回的 body/状态码/实体头转发给上游
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=entity_headers,
+        media_type=resp.headers.get("content-type", "application/json"),
+    )
+
+
+# FastAPI matches routes in registration order. Keep health-owned APIs above the
+# catch-all proxy route so they are not rejected by the engine endpoint whitelist.
+@app.get("/v1/startup/accel")
+async def get_startup_accel():
+    """获取加速特性使能信息。
+
+    单一真相源是 advanced_features.json（settings.ADVANCED_FEATURES_FILE）：
+    由 wings_entry 在脚本生成阶段写入；shell 层在补丁失败时回写。
+    data 字段保持 advanced_features.json 的 engine/features/variants 结构。
+
+    Returns:
+        JSONResponse: 包含加速特性信息的响应
+    """
+    try:
+        engine, features, variants = _read_advanced_features_state(settings.ADVANCED_FEATURES_FILE)
+        accel_data = _build_accel_data(engine, features, variants)
+        return _build_accel_response(accel_data)
+    except Exception as e:
+        _logger.error(f"Failed to get acceleration feature info: {e}")
+        accel_data = _build_accel_data("", {}, {})
+        return _build_accel_response(accel_data, f"Failed to get acceleration feature info: {str(e)}")
+
+
+@app.api_route("/{path:path}", methods=["GET"])
+async def proxy_engine_monitor_request(path: str, request: Request):
+    """透传Engine侧的监控接口。
+
+    支持白名单机制，只允许透传预定义的安全接口。
+    保持原始响应格式，不做任何修改。
+    直接原样透传给引擎侧17000端口。
+    对于 /metrics 接口，会在响应头中添加 POD_NAME。
+
+    Args:
+        path: 请求路径
+        request: 原始请求对象
+
+    Returns:
+        Response: Engine的原始响应
+    """
+    # 构建完整路径
+    full_path = f"/{path}"
+
+    # 白名单检查
+    if not _is_endpoint_allowed(full_path):
+        return _create_forbidden_response(full_path)
+
+    # 目标 URL
+    target_url = build_backend_url(full_path)
+
+    try:
+        # 上游请求头（同步函数，返回 dict）
+        upstream_headers = make_upstream_headers(request)
+
+        # 统一超时：/metrics 可能稍大，给足 read；普通接口也可共用
+        timeout = httpx.Timeout(
+            connect=5.0,
+            read=15.0,
+            write=10.0,
+            pool=5.0,
+        )
+
+        return await _proxy_get_once(app.state.client, target_url, upstream_headers, timeout, full_path)
+
+    except httpx.TimeoutException as e:
+        return _create_timeout_error_response(target_url, e)
+    except httpx.ConnectError as e:
+        return _create_connection_error_response(e)
+    except httpx.RequestError as e:
+        # 兜底网络异常（DNS/握手/断连等），更宽泛
+        _logger.error(f"Engine request network error: {e.__class__.__name__}: {e}")
+        return _create_connection_error_response(e)
+    except Exception as e:
+        return _create_generic_error_response(e)
 
 
 def _read_advanced_features_state(file_path: str) -> tuple[str, dict, dict]:
@@ -257,27 +483,6 @@ def _build_accel_response(accel_data: dict, message: str = "") -> JSONResponse:
         "msg": message,
         "data": accel_data
     })
-
-
-@app.get("/v1/startup/accel")
-async def get_startup_accel():
-    """获取加速特性使能信息。
-
-    单一真相源是 advanced_features.json（settings.ADVANCED_FEATURES_FILE）：
-    由 wings_entry 在脚本生成阶段写入、shell 层在补丁失败时回写。
-    data 字段保持 advanced_features.json 的 engine/features/variants 结构。
-
-    Returns:
-        JSONResponse: 包含加速特性信息的响应
-    """
-    try:
-        engine, features, variants = _read_advanced_features_state(settings.ADVANCED_FEATURES_FILE)
-        accel_data = _build_accel_data(engine, features, variants)
-        return _build_accel_response(accel_data)
-    except Exception as e:
-        _logger.error(f"Failed to get acceleration feature info: {e}")
-        accel_data = _build_accel_data("", {}, {})
-        return _build_accel_response(accel_data, f"Failed to get acceleration feature info: {str(e)}")
 
 
 def run_standalone():
