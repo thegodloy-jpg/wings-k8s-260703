@@ -1,5 +1,6 @@
 import sys
 import json
+import logging
 from pathlib import Path
 
 
@@ -26,6 +27,16 @@ def _clear_deepseek_v4_flash_lmcache_env(monkeypatch):
 class _FakeDeepSeekV4ProIdentifier:
     model_architecture = "DeepseekV4ForCausalLM"
     model_quantize = "w4a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
+class _FakeQwen35Nvfp4Identifier:
+    model_architecture = "Qwen3_5MoeForConditionalGeneration"
+    model_quantize = "nvfp4"
 
     def __init__(self, model_name, model_path, model_type):
         self.model_name = model_name
@@ -305,7 +316,7 @@ def test_lmcache_auto_floor_omits_generic_cpu_yaml(monkeypatch, tmp_path):
     assert not (tmp_path / "lmcache_config.yaml").exists()
 
 
-def test_lmcache_auto_floor_keeps_status_but_skips_patch(monkeypatch, tmp_path):
+def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
@@ -337,8 +348,57 @@ def test_lmcache_auto_floor_keeps_status_but_skips_patch(monkeypatch, tmp_path):
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
     assert target is None
     assert snippet == ""
-    assert data["features"]["kv_offload"] is True
+    assert data["features"]["kv_offload"] is False
     assert data["variants"]["kv_offload"] == "lmcache_cpu+auto+floor_disabled"
+    assert wings_entry._collect_active_feature_names(params) == []
+    assert wings_entry._has_advanced_features(params) is False
+
+
+def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen35Nvfp4Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "153600")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.delenv("ENABLE_KV_QAT", raising=False)
+    monkeypatch.delenv("ENABLE_COLD_START", raising=False)
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.5-397B-A17B-NVFP4",
+        "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "enable_speculative_decode": True,
+        "_smart_feats": ["spec", "offload"],
+    }
+
+    wings_entry._write_advanced_features_json("vllm", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["speculative_decode"] is True
+    assert data["features"]["kv_offload"] is False
+    assert data["variants"]["speculative_decode"] == "mtp"
+    assert data["variants"]["kv_offload"] == "native_kv_offloading_backend+auto+floor_disabled"
+    assert wings_entry._collect_active_feature_names(params) == ["speculative_decode"]
+
+    with caplog.at_level(logging.INFO):
+        wings_entry._log_advanced_feature_config("vllm", params, True)
+
+    assert "active features = speculative_decode" in caplog.text
+    assert (
+        "[lmcache_offload] inactive "
+        "(variant=native_kv_offloading_backend+auto+floor_disabled)"
+    ) in caplog.text
+    assert "kv_transfer_config = " not in caplog.text
 
 
 def test_lmcache_auto_floor_with_disk_keeps_patch_and_disk_variant(monkeypatch):

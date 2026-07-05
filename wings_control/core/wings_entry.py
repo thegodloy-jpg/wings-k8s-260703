@@ -980,6 +980,30 @@ wings_source_env_with_diff() {
 _ADVANCED_FEATURES_FILE = settings.ADVANCED_FEATURES_FILE
 
 
+def _is_kv_offload_requested() -> bool:
+    return os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true"
+
+
+def _offload_variant_has_active_backend(variant: str | None) -> bool:
+    """Return whether an offload variant represents a backend used by engine."""
+    if not variant or variant == "disabled":
+        return False
+    if variant in {
+        "lmcache_cpu+auto+floor_disabled",
+        "native_kv_offloading_backend+auto+floor_disabled",
+    }:
+        return False
+    return True
+
+
+def _resolve_kv_offload_state(engine: str, merged: dict) -> tuple[bool, str | None]:
+    """Resolve effective KV offload state and diagnostic variant."""
+    if not _is_kv_offload_requested():
+        return False, None
+    variant = resolve_offload_variant(merged, engine)
+    return _offload_variant_has_active_backend(variant), (variant or None)
+
+
 def _write_advanced_features_json(engine: str, merged: dict) -> None:
     """写入高级特性初始状态 JSON 到共享卷。
 
@@ -996,17 +1020,18 @@ def _write_advanced_features_json(engine: str, merged: dict) -> None:
     下游消费者＝health 接口 /v1/startup/accel（读 settings.ADVANCED_FEATURES_FILE 并透出
     features + variants 给页面，见 proxy/health_service.py）；改字段须同步该端点。
     """
+    kv_offload_effective, kv_offload_variant = _resolve_kv_offload_state(engine, merged)
     features = {
         "speculative_decode": bool(merged.get("enable_speculative_decode")),
         "sparse_kv": bool(merged.get("enable_sparse")),
-        "kv_offload": os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true",
+        "kv_offload": kv_offload_effective,
         "rag_acc": os.getenv("RAG_ACC_ENABLED", "").strip().lower() == "true",
     }
     variants = {
         "speculative_decode": (resolve_speculative_strategy(merged, engine) or "none")
         if features["speculative_decode"] else None,
         "sparse_kv": resolve_sparse_variant(merged, engine) if features["sparse_kv"] else None,
-        "kv_offload": resolve_offload_variant(merged, engine) if features["kv_offload"] else None,
+        "kv_offload": kv_offload_variant,
     }
     data = {"engine": engine, "features": features, "variants": variants}
     ok = safe_write_file(
@@ -1041,25 +1066,27 @@ def _shell_update_feature_json(feature_key: str, value: bool = False) -> str:
 # 后续打补丁机制会通过特性状态码实现更精细的回退控制。
 
 
-def _has_advanced_features(merged: dict) -> bool:
+def _has_advanced_features(merged: dict, engine: str | None = None) -> bool:
     """判断是否启用了任何高级特性（投机解码、KV 稀疏、KV 卸载）。"""
     if merged.get("enable_speculative_decode"):
         return True
     if merged.get("enable_sparse"):
         return True
-    if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true":
+    effective, _ = _resolve_kv_offload_state(engine or merged.get("engine", ""), merged)
+    if effective:
         return True
     return False
 
 
-def _collect_active_feature_names(merged: dict) -> list[str]:
+def _collect_active_feature_names(merged: dict, engine: str | None = None) -> list[str]:
     """收集当前激活的高级特性名称列表（用于日志）。"""
     names: list[str] = []
     if merged.get("enable_speculative_decode"):
         names.append("speculative_decode")
     if merged.get("enable_sparse"):
         names.append("sparse_kv")
-    if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true":
+    effective, _ = _resolve_kv_offload_state(engine or merged.get("engine", ""), merged)
+    if effective:
         names.append("lmcache_offload")
     return names
 
@@ -1294,7 +1321,7 @@ def _log_advanced_feature_config(
     if not has_advanced_feature:
         logger.info("[AdvFeature] No advanced features enabled")
         return
-    feature_names = _collect_active_feature_names(merged)
+    feature_names = _collect_active_feature_names(merged, engine)
     logger.info("[AdvFeature] ┌── Advanced Feature Config ──")
     logger.info("[AdvFeature] │ engine = %s", engine)
     logger.info("[AdvFeature] │ active features = %s", ", ".join(feature_names))
@@ -1315,10 +1342,16 @@ def _log_advanced_feature_config(
         logger.info("[AdvFeature] │ [sparse_kv]")
         logger.info("[AdvFeature] │   strategy = %s (arch=%s)", strategy, arch)
     # KV 卸载
-    if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true":
+    kv_offload_effective, kv_offload_variant = _resolve_kv_offload_state(engine, merged)
+    if kv_offload_effective:
         logger.info("[AdvFeature] │ [lmcache_offload]")
         logger.info("[AdvFeature] │   kv_transfer_config = %s",
                     merged.get("kv_transfer_config", "(not set)"))
+    elif kv_offload_variant:
+        logger.info(
+            "[AdvFeature] │ [lmcache_offload] inactive (variant=%s)",
+            kv_offload_variant,
+        )
     logger.info("[AdvFeature] │ fallback_strategy = all-or-nothing (crash triggers full rollback)")
     logger.info("[AdvFeature] └── Advanced features injected into engine start command")
 
@@ -1438,8 +1471,8 @@ def _resolve_engine_and_features(
     # engine 已在 load_and_merge_configs 中经过 _auto_select_engine 的
     # 自动选择、校验和升级（如 vllm → vllm_ascend），不可用原始值覆盖。
     engine = merged.get("engine", launch_args.engine)
-    has_advanced_feature = _has_advanced_features(merged)
-    active_feature_names = _collect_active_feature_names(merged)
+    has_advanced_feature = _has_advanced_features(merged, engine)
+    active_feature_names = _collect_active_feature_names(merged, engine)
     active_features_label = ", ".join(active_feature_names)
 
     _write_advanced_features_json(engine, merged)
