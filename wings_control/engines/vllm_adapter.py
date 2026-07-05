@@ -831,6 +831,22 @@ def lmcache_auto_floor_disables_all_backends(params: Optional[Dict[str, Any]]) -
     return True
 
 
+def _is_offload_feature_effective(params: Optional[Dict[str, Any]], engine: str) -> bool:
+    """Return whether offload survived the smart-feature gate."""
+    if not params:
+        return False
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is not None:
+        return "offload" in smart_feats
+    return feature_allowed(
+        engine,
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("_smart_card_token") or resolve_card_token(),
+        "offload",
+    )
+
+
 def _resolve_offload_backend(params: Optional[Dict[str, Any]]) -> Tuple[str, str]:
     """LMCache 后端选择，返回 ``(backend, cpu_mode)``。
 
@@ -1034,7 +1050,7 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
         variant = _OFFLOAD_VARIANT_BY_SPECIAL[special]
         if (
             special in {_OFFLOAD_V4_FLASH_NATIVE, _OFFLOAD_QWEN35_NVFP4_NATIVE}
-            and is_kv_mem_offload_auto_floor_disabled(params)
+            and _native_offload_auto_floor_disabled(params, special)
         ):
             return f"{variant}+auto+floor_disabled"
         return variant
@@ -1055,6 +1071,24 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     if get_cold_start_env():
         variant += "+cold_start"
     return variant
+
+
+def _native_offload_auto_floor_disabled(
+    params: Optional[Dict[str, Any]],
+    special: str,
+) -> bool:
+    """Return whether a native KV offload special case is disabled by auto floor."""
+    if not params:
+        params = {}
+    if special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
+        raw_size = (
+            os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+            or os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
+        )
+        return raw_size.lower() == "auto" and _resolve_qwen35_nvfp4_offload_gb(params) <= 0
+    if special == _OFFLOAD_V4_FLASH_NATIVE:
+        return is_kv_mem_offload_auto_floor_disabled(params)
+    return False
 
 
 def _build_qat_env_commands(engine) -> List[str]:
@@ -2557,19 +2591,31 @@ def _resolve_qwen35_nvfp4_offload_gb(params: Dict[str, Any]) -> int:
       * ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 未设/非法 → 200；
       * 已设 → 页面传入的整节点 GB 值，native 直接复用，不按卡数放大。
     """
-    raw_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
+    # Page-owned KV_MEM_OFFLOAD_SIZE wins; LMCACHE_MAX_LOCAL_CPU_SIZE is legacy.
+    size_env_name = "KV_MEM_OFFLOAD_SIZE"
+    raw_size = os.getenv(size_env_name, "").strip()
+    if not raw_size:
+        size_env_name = "LMCACHE_MAX_LOCAL_CPU_SIZE"
+        raw_size = os.getenv(size_env_name, "").strip()
     if raw_size.lower() == "auto":
         auto_total = resolve_offload_cpu_capacity_gb(
             params,
-            size_env_name="LMCACHE_MAX_LOCAL_CPU_SIZE",
+            size_env_name=size_env_name,
         )
         if auto_total is not None:
             return int(auto_total)
         return 200
-    size_gb = _read_lmcache_max_local_cpu_gb()
-    if size_gb is None:
+    if not raw_size:
         return 200
-    return int(size_gb)
+    try:
+        return int(raw_size)
+    except ValueError:
+        logger.warning(
+            "[Qwen3.5 NVFP4 KV Offload] Invalid %s=%r; falling back to 200 GB.",
+            size_env_name,
+            raw_size,
+        )
+        return 200
 
 
 _GLM5_A2_ADDITIONAL_CONFIG: Dict[str, Any] = {
@@ -2997,6 +3043,49 @@ def _resolve_mtp_method(model_architecture: str, engine: str) -> str:
     return mtp_methods_by_arch.get(model_architecture, "")
 
 
+def _lmcache_requires_suffix_speculative_strategy(
+    params: Dict[str, Any],
+    engine: str,
+    model_info: ModelIdentifier,
+) -> bool:
+    """Return True when effective LMCache offload should force suffix over MTP."""
+    if not get_lmcache_env():
+        return False
+    if not _is_offload_feature_effective(params, engine):
+        return False
+    if lmcache_auto_floor_disables_all_backends(params):
+        logger.info(
+            "[KVCache Offload] auto memory offload capacity below floor and no "
+            "LMCache backend is active; keeping mtp speculative strategy."
+        )
+        return False
+    if _is_glm51_nvidia_vllm_params(params, engine, model_info):
+        logger.warning(
+            "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
+            "ignoring ENABLE_KV_OFFLOAD for speculative strategy selection."
+        )
+        return False
+    if engine == "vllm_ascend" and _is_deepseek_v4_flash_params(params, model_info):
+        logger.info(
+            "[KVCache Offload] DeepSeek-V4-Flash uses LMCacheAscendConnectorV1Dynamic "
+            "(coexists with MTP); keeping mtp speculative strategy."
+        )
+        return False
+    if engine == "vllm" and _is_deepseek_v4_flash_params(params, model_info):
+        logger.info(
+            "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native KV offload "
+            "(coexists with MTP); keeping mtp speculative strategy."
+        )
+        return False
+    if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
+        logger.info(
+            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native KV offload "
+            "(coexists with MTP); keeping mtp speculative strategy."
+        )
+        return False
+    return True
+
+
 def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     """Return the speculative decoding strategy selected for vLLM."""
     if engine not in ("vllm", "vllm_ascend"):
@@ -3057,44 +3146,10 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
                         model_info.model_architecture)
             return "suffix"
         
-        # LMCache 生效判定：优先复用白名单 stash 结论，
-        # 避免 apply_effective_feature_enablement 设了旧 ENV 名而 get_lmcache_env 读新名不一致。
-        lmcache_effective = get_lmcache_env()
-        if lmcache_effective:
-            _offload_ok = ("offload" in smart_feats) if smart_feats is not None else feature_allowed(
-                engine, params.get("model_name"), params.get("model_path"),
-                params.get("_smart_card_token") or resolve_card_token(), "offload")
-            if not _offload_ok:
-                lmcache_effective = False
-        if lmcache_effective and _is_glm51_nvidia_vllm_params(params, engine, model_info):
-            logger.warning(
-                "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
-                "ignoring ENABLE_KV_OFFLOAD for speculative strategy selection."
-            )
-            lmcache_effective = False
-        if lmcache_effective and engine == "vllm_ascend" and _is_deepseek_v4_flash_params(params, model_info):
-            logger.info(
-                "[KVCache Offload] DeepSeek-V4-Flash uses LMCacheAscendConnectorV1Dynamic "
-                "(coexists with MTP); keeping mtp speculative strategy."
-            )
-            lmcache_effective = False
-        # [V4-Flash-NV-Day0] NV V4-Flash 用 native --kv-offloading-backend，
-        # 与 MTP 共存，不应被 LMCache 误降级为 suffix。
-        if lmcache_effective and engine == "vllm" and _is_deepseek_v4_flash_params(params, model_info):
-            logger.info(
-                "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native KV offload "
-                "(coexists with MTP); keeping mtp speculative strategy."
-            )
-            lmcache_effective = False
-        # Qwen3.5 NVFP4 also uses native --kv-offloading-backend on NVIDIA.
-        # It does not install LMCache connector envs, so it can coexist with MTP.
-        if lmcache_effective and engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
-            logger.info(
-                "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native KV offload "
-                "(coexists with MTP); keeping mtp speculative strategy."
-            )
-            lmcache_effective = False
-        return "suffix" if lmcache_effective else mtp_method
+        # Only an actually blocking LMCache backend should downgrade MTP to suffix.
+        return "suffix" if _lmcache_requires_suffix_speculative_strategy(
+            params, engine, model_info,
+        ) else mtp_method
 
     return "suffix"
 

@@ -1339,6 +1339,26 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
     merged_no_features = dict(merged)
     merged_no_features["enable_speculative_decode"] = False
     merged_no_features["enable_sparse"] = False
+    original_ec = merged_no_features.get("engine_config", {})
+    if isinstance(original_ec, dict):
+        ec_copy = dict(original_ec)
+        if "speculative_config" in ec_copy:
+            ec_copy.pop("speculative_config", None)
+            logger.info(
+                "[AdvFeature] Removed speculative_config "
+                "from engine_config for fallback (Speculative Decode was enabled)"
+            )
+        if (
+            os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true"
+            and "kv_transfer_config" in ec_copy
+        ):
+            ec_copy.pop("kv_transfer_config", None)
+            logger.info(
+                "[AdvFeature] Removed kv_transfer_config "
+                "from engine_config for fallback (LMCache Offload was enabled)"
+            )
+        if ec_copy != original_ec:
+            merged_no_features["engine_config"] = ec_copy
     # kv_transfer_config 由 config_loader._set_kv_cache_config() 注入到
     # engine_config 嵌套字典中，需要从正确的层级移除。
     # 使用浅拷贝 engine_config 避免污染原始 merged 数据。

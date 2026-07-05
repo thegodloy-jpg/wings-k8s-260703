@@ -501,6 +501,71 @@ def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(m
     assert command == " --kv-offloading-backend native --kv-offloading-size 200"
 
 
+def test_qwen35_nvfp4_native_offload_prefers_kv_mem_size_without_per_card_scaling(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "200")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 80"
+
+
+def test_qwen35_nvfp4_native_offload_auto_uses_kv_mem_formula_without_per_card_scaling(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == " --kv-offloading-backend native --kv-offloading-size 121"
+
+
+def test_qwen35_nvfp4_native_offload_auto_reuses_kv_mem_formula_floor(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "180224")
+
+    command = vllm_adapter._build_kv_offload_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["spec", "offload"],
+        },
+        "vllm",
+    )
+
+    assert command == ""
+
+
 def test_qwen35_nvfp4_native_offload_auto_uses_formula_without_per_card_scaling(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -521,6 +586,30 @@ def test_qwen35_nvfp4_native_offload_auto_uses_formula_without_per_card_scaling(
     )
 
     assert command == " --kv-offloading-backend native --kv-offloading-size 121"
+
+
+def test_qwen35_nvfp4_native_offload_legacy_auto_floor_variant_matches_cli(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.5-397B-A17B-NVFP4",
+        "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_feats": ["spec", "offload"],
+    }
+
+    command = vllm_adapter._build_kv_offload_cmd(params, "vllm")
+    variant = vllm_adapter.resolve_offload_variant(params, "vllm")
+
+    assert command == ""
+    assert variant == "native_kv_offloading_backend+auto+floor_disabled"
 
 
 def test_deepseek_v4_flash_native_offload_reuses_page_size_without_per_card_scaling(monkeypatch):

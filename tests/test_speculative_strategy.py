@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
@@ -29,6 +31,16 @@ class _FakeDeepSeekV4Identifier:
 
 class _FakeGlm51Identifier:
     model_architecture = "GlmMoeDsaForCausalLM"
+    model_quantize = "w8a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
+class _FakeGlm47Identifier:
+    model_architecture = "Glm4MoeForCausalLM"
     model_quantize = "w8a8"
 
     def __init__(self, model_name, model_path, model_type):
@@ -250,6 +262,42 @@ def test_qwen35_nvfp4_native_offload_keeps_mtp_strategy(monkeypatch):
     assert strategy == "mtp"
 
 
+def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+    monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
+    monkeypatch.setattr(
+        wings_entry,
+        "start_engine_service",
+        lambda merged: vllm_adapter.build_start_script(merged),
+    )
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    merged = {
+        "engine": "vllm",
+        "model_name": "Qwen3.5-397B-A17B-NVFP4",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "enable_sparse": False,
+        "_smart_feats": ["offload", "spec"],
+        "engine_config": {
+            "model": "/usr/local/serving/models/",
+            "served_model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "speculative_config": {"method": "mtp", "num_speculative_tokens": 3},
+            "tensor_parallel_size": 8,
+        },
+    }
+
+    fallback_cmd = wings_entry._build_advanced_feature_fallback_cmd(merged)
+
+    assert "--speculative-config" not in fallback_cmd
+    assert "--kv-offloading-backend" not in fallback_cmd
+    assert merged["engine_config"]["speculative_config"] == {
+        "method": "mtp",
+        "num_speculative_tokens": 3,
+    }
+
+
 def test_pro5000_spec_models_emit_ears_env_and_patch(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
@@ -323,6 +371,73 @@ def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch):
     assert '"method": "deepseek_mtp"' in command
     assert '"num_speculative_tokens": 3' in command
     assert "suffix" not in command
+
+
+@pytest.mark.parametrize(
+    ("identifier_cls", "expected_strategy"),
+    [
+        (_FakeGlm51Identifier, "deepseek_mtp"),
+        (_FakeGlm47Identifier, "glm4_moe_mtp"),
+    ],
+)
+def test_auto_floor_discarded_offload_keeps_mtp_strategy(
+    monkeypatch,
+    identifier_cls,
+    expected_strategy,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", identifier_cls)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+
+    strategy = vllm_adapter.resolve_speculative_strategy(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "GLM-5.1-w8a8",
+            "model_path": "/models/GLM-5.1-w8a8",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "speculative_decode_model_path": "none",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["offload", "spec"],
+        },
+        "vllm_ascend",
+    )
+
+    assert strategy == expected_strategy
+
+
+def test_auto_floor_with_disk_offload_still_uses_suffix_guard(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "true")
+    monkeypatch.setenv("KV_DISK_OFFLOAD_PATH", "/mnt/kvcache_offload")
+    monkeypatch.setenv("KV_DISK_OFFLOAD_SIZE", "8")
+
+    strategy = vllm_adapter.resolve_speculative_strategy(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "GLM-5.1-w8a8",
+            "model_path": "/models/GLM-5.1-w8a8",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "speculative_decode_model_path": "none",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["offload", "spec"],
+        },
+        "vllm_ascend",
+    )
+
+    assert strategy == "suffix"
 
 
 def test_glm51_roce_distributed_engine_config_uses_official_mtp_num3(monkeypatch):

@@ -513,10 +513,6 @@
             "trust_remote_code": true,
             "tool_call_parser": "qwen3_coder",
             "mm_encoder_tp_mode": "data",
-            "speculative_config": {
-              "method": "mtp",
-              "num_speculative_tokens": 3
-            },
             "kv_cache_dtype": "fp8",
             "enable_auto_tool_choice": true,
             "enable_prefix_caching": true
