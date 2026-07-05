@@ -648,7 +648,7 @@ def _resolve_lmcache_lookup_server_worker_ids(params: Optional[Dict[str, Any]]) 
 
     tp_size = _safe_int((params or {}).get("tensor_parallel_size"))
     if not tp_size and params:
-        platform = _resolve_deepseek_v4_flash_platform(params)
+        platform = _ascend_platform_from_runtime(params)
         tp_size = _default_deepseek_v4_flash_tensor_parallel_size(platform)
     if not tp_size or tp_size < 1:
         tp_size = 4
@@ -1445,30 +1445,29 @@ _DEEPSEEK_V4_CPU_OFFLOAD_ARCHES = {
 }
 
 
-def _get_engine_config_platform(params: Dict[str, Any]) -> str:
-    """Return user-declared Ascend platform from engine_config or environment.
+_ASCEND_A2_PLATFORM_TOKENS = {"a2", "atlas-a2", "atlas_a2", "910b"}
+_ASCEND_A3_PLATFORM_TOKENS = {"a3", "atlas-a3", "atlas_a3", "910c"}
 
-    优先级：
-      1. 显式声明（WINGS_ASCEND_PLATFORM / ASCEND_PLATFORM / ENGINE_IMAGE_FLAVOR /
-         engine_config.ascend_platform / engine_config.hardware_platform）
-      2. ENGINE_VERSION 后缀（如 "0.13.0rc3-a3" → a3，否则不强推；缺省由下游
-         _resolve_*_platform 兜底为 a2）
-    """
-    engine_config = params.get("engine_config") or {}
-    value = (
-        os.getenv("WINGS_ASCEND_PLATFORM")
-        or os.getenv("ASCEND_PLATFORM")
-        or os.getenv("ENGINE_IMAGE_FLAVOR")
-        or engine_config.get("ascend_platform")
-        or engine_config.get("hardware_platform")
-        or ""
-    )
-    declared = str(value).strip().lower()
-    if declared:
-        return declared
-    # ENGINE_VERSION 后缀作次级信号（来自镜像构建版本号，如 "0.13.0rc3-a3"）。
-    # 复用 version_util.engine_version_platform 单一归口（取代原内联 endswith("-a3")）。
-    return engine_version_platform() or ""
+
+def _match_ascend_platform(value: Any) -> str:
+    """Normalize an Ascend platform/chip token to a2 or a3."""
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    if any(marker in token for marker in _ASCEND_A3_PLATFORM_TOKENS):
+        return "a3"
+    if any(marker in token for marker in _ASCEND_A2_PLATFORM_TOKENS):
+        return "a2"
+    return ""
+
+
+def _ascend_platform_from_runtime(params: Dict[str, Any]) -> str:
+    """Return Ascend platform from hardware-info first, then ENGINE_VERSION."""
+    for detail in params.get("device_details") or []:
+        platform = _match_ascend_platform(detail.get("name"))
+        if platform:
+            return platform
+    return engine_version_platform() or "a2"
 
 
 _DEEPSEEK_V4_IDENTITY_CONFIG_KEYS = (
@@ -1561,40 +1560,6 @@ def _deepseek_v4_identity_text(
     return " ".join(str(item).lower() for item in candidates if item)
 
 
-def _resolve_deepseek_v4_flash_platform(
-    params: Dict[str, Any],
-    model_info: Optional[ModelIdentifier] = None,
-) -> str:
-    """Resolve DeepSeek-V4-Flash vLLM-Ascend package flavor: a2 or a3.
-
-    优先级:
-      1. 显式声明 (WINGS_ASCEND_PLATFORM / engine_config.ascend_platform 等)
-      2. /shared-volume/hardware_info.json 的 details[].name (主路径，由
-         config_loader 注入到 params['device_details'])
-      3. V4-Pro 模型需求兜底为 a3（显式 A2 仍优先）
-      4. 默认 a2
-    """
-    declared = _get_engine_config_platform(params)
-    if declared in {"a2", "atlas-a2", "atlas_a2", "910b"}:
-        return "a2"
-    if declared in {"a3", "atlas-a3", "atlas_a3", "910c"}:
-        return "a3"
-
-    for detail in params.get("device_details") or []:
-        chip = str(detail.get("name", "")).strip().lower()
-        if not chip:
-            continue
-        if "910c" in chip or "a3" in chip:
-            return "a3"
-        if "910b" in chip or "a2" in chip:
-            return "a2"
-
-    if _is_deepseek_v4_pro_params(params, model_info):
-        logger.info("[DeepSeek-V4-Pro] Ascend platform not detected; assuming A3 from model identity")
-        return "a3"
-    return "a2"
-
-
 def _is_deepseek_v4_flash_params(
     params: Dict[str, Any],
     model_info: Optional[ModelIdentifier] = None,
@@ -1627,7 +1592,7 @@ def is_deepseek_v4_pro_adapted_scope(
         return False
     if not _is_deepseek_v4_pro_params(params, model_info):
         return False
-    if _resolve_deepseek_v4_flash_platform(params, model_info) != "a3":
+    if _ascend_platform_from_runtime(params) != "a3":
         return False
     if not bool(params.get("distributed")):
         return False
@@ -1716,7 +1681,7 @@ def _build_deepseek_v4_flash_env(params: Dict[str, Any]) -> List[str]:
     场景的 ``is_kv_cache_spec_uniform`` ``'list' object has no attribute 'merge'``
     崩溃（KV cache spec 跨层非均匀）。
     """
-    platform = _resolve_deepseek_v4_flash_platform(params)
+    platform = _ascend_platform_from_runtime(params)
     common = [
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=10",
@@ -1764,7 +1729,7 @@ def _build_glm5_model_env(params: Dict[str, Any], arch: str) -> List[str]:
       * RoCE 互联：剔除 HCCL_OP_EXPANSION_MODE=AIV，追加 MLAPO/FUSED_MC2=0；
       * GLM-5.2 专属：固定 VLLM_VERSION=0.21.0（官方单/双机 recipe，仅 5.2，不注入 5.0/5.1）。
     """
-    env_commands = _build_glm5_ascend_env(arch, _resolve_deepseek_v4_flash_platform(params))
+    env_commands = _build_glm5_ascend_env(arch, _ascend_platform_from_runtime(params))
     if params.get("distributed") and _is_roce_distributed():
         env_commands = [c for c in env_commands if "HCCL_OP_EXPANSION_MODE" not in c]
         env_commands.append("export VLLM_ASCEND_ENABLE_MLAPO=1")
@@ -1903,7 +1868,7 @@ def _strip_internal_engine_config_keys(params: Dict[str, Any], engine_config: Di
 
     这里处理的是“不应该出现在 vLLM CLI 中”的字段：
     - use_kunlun_atb / enable_sparse 等由 adapter 自己消费；
-    - ascend_platform / hardware_platform 只用于平台判断；
+    - ascend_platform / hardware_platform 是旧平台 override 字段，不再渲染到 CLI；
     - GLM-5.1 NVIDIA/vLLM 不允许 KV offload，即使上游合并了 kv_transfer_config
       也要在脚本生成前删除，避免运行时加载不兼容 connector。
     """
@@ -2014,7 +1979,7 @@ def _apply_glm5_dsa_distributed_fixups(
     # 仅 A3（910C）双机移除 additional_config（GLM-5.1 规避全图 decode replay MTE 越界）。
     # GLM-5.2 已稳定，豁免剥除——保留 fuse_muls_add/multistream/enable_npugraph_ex 三键图优化。
     if "additional_config" not in explicit_keys:
-        if (_resolve_deepseek_v4_flash_platform(params) == "a3"
+        if (_ascend_platform_from_runtime(params) == "a3"
                 and not is_glm52_model(params.get("model_name"), params.get("model_path"))):
             engine_config.pop("additional_config", None)
 
@@ -2243,27 +2208,6 @@ def _apply_deepseek_v4_flash_capacity_and_topology(
     _force_set_if_not_explicit(engine_config, explicit_keys, "enable_expert_parallel", True)
 
 
-def _apply_deepseek_v4_flash_runtime_defaults(
-    engine_config: Dict[str, Any],
-    explicit_keys: set,
-) -> None:
-    """V4-Flash 运行时 / 解析器默认值。
-
-    这里仅处理与 vLLM CLI 直接对应的运行参数；平台相关 additional_config
-    和 MTP/compile JSON 放在上层入口集中合并，便于保护用户显式配置。
-    """
-    _set_if_not_explicit(engine_config, explicit_keys, "quantization", "ascend")
-    _set_if_not_explicit(engine_config, explicit_keys, "block_size", 128)
-    _set_if_not_explicit(engine_config, explicit_keys, "async_scheduling", True)
-    _set_if_not_explicit(engine_config, explicit_keys, "safetensors_load_strategy", "prefetch")
-    _set_if_not_explicit(engine_config, explicit_keys, "tokenizer_mode", "deepseek_v4")
-    _set_if_not_explicit(engine_config, explicit_keys, "tool_call_parser", "deepseek_v4")
-    _force_set_if_not_explicit(engine_config, explicit_keys, "enable_auto_tool_choice", True)
-    # reasoning_parser 不在适配器层注入：交由配置合并层的 _set_reasoning_parser 按
-    # enable_auto_think_choice 开关裁决（V4-Flash 配置块已带 reasoning_parser=deepseek_v4），
-    # 避免在此重复注入导致关闭开关时被重新加回、绕过 enable_auto_think_choice。
-
-
 def _apply_deepseek_v4_flash_engine_defaults(
     params: Dict[str, Any],
     engine_config: Dict[str, Any],
@@ -2272,19 +2216,18 @@ def _apply_deepseek_v4_flash_engine_defaults(
     """Apply DeepSeek-V4-Flash vLLM-Ascend launch defaults without touching other models.
 
     Gate 条件必须同时满足：engine 是 vllm_ascend，且身份/架构判定为 V4-Flash。
-    函数体按“容量拓扑 -> 运行参数 -> platform additional_config -> JSON 配置”
-    的顺序写入，方便定位最终脚本里每类参数的来源。
+    函数体只保留运行时派生字段；quantization/block/tokenizer/parser 等静态
+    vLLM CLI 默认值由 ascend_default.json 的 DeepSeek-V4-Flash 条目承载。
     """
     if params.get("engine") != "vllm_ascend":
         return
     if not _is_deepseek_v4_flash_params(params):
         return
 
-    platform = _resolve_deepseek_v4_flash_platform(params)
+    platform = _ascend_platform_from_runtime(params)
     # Speculative decoding is controlled only by the upstream SmartFeature
     # switch + whitelist gate. Do not force-enable it from model defaults.
     _apply_deepseek_v4_flash_capacity_and_topology(params, engine_config, explicit_keys, platform)
-    _apply_deepseek_v4_flash_runtime_defaults(engine_config, explicit_keys)
     _merge_dict_default_if_not_explicit(
         engine_config, explicit_keys, "compilation_config",
         {"cudagraph_mode": "FULL_DECODE_ONLY"},

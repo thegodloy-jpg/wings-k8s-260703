@@ -114,6 +114,101 @@ def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypat
     assert "deepseek_mtp" not in command
 
 
+def test_deepseek_v4_flash_adapter_does_not_recreate_json_owned_runtime_defaults(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
+
+    engine_config = vllm_adapter._prepare_engine_config(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 16,
+            "engine_config": {},
+        }
+    )
+
+    for key in (
+        "quantization",
+        "block_size",
+        "async_scheduling",
+        "safetensors_load_strategy",
+        "tokenizer_mode",
+        "tool_call_parser",
+        "enable_auto_tool_choice",
+    ):
+        assert key not in engine_config
+
+
+def test_deepseek_v4_flash_topology_prefers_hardware_info_over_engine_version(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_IMAGE_FLAVOR", raising=False)
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a2")
+
+    engine_config = vllm_adapter._prepare_engine_config(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 16,
+            "device_details": [{"name": "Ascend910C"}],
+            "engine_config": {},
+        }
+    )
+
+    assert engine_config["tensor_parallel_size"] == 4
+    assert engine_config["data_parallel_size"] == 4
+    assert engine_config["api_server_count"] == 1
+
+
+def test_deepseek_v4_flash_topology_keeps_engine_version_platform_fallback(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_IMAGE_FLAVOR", raising=False)
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+
+    engine_config = vllm_adapter._prepare_engine_config(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 16,
+            "engine_config": {},
+        }
+    )
+
+    assert engine_config["tensor_parallel_size"] == 4
+    assert engine_config["data_parallel_size"] == 4
+    assert engine_config["api_server_count"] == 1
+
+
+def test_deepseek_v4_flash_topology_ignores_explicit_platform_env(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a2")
+
+    engine_config = vllm_adapter._prepare_engine_config(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_type": "llm",
+            "device_count": 16,
+            "engine_config": {},
+        }
+    )
+
+    assert engine_config["tensor_parallel_size"] == 8
+    assert engine_config["data_parallel_size"] == 2
+    assert "api_server_count" not in engine_config
+
+
 def test_deepseek_v4_flash_pro5000_vllm_speculative_config_matches_tokenbox(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
 

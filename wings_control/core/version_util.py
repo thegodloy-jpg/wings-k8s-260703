@@ -187,7 +187,7 @@ def engine_version_platform(ver_str: str | None = None) -> str | None:
     无可识别后缀时返回 ``None``（由调用方决定默认）。
 
     本函数是 engine-version → 芯片 的【单一归口】：
-      * ``vllm_adapter._get_engine_config_platform`` 复用它（取代原内联 ``endswith("-a3")``）；
+      * ``vllm_adapter._ascend_platform_from_runtime`` 在 hardware-info 之后复用它兜底；
       * ``model_utils.is_glm52_single_node_even`` 复用它做单机 GLM-5.2 的 a3 门控。
 
     Args:
