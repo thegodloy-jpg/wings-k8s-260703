@@ -226,8 +226,40 @@ def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch):
     command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
 
     assert '"method": "deepseek_mtp"' in command
-    assert '"num_speculative_tokens": 1' in command
+    assert '"num_speculative_tokens": 3' in command
     assert "suffix" not in command
+
+
+def test_glm51_roce_distributed_engine_config_uses_official_mtp_num3(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
+    monkeypatch.setattr(vllm_adapter, "_is_roce_distributed", lambda: True)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "GLM-5.1-w8a8",
+        "model_path": "/models/GLM-5.1-w8a8",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "enable_speculative_decode": True,
+        "engine_config": {
+            "async_scheduling": True,
+            "enable_expert_parallel": True,
+        },
+    }
+
+    engine_config = vllm_adapter._prepare_engine_config(params)
+
+    assert engine_config["speculative_config"] == {
+        "num_speculative_tokens": 3,
+        "method": "deepseek_mtp",
+    }
+    assert params["engine_config"]["speculative_config"] == {
+        "num_speculative_tokens": 3,
+        "method": "deepseek_mtp",
+    }
+    assert "async_scheduling" not in engine_config
+    assert "enable_expert_parallel" not in engine_config
 
 
 def test_glm51_ascend_indexcache_hf_overrides_enable_index_cache(monkeypatch):

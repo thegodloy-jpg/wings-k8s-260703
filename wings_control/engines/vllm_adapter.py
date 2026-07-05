@@ -2073,12 +2073,12 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         # 投机推理使用 RoCE 适配配置
         if params.get("enable_speculative_decode"):
             engine_config["speculative_config"] = {
-                "num_speculative_tokens": 1,
+                "num_speculative_tokens": 3,
                 "method": "deepseek_mtp",
             }
             logger.info(
                 "[GLM-5.1 RoCE] Replaced speculative_config with "
-                "num_speculative_tokens=1, method=deepseek_mtp"
+                "num_speculative_tokens=3, method=deepseek_mtp"
             )
         if removed_keys:
             logger.info(
@@ -3185,19 +3185,24 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         if engine in {"vllm", "vllm_ascend"} and strategy.endswith("_mtp") and is_v4_flash:
             strategy = "mtp"
         speculative_config_temp.append(f'"method": "{strategy}"')
-        # DeepSeek-V4-Pro / Ascend V4-Flash / GLM-5/5.1 官方推荐 num=1；默认不启用，只有
-        # enable_speculative_decode=True 时由 launcher 合成。
-        # V4-Flash + Pro5000 follows the tokenbox NVIDIA recipe: method=mtp, num=2.
-        # 其余 MTP（GLM-4.7 / 通用 DeepSeek-V3）保持 num=3。
-        # GLM-5.2 与 GLM-5/5.1 同架构(GlmMoeDsa) 但官方推荐 num=3，按名称标识切出，
-        # 不落入上面的 num=1 分支（GLM-5/5.1 维持 num=1 不回归）。
-        # 仅 vllm_ascend 生效：NV 的 GLM-5.2 是另一套（method=mtp/num=5），不应误产 num=3。
+        # Token count policy:
+        # - V4-Flash + Pro5000 follows the tokenbox NVIDIA recipe: method=mtp, num=2.
+        # - DeepSeek-V4-Pro / Ascend V4-Flash keep num=1.
+        # - GLM-5.1/5.2 Ascend and other generic MTP paths use num=3.
         glm52_ascend = engine == "vllm_ascend" and is_glm52_model(
             params.get("model_name"), params.get("model_path"))
+        glm51_ascend = engine == "vllm_ascend" and is_glm_moe_dsa_glm51(
+            model_info,
+            model_name=params.get("model_name"),
+            model_path=params.get("model_path"),
+        )
         _num1_arch = (
             _is_deepseek_v4_pro_params(params)
             or is_v4_flash
-            or model_info.model_architecture == "GlmMoeDsaForCausalLM"
+            or (
+                model_info.model_architecture == "GlmMoeDsaForCausalLM"
+                and not glm51_ascend
+            )
         )
         if is_v4_flash_pro5000:
             speculative_config_temp.append('"num_speculative_tokens": 2')
