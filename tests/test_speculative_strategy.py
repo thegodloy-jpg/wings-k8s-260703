@@ -262,6 +262,26 @@ def test_qwen35_nvfp4_native_offload_keeps_mtp_strategy(monkeypatch):
     assert strategy == "mtp"
 
 
+def test_qwen35_nvfp4_pro5000_speculative_config_matches_tokenbox(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+
+    command = vllm_adapter.build_speculative_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.5-397B-A17B-NVFP4",
+            "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "speculative_decode_model_path": "none",
+            "_smart_feats": ["spec", "offload"],
+            "_smart_card_token": "rtxpro5000-72",
+        },
+        "vllm",
+    )
+
+    assert command == ' --speculative-config \'{"method":"mtp","num_speculative_tokens":3}\''
+
+
 def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)

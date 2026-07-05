@@ -3154,9 +3154,15 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     return "suffix"
 
 
-def _format_speculative_result(config_entries: List[str]) -> str:
+def _format_speculative_result(config_entries: List[str], compact: bool = False) -> str:
     """将推测解码配置列表格式化为 --speculative-config 命令行参数。"""
-    result = " --speculative-config '{" + ", ".join(config_entries) + "}'"
+    body = "{" + ", ".join(config_entries) + "}"
+    if compact:
+        try:
+            body = json.dumps(json.loads(body), ensure_ascii=False, separators=(",", ":"))
+        except json.JSONDecodeError:
+            body = "{" + ",".join(config_entries) + "}"
+    result = f" --speculative-config '{body}'"
     logger.info("[AdvFeature-SpecDecode] Generated params: %s", result.strip())
     return result
 
@@ -3265,6 +3271,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
             engine == "vllm"
             and is_deepseek_v4_flash_rtx_pro_5000(params, engine)
         )
+        is_qwen35_nvfp4_native = is_qwen3_5_397b_nvfp4_vllm(params, engine)
         if model_info.model_architecture == "Glm4MoeForCausalLM" and _is_w8a8_quantize(model_info.model_quantize):
             strategy = "mtp"
         # [V4-Flash-NV-Day0] NV 上 V4-Flash 用裸 "mtp"；Ascend 维持 "deepseek_mtp"
@@ -3301,11 +3308,17 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         # 会把 MTP 头一并捕获，触发 MTE 越界类崩溃（参见 GLM-5 aclgraph 案例）。这里只让
         # MTP/草稿头退回 eager（spec config 内部开关），主模型仍享受全图编译性能；与顶层
         # --enforce-eager（ASCEND_ENFORCE_EAGER 控制、整模型退 eager）是两个不同的旋钮。
-        if _is_qwen35_arch(model_info.model_architecture) or (is_v4_flash and not is_v4_flash_pro5000):
+        if (
+            (_is_qwen35_arch(model_info.model_architecture) and not is_qwen35_nvfp4_native)
+            or (is_v4_flash and not is_v4_flash_pro5000)
+        ):
             speculative_config_temp.append('"enforce_eager": true')
         if model_info.model_architecture == "Glm4MoeForCausalLM" and _is_w8a8_quantize(model_info.model_quantize):
             speculative_config_temp.append('"speculative_token_range": "256,512"')
-        return _format_speculative_result(speculative_config_temp)
+        return _format_speculative_result(
+            speculative_config_temp,
+            compact=is_qwen35_nvfp4_native,
+        )
 
     return ""
 
