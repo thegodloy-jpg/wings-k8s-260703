@@ -46,19 +46,6 @@ def is_kimi_k27_code_memcache_params(params: Optional[Dict[str, Any]], engine: s
     return "kimi-k2.7-code" in text and "w4a8" not in text
 
 
-def build_memcache_ascend_store_config() -> Dict[str, Any]:
-    """Build the vLLM AscendStoreConnector config used by MemCache Hybrid."""
-    return {
-        "kv_connector": "AscendStoreConnector",
-        "kv_role": "kv_both",
-        "kv_load_failure_policy": "recompute",
-        "kv_connector_extra_config": {
-            "lookup_rpc_port": "0",
-            "backend": "memcache",
-        },
-    }
-
-
 def _safe_int(value: Any) -> Optional[int]:
     try:
         return int(value)

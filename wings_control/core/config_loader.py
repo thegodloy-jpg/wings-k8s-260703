@@ -51,14 +51,12 @@ try:
 except ImportError:
     from core.version_util import resolve_card_model  # noqa: F401
 try:
-    from wings_control.features.memcache import (
-        build_memcache_ascend_store_config,
+    from wings_control.features.kv_offload.memcache import (
         is_kimi_k27_code_memcache_params,
         resolve_memcache_dram_gb,
     )
 except ImportError:
-    from features.memcache import (  # noqa: F401
-        build_memcache_ascend_store_config,
+    from features.kv_offload.memcache import (  # noqa: F401
         is_kimi_k27_code_memcache_params,
         resolve_memcache_dram_gb,
     )
@@ -1562,6 +1560,19 @@ def _build_deepseek_v4_flash_lmcache_dynamic_config() -> Dict[str, Any]:
     }
 
 
+def _build_memcache_ascend_store_config() -> Dict[str, Any]:
+    """Build the vLLM AscendStoreConnector config used by Kimi MemCache offload."""
+    return {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
+        "kv_load_failure_policy": "recompute",
+        "kv_connector_extra_config": {
+            "lookup_rpc_port": "0",
+            "backend": "memcache",
+        },
+    }
+
+
 def _set_kv_cache_config(params, ctx, model_info=None):
     """根据 LMCache Offload 和 PD 分离角色，生成 vllm kv_transfer_config 配置。
 
@@ -1597,7 +1608,7 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 
     if lmcache_offload and is_kimi_k27_code_memcache_params(ctx, ctx.get("engine")):
         if resolve_memcache_dram_gb(ctx):
-            params["kv_transfer_config"] = json.dumps(build_memcache_ascend_store_config())
+            params["kv_transfer_config"] = json.dumps(_build_memcache_ascend_store_config())
             logger.info("[MemCache] Kimi-K2.7-Code uses AscendStoreConnector.")
         else:
             logger.info(

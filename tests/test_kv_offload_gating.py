@@ -9,12 +9,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from engines import vllm_adapter  # noqa: E402
 from core import wings_entry  # noqa: E402
-from features.memcache import hybrid as memcache_hybrid  # noqa: E402
+from core import config_loader  # noqa: E402
+from features.kv_offload.memcache import hybrid as memcache_hybrid  # noqa: E402
 
 
 def test_memcache_helpers_are_not_owned_by_vllm_adapter():
     assert not hasattr(vllm_adapter, "build_memcache_ascend_store_config")
     assert not hasattr(vllm_adapter, "is_kimi_k27_code_memcache_params")
+
+
+def test_memcache_transfer_config_is_owned_by_config_loader():
+    assert not hasattr(memcache_hybrid, "build_memcache_ascend_store_config")
+    assert hasattr(config_loader, "_build_memcache_ascend_store_config")
 
 
 def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):

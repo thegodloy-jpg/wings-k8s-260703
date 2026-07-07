@@ -36,7 +36,7 @@ from engines.vllm_adapter import (
     _inject_env_echo,
     _need_triton_patch,
 )
-from features.memcache import (
+from features.kv_offload.memcache import (
     build_memcache_hybrid_fragment,
     is_kimi_k27_code_memcache_params,
 )

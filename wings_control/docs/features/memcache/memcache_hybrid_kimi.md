@@ -26,7 +26,7 @@ The vLLM connector is still an engine config / CLI concern:
 ```
 
 The MemCache runtime config is a separate script/env concern. Runtime shell
-templates live under `wings_control/features/memcache/`, not under this docs
+templates live under `wings_control/features/kv_offload/memcache/`, not under this docs
 directory:
 
 - `mmc_local.conf`
@@ -34,8 +34,8 @@ directory:
 - `MMC_LOCAL_CONFIG_PATH`
 - `MMC_META_CONFIG_PATH`
 - `start_memcache_master.sh`
-- `wings_control/features/memcache/memcache_engine_prelude.sh`
-- `wings_control/features/memcache/memcache_master.sh`
+- `wings_control/features/kv_offload/memcache/memcache_engine_prelude.sh`
+- `wings_control/features/kv_offload/memcache/memcache_master.sh`
 
 ## Current Project Assembly Point
 
@@ -70,7 +70,7 @@ There is one negative responsibility in `vllm_adapter.py`: when the effective of
 
 ## Fragment API
 
-Use `wings_control/features/memcache/hybrid.py` to read the shell templates and
+Use `wings_control/features/kv_offload/memcache/hybrid.py` to read the shell templates and
 return plain strings. A concrete implementation can use a dataclass, dict, or
 tuple, but it should expose these logical fields:
 
@@ -154,7 +154,7 @@ This is the script fragment that should be inserted into final `start_command.sh
 The runtime source of this text is:
 
 ```text
-wings_control/features/memcache/memcache_engine_prelude.sh
+wings_control/features/kv_offload/memcache/memcache_engine_prelude.sh
 ```
 
 ```bash
@@ -178,7 +178,7 @@ ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB
 EOF
 export MMC_LOCAL_CONFIG_PATH="${WINGS_MEMCACHE_DIR}/mmc_local.conf"
 cat > "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh" <<'WINGS_MEMCACHE_MASTER'
-<contents of wings_control/features/memcache/memcache_master.sh>
+<contents of wings_control/features/kv_offload/memcache/memcache_master.sh>
 WINGS_MEMCACHE_MASTER
 chmod +x "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh"
 # --- end wings-memcache: engine prelude ---
@@ -192,7 +192,7 @@ This is a standalone script artifact. It should not be inserted into the vLLM re
 The runtime source of this text is:
 
 ```text
-wings_control/features/memcache/memcache_master.sh
+wings_control/features/kv_offload/memcache/memcache_master.sh
 ```
 
 ```bash
@@ -280,9 +280,9 @@ Responsibilities:
 Current module and templates:
 
 ```text
-wings_control/features/memcache/hybrid.py
-wings_control/features/memcache/memcache_engine_prelude.sh
-wings_control/features/memcache/memcache_master.sh
+wings_control/features/kv_offload/memcache/hybrid.py
+wings_control/features/kv_offload/memcache/memcache_engine_prelude.sh
+wings_control/features/kv_offload/memcache/memcache_master.sh
 ```
 
 ### `wings_entry.py`
@@ -340,4 +340,4 @@ Required tests:
 - final assembled script places MemCache prelude before the engine command
 - MemCache variant does not emit LMCache env/YAML config
 - `vllm_adapter.py` does not own MemCache connector builders or `ock.mmc.*` text
-- `wings_control/features/memcache/hybrid.py` renders fragments from `.sh` templates
+- `wings_control/features/kv_offload/memcache/hybrid.py` renders fragments from `.sh` templates

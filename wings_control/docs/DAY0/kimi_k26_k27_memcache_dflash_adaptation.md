@@ -350,7 +350,7 @@ Required behavior:
 - accept resolved memory, service URLs, `world_size`, `protocol`, and log level as inputs
 - return plain shell text/artifacts to the final assembly layer
 
-The current helper lives under `wings_control/features/memcache/`: `hybrid.py` owns enablement, capacity, and fragment rendering, while `memcache_engine_prelude.sh` and `memcache_master.sh` own the `ock.mmc.*` shell text. `vllm_adapter.py` owns vLLM command generation and only consumes the MemCache helper to skip LMCache env/YAML rendering.
+The current helper lives under `wings_control/features/kv_offload/memcache/`: `hybrid.py` owns enablement, capacity, and fragment rendering, while `memcache_engine_prelude.sh` and `memcache_master.sh` own the `ock.mmc.*` shell text. `vllm_adapter.py` owns vLLM command generation and only consumes the MemCache helper to skip LMCache env/YAML rendering.
 
 ### Deployment or manifest layer
 

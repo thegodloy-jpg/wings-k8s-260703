@@ -39,9 +39,9 @@ from utils.env_utils import get_local_ip, get_lmcache_env, \
 from utils.shell_env_utils import dedupe_env_exports
 from utils.file_utils import safe_write_file, WriteOptions
 try:
-    from wings_control.features.memcache import hybrid as memcache_hybrid
+    from wings_control.features.kv_offload.memcache import hybrid as memcache_hybrid
 except ImportError:
-    from features.memcache import hybrid as memcache_hybrid  # type: ignore
+    from features.kv_offload.memcache import hybrid as memcache_hybrid  # type: ignore
 from utils.vllm_helpers import (
     _format_cli_arg, _safe_int, _is_w8a8_quantize, _is_w4a8_quantize, _deep_merge_user_priority,
     _is_empty_engine_config_value, _parse_dict_like_config, Glm47DefaultMergeResult, Glm47InjectionStats,
