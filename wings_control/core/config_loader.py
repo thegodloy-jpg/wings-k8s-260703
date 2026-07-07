@@ -51,9 +51,25 @@ try:
 except ImportError:
     from core.version_util import resolve_card_model  # noqa: F401
 try:
-    from wings_control.engines.vllm_adapter import lmcache_auto_floor_disables_all_backends
+    from wings_control.features.memcache import (
+        build_memcache_ascend_store_config,
+        is_kimi_k27_code_memcache_params,
+        resolve_memcache_dram_gb,
+    )
 except ImportError:
-    from engines.vllm_adapter import lmcache_auto_floor_disables_all_backends  # noqa: F401
+    from features.memcache import (  # noqa: F401
+        build_memcache_ascend_store_config,
+        is_kimi_k27_code_memcache_params,
+        resolve_memcache_dram_gb,
+    )
+try:
+    from wings_control.engines.vllm_adapter import (
+        lmcache_auto_floor_disables_all_backends,
+    )
+except ImportError:
+    from engines.vllm_adapter import (  # noqa: F401
+        lmcache_auto_floor_disables_all_backends,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -1578,6 +1594,17 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 
     if ctx.get("_smart_feats") is not None:
         lmcache_offload = "offload" in ctx.get("_smart_feats")
+
+    if lmcache_offload and is_kimi_k27_code_memcache_params(ctx, ctx.get("engine")):
+        if resolve_memcache_dram_gb(ctx):
+            params["kv_transfer_config"] = json.dumps(build_memcache_ascend_store_config())
+            logger.info("[MemCache] Kimi-K2.7-Code uses AscendStoreConnector.")
+        else:
+            logger.info(
+                "[MemCache] Kimi-K2.7-Code offload requested but page memory is missing "
+                "or invalid; not injecting AscendStoreConnector."
+            )
+        return
 
     if lmcache_offload and lmcache_auto_floor_disables_all_backends(ctx):
         logger.info(

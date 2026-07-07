@@ -180,6 +180,18 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/Eco-Tech/GLM-5.1-w8a8",
         "910c",
     ) == frozenset({"spec", "sparse"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Kimi-K2.7-Code",
+        "/harbor_data/Kimi-K2.7-Code",
+        "910c",
+    ) == frozenset({"offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Kimi-K2.7-Code",
+        "/harbor_data/Kimi-K2.7-Code",
+        "910b",
+    ) == frozenset()
 
 
 def test_deepseek_v4_flash_a3_respects_upper_smart_feature_switches_when_disabled(monkeypatch):
@@ -269,6 +281,59 @@ def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstrea
         "kv_connector": "LMCacheAscendConnectorV1Dynamic",
         "kv_role": "kv_both",
         "kv_connector_module_path": "lmcache_ascend.integration.vllm.lmcache_ascend_connector_v1",
+    }
+
+
+class _FakeKimiK27CodeInfo:
+    model_name = "Kimi-K2.7-Code"
+    model_path = "/harbor_data/Kimi-K2.7-Code"
+    model_architecture = "KimiK25ForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_architecture():
+        return "KimiK25ForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
+
+
+def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K2.7-Code",
+        "model_path": "/harbor_data/Kimi-K2.7-Code",
+        "model_type": "llm",
+        "distributed": False,
+        "enable_speculative_decode": False,
+        "device_count": 16,
+    }
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+    config = config_loader._get_model_specific_config(
+        hardware_env,
+        params,
+        _FakeKimiK27CodeInfo(),
+    )
+
+    kv_transfer = json.loads(config["kv_transfer_config"])
+    assert params["_smart_feats"] == ["offload"]
+    assert kv_transfer == {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
+        "kv_load_failure_policy": "recompute",
+        "kv_connector_extra_config": {
+            "lookup_rpc_port": "0",
+            "backend": "memcache",
+        },
     }
 
 

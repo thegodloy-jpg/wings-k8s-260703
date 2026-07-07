@@ -1,6 +1,7 @@
 import sys
 import json
 import logging
+import inspect
 from pathlib import Path
 
 
@@ -8,6 +9,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from engines import vllm_adapter  # noqa: E402
 from core import wings_entry  # noqa: E402
+from features.memcache import hybrid as memcache_hybrid  # noqa: E402
+
+
+def test_memcache_helpers_are_not_owned_by_vllm_adapter():
+    assert not hasattr(vllm_adapter, "build_memcache_ascend_store_config")
+    assert not hasattr(vllm_adapter, "is_kimi_k27_code_memcache_params")
+
+
+def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    source = inspect.getsource(memcache_hybrid.build_memcache_hybrid_fragment)
+    template_dir = Path(memcache_hybrid.__file__).resolve().parent
+
+    assert fragment["enabled"] is True
+    assert (template_dir / "memcache_engine_prelude.sh").exists()
+    assert (template_dir / "memcache_master.sh").exists()
+    assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
+    assert "ock.mmc.local_service.dram.size" not in source
 
 
 def _clear_deepseek_v4_flash_lmcache_env(monkeypatch):
@@ -471,6 +504,19 @@ def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
     assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in ld_preload
 
 
+def test_kimi_k27_code_ascend_env_includes_jemalloc_and_pythonhashseed():
+    env_commands = vllm_adapter._build_kimik25_ascend_env(
+        "KimiK25ForConditionalGeneration"
+    )
+
+    rendered = "\n".join(env_commands)
+    assert "export PYTHONHASHSEED=0" in rendered
+    ld_preload = next(cmd for cmd in env_commands if cmd.startswith("export LD_PRELOAD="))
+    assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2" in ld_preload
+    assert "${LD_PRELOAD:+" in ld_preload
+    assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in ld_preload
+
+
 def test_deepseek_v4_flash_ascend_v021_uses_lmcache_patch(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     params = {
@@ -507,6 +553,149 @@ def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkey
     )
 
     assert target == "ascend-arm"
+
+
+def test_kimi_k27_code_memcache_skips_lmcache_patch(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+
+    target = wings_entry._resolve_lmcache_install_target(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert target is None
+
+
+def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    commands = vllm_adapter._build_cache_env_commands(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "device_count": 16,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert commands == []
+
+
+def test_kimi_k27_code_memcache_engine_prelude_uses_page_offload_memory(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "device_count": 16,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert fragment["enabled"] is True
+    assert 'export WINGS_MEMCACHE_DRAM_GB="40"' in fragment["engine_prelude"]
+    assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
+    assert "MMC_LOCAL_CONFIG_PATH" in fragment["engine_prelude"]
+    assert "MMC_META_CONFIG_PATH" in fragment["master_script"]
+
+
+def test_kimi_k27_code_memcache_without_page_memory_is_disabled(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
+    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "device_count": 16,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert fragment == {
+        "enabled": False,
+        "engine_prelude": "",
+        "fallback_cleanup": "",
+        "master_script": "",
+        "env": {},
+    }
+
+
+def test_kimi_k27_code_memcache_prelude_is_assembled_before_engine_body(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.delenv("ENABLE_ACCEL", raising=False)
+
+    command = wings_entry._assemble_startup_command(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "device_count": 16,
+            "_smart_feats": ["offload"],
+        },
+        {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+        'exec vllm serve /harbor_data/Kimi-K2.7-Code\n',
+        "",
+    )
+
+    prelude_index = command.index("# --- wings-memcache: engine prelude ---")
+    engine_index = command.index("exec vllm serve /harbor_data/Kimi-K2.7-Code")
+    assert prelude_index < engine_index
+    assert 'export WINGS_MEMCACHE_DRAM_GB="40"' in command
+    assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in command
+    assert "start_memcache_master.sh" in command
+
+
+def test_kimi_k27_code_memcache_reports_active_variant(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K2.7-Code",
+        "model_path": "/harbor_data/Kimi-K2.7-Code",
+        "model_type": "llm",
+        "device_count": 16,
+        "_smart_feats": ["offload"],
+    }
+
+    wings_entry._write_advanced_features_json("vllm_ascend", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is True
+    assert data["variants"]["kv_offload"] == "memcache"
 
 
 def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatch):

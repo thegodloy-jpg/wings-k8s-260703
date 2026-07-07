@@ -38,6 +38,10 @@ from utils.env_utils import get_local_ip, get_lmcache_env, \
     get_sparse_level_env
 from utils.shell_env_utils import dedupe_env_exports
 from utils.file_utils import safe_write_file, WriteOptions
+try:
+    from wings_control.features.memcache import hybrid as memcache_hybrid
+except ImportError:
+    from features.memcache import hybrid as memcache_hybrid  # type: ignore
 from utils.vllm_helpers import (
     _format_cli_arg, _safe_int, _is_w8a8_quantize, _is_w4a8_quantize, _deep_merge_user_priority,
     _is_empty_engine_config_value, _parse_dict_like_config, Glm47DefaultMergeResult, Glm47InjectionStats,
@@ -980,6 +984,10 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
 
     # 守卫（条件由 _classify_offload_special_case 统一裁定；互斥特例跳过 env 导出）
     special = _classify_offload_special_case(params, engine)
+    if memcache_hybrid.is_kimi_k27_code_memcache_params(params, engine):
+        logger.info("[MemCache] Kimi-K2.7-Code uses MemCache; skipping LMCache env exports.")
+        return env_commands
+
     if _lmcache_engine_env_skip(special):
         return env_commands
 
@@ -1043,6 +1051,12 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     """
     if not get_lmcache_env():
         return ""
+    if memcache_hybrid.is_kimi_k27_code_memcache_params(params, engine):
+        return (
+            memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT
+            if memcache_hybrid.resolve_memcache_dram_gb(params)
+            else "disabled"
+        )
     # 守卫（与 _build_cache_env_commands 共用 _classify_offload_special_case，天然同序）：
     # GLM-5.1·NV 强制关 → disabled；V4 → native 后端。
     special = _classify_offload_special_case(params, engine)
@@ -1514,6 +1528,8 @@ def _build_kimik25_ascend_env(arch: str) -> List[str]:
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=1",
         "export TASK_QUEUE_ENABLE=1",
+        "export PYTHONHASHSEED=0",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
         "export HCCL_BUFFSIZE=1024",
         "export VLLM_ASCEND_ENABLE_MLAPO=1",
         "export VLLM_ASCEND_BALANCE_SCHEDULING=1",
@@ -3498,7 +3514,6 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         return ""
     if not get_lmcache_env():
         return ""
-
     if _is_deepseek_v4_flash_params(params):
         size_gb = _resolve_v4_flash_offload_gb(params)
         logger.info("[KV Offload] DeepSeek-V4-Flash (NV) -> native backend, "

@@ -477,6 +477,33 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
     )
 
 
+def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
+    llm = _model_deploy_config("ascend")["llm"]
+    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code"]
+
+    for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+        config = kimi[engine]
+        assert config["max_model_len"] == 81920
+        assert config["max_num_seqs"] == 48
+        assert config["max_num_batched_tokens"] == 4096
+        assert config["gpu_memory_utilization"] == 0.9
+        assert config["quantization"] == "ascend"
+        assert config["async_scheduling"] is True
+        assert config["enable_auto_tool_choice"] is True
+        assert config["tool_call_parser"] == "kimi_k2"
+        assert "tensor_parallel_size" not in config
+        assert "data_parallel_size" not in config
+        additional_config = _as_dict(config["additional_config"])
+        assert additional_config == {
+            "enable_npugraph_ex": True,
+            "fuse_muls_add": True,
+            "multistream_overlap_shared_expert": True,
+        }
+        assert _as_dict(config["compilation_config"]) == {
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+        }
+
+
 def test_nvidia_defaults_follow_parameter_reduction_plan():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]

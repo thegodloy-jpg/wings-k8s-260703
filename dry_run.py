@@ -425,6 +425,10 @@ SCENARIOS = {
         "orchestration_env": {
             "DISTRIBUTED_EXECUTOR_BACKEND": "dp_deployment",
             "WINGS_ASCEND_PLATFORM": "a3",
+            "ENGINE_VERSION": "0.21.0-a3",
+            "ENABLE_KV_OFFLOAD": "true",
+            "ENABLE_KV_MEM_OFFLOAD": "true",
+            "KV_MEM_OFFLOAD_SIZE": "20",
         },
         "model_config": {
             "architecture": "KimiK25ForConditionalGeneration",

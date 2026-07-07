@@ -48,6 +48,7 @@
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/minimax-m2.5-w8a8-quarot", "minimax-m2.5-w8a8-quarot"], "card_tokens": ["910c"], "arch": "MiniMaxM2ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v3.2-w8a8", "deepseek-v3.2-w8a8"], "card_tokens": ["910c"], "arch": "DeepseekV32ForCausalLM", "source": "23.6.0"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
-    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"}
+    {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b"], "arch": "DeepseekV4ForCausalLM", "source": "23.6.0"},
+    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.7-code"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "user"}
   ]
 }

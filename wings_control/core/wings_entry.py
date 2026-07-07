@@ -36,6 +36,10 @@ from engines.vllm_adapter import (
     _inject_env_echo,
     _need_triton_patch,
 )
+from features.memcache import (
+    build_memcache_hybrid_fragment,
+    is_kimi_k27_code_memcache_params,
+)
 from utils.vllm_helpers import (
     build_modelslim_quarot_patch_preamble,
     build_triton_patch_preamble,
@@ -411,6 +415,10 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
 
     # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv-offloading-backend（构建期 CLI flag），
     # 与 LMCache 互斥：跳过 LMCache 补丁安装，避免两套卸载机制并存。
+    if is_kimi_k27_code_memcache_params(merged, engine):
+        logger.info("[MemCache] Kimi-K2.7-Code uses official MemCache; skipping LMCache patch install.")
+        return None
+
     if merged and engine == "vllm" and _is_deepseek_v4_flash_params(merged):
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
@@ -1411,6 +1419,12 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
         merged_no_features["_wings_fallback_no_kv_offload"] = True
     fallback_body = start_engine_service(merged_no_features)
     fallback_cmd = _strip_exec_and_backgroundify(fallback_body)
+    memcache_fragment = build_memcache_hybrid_fragment(
+        merged.get("engine", ""),
+        merged,
+    )
+    if memcache_fragment["enabled"]:
+        fallback_cmd = memcache_fragment["fallback_cleanup"] + fallback_cmd
     fallback_cmd += "ENGINE_PID=$!\n"
     fallback_cmd += (
         f'echo "[Engine] Engine PID: $ENGINE_PID '
@@ -1532,6 +1546,7 @@ def _assemble_startup_command(
     triton_patch = build_triton_patch_preamble(engine, _need_triton_patch)
     modelslim_patch = build_modelslim_quarot_patch_preamble(engine)
     accel_preamble = _build_accel_preamble(engine, merged)
+    memcache_fragment = build_memcache_hybrid_fragment(engine, merged)
     env_overrides = _build_env_overrides_preamble()
     env_echo_helpers = _build_env_echo_helpers_preamble()
 
@@ -1564,6 +1579,7 @@ def _assemble_startup_command(
         + modelslim_patch
         + env_overrides
         + accel_preamble
+        + memcache_fragment["engine_prelude"]
         + script_body
         + monitor_script
     )
