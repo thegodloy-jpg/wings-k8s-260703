@@ -97,6 +97,62 @@ logger = logging.getLogger(LOGGER_LAUNCHER)
 # 旧版 wings.py 在模块加载时调用，新版需在 launcher 入口显式调用
 install_noise_filters()
 
+_CHILD_STRUCTURED_LOG_RE = re.compile(
+    r"^(?:\[WINGS-CONTROL\]\s+)?"
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?\s+"
+    r"\[(?P<level>WARNING|ERROR|CRITICAL)\]\s+"
+    r"\[(?P<logger>[^\]]+)\]\s+"
+    r"(?P<message>.*)$",
+    re.IGNORECASE,
+)
+
+_CHILD_LEVEL_RE = re.compile(
+    r"\[(?P<bracket>WARNING|ERROR|CRITICAL)\]"
+    r"|^(?P<prefix>WARNING|ERROR|CRITICAL):"
+    r"|\b(?P<error>Traceback|Exception|Error:)",
+    re.IGNORECASE,
+)
+
+_LOG_LEVELS = {
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+    "TRACEBACK": logging.ERROR,
+    "EXCEPTION": logging.ERROR,
+    "ERROR:": logging.ERROR,
+}
+
+
+def _normalize_child_log_line(
+    proc_name: str,
+    line: str,
+) -> tuple[str, int, str] | None:
+    """Parse a managed child-process log line for launcher relay."""
+    text = line.rstrip()
+    if not text:
+        return None
+
+    structured = _CHILD_STRUCTURED_LOG_RE.match(text)
+    if structured:
+        level_name = structured.group("level").upper()
+        return (
+            structured.group("logger"),
+            _LOG_LEVELS[level_name],
+            f"[{proc_name}] {structured.group('message')}",
+        )
+
+    level_match = _CHILD_LEVEL_RE.search(text)
+    if not level_match:
+        return None
+
+    level_name = (
+        level_match.group("bracket")
+        or level_match.group("prefix")
+        or level_match.group("error")
+        or "WARNING"
+    ).upper()
+    return LOGGER_LAUNCHER, _LOG_LEVELS.get(level_name, logging.WARNING), f"[{proc_name}] {text}"
+
 
 @dataclass
 class DistTopology:
@@ -166,19 +222,14 @@ def _start_output_filter_thread(proc: ManagedProc) -> None:
     所有 INFO 及以下级别（含 uvicorn worker 启动日志、proxy 应用日志）静默丢弃。
     这显著减少了多 worker 场景下的日志噪声。
     """
-    _severity_re = re.compile(
-        r'\[(WARNING|ERROR|CRITICAL)\]'
-        r'|^(WARNING|ERROR|CRITICAL):'
-        r'|\b(Traceback|Exception|Error:)',
-        re.IGNORECASE,
-    )
-
     def _relay() -> None:
         try:
             for raw in iter(proc.proc.stdout.readline, b""):
                 line = raw.decode("utf-8", errors="replace")
-                if _severity_re.search(line):
-                    logger.warning("[%s] %s", proc.name, line.rstrip())
+                relay = _normalize_child_log_line(proc.name, line)
+                if relay is not None:
+                    logger_name, level, message = relay
+                    logging.getLogger(logger_name).log(level, message)
         except (ValueError, OSError):
             pass
 

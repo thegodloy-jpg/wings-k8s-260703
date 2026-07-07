@@ -25,7 +25,7 @@ import time
 #: 默认日志格式 — [name] 标签唯一标识组件，kubectl --all-containers 再叠加容器名
 LOG_FORMAT = os.getenv(
     "LOG_FORMAT",
-    "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+    "[WINGS-CONTROL] %(asctime)s [%(levelname)s] [%(name)s] %(message)s",
 )
 
 #: 日期格式
