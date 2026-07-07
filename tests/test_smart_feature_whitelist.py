@@ -38,6 +38,16 @@ class _FakeDeepSeekV4Identifier:
         self.model_type = model_type
 
 
+class _FakeQwen35Identifier:
+    model_architecture = "Qwen3_5ForConditionalGeneration"
+    model_quantize = ""
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 def test_default_smart_feature_whitelist_file_is_loaded():
     assert model_utils._SMART_WHITELIST_PATH.exists()
 
@@ -464,6 +474,33 @@ def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkey
     assert os.environ["ENABLE_SPARSE"] == "false"
     assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
+
+
+def test_qwen36_27b_ascend910b_spec_whitelist_uses_native_mtp(monkeypatch):
+    monkeypatch.setenv("ENABLE_SPARSE", "false")
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen35Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "qwen3.6-27b",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_sparse": False,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "ascend", "count": 1, "details": [{"name": "Ascend910B_64G"}]},
+    )
+
+    assert params["_allowed_smart_feats"] == ["spec"]
+    assert params["_smart_feats"] == ["spec"]
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "qwen3_5_mtp"
 
 
 def test_detect_hardware_accepts_minimal_ascend_hardware_family_file(tmp_path, monkeypatch):
