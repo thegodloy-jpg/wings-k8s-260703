@@ -27,7 +27,7 @@ def test_default_log_format_includes_wings_control_project_prefix(monkeypatch):
 
     assert (
         reloaded.LOG_FORMAT
-        == "[WINGS-CONTROL][%(name)s] [%(levelname)s]%(asctime)s %(message)s"
+        == "%(asctime)s [WINGS-CONTROL][%(name)s] [%(levelname)s] %(message)s"
     )
 
 
@@ -78,11 +78,79 @@ def test_child_project_prefixed_error_output_formats_hierarchy_once(monkeypatch)
 
     assert (
         formatted
-        == '[WINGS-CONTROL][wings-launcher] [proxy]  [WARNING]2026-07-07 09:43:42  {"evt": "retry_exception"}'
+        == '2026-07-07 09:43:42 [WINGS-CONTROL][wings-launcher] [proxy] [WARNING] {"evt": "retry_exception"}'
+    )
+
+
+def test_child_component_first_proxy_output_formats_hierarchy_once(monkeypatch):
+    monkeypatch.delenv("LOG_FORMAT", raising=False)
+    launcher = _load_launcher_module()
+
+    from utils import log_config
+
+    reloaded = importlib.reload(log_config)
+    relay = launcher._normalize_child_log_line(
+        "proxy",
+        '[WINGS-CONTROL][wings-proxy] [ERROR]2026-07-08 03:12:04 {"evt": "retry_exception"}',
+    )
+    record = logging.LogRecord(
+        relay.logger_name,
+        relay.level,
+        pathname="",
+        lineno=0,
+        msg=relay.message,
+        args=(),
+        exc_info=None,
+    )
+    for key, value in relay.extra.items():
+        setattr(record, key, value)
+
+    formatted = reloaded.WingsControlFormatter(
+        reloaded.LOG_FORMAT,
+        datefmt=reloaded.LOG_DATE_FORMAT,
+    ).format(record)
+
+    assert (
+        formatted
+        == '2026-07-08 03:12:04 [WINGS-CONTROL][wings-launcher] [proxy] [WARNING] {"evt": "retry_exception"}'
+    )
+
+
+def test_child_timestamp_first_proxy_output_formats_hierarchy_once(monkeypatch):
+    monkeypatch.delenv("LOG_FORMAT", raising=False)
+    launcher = _load_launcher_module()
+
+    from utils import log_config
+
+    reloaded = importlib.reload(log_config)
+    relay = launcher._normalize_child_log_line(
+        "proxy",
+        '2026-07-08 03:12:04 [WINGS-CONTROL][wings-proxy] [ERROR] {"evt": "retry_exception"}',
+    )
+    record = logging.LogRecord(
+        relay.logger_name,
+        relay.level,
+        pathname="",
+        lineno=0,
+        msg=relay.message,
+        args=(),
+        exc_info=None,
+    )
+    for key, value in relay.extra.items():
+        setattr(record, key, value)
+
+    formatted = reloaded.WingsControlFormatter(
+        reloaded.LOG_FORMAT,
+        datefmt=reloaded.LOG_DATE_FORMAT,
+    ).format(record)
+
+    assert (
+        formatted
+        == '2026-07-08 03:12:04 [WINGS-CONTROL][wings-launcher] [proxy] [WARNING] {"evt": "retry_exception"}'
     )
 
 
 def test_log_analyzer_uses_wings_control_project_prefix():
     source = Path("wings_control/log_analyzer/log_analyzer.py").read_text(encoding="utf-8")
 
-    assert "[WINGS-CONTROL][%(name)s] [%(levelname)s]%(asctime)s %(message)s" in source
+    assert "%(asctime)s [WINGS-CONTROL][%(name)s] [%(levelname)s] %(message)s" in source

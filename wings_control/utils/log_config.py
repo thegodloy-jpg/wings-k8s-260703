@@ -25,7 +25,7 @@ import time
 #: 默认日志格式 — [name] 标签唯一标识组件，kubectl --all-containers 再叠加容器名
 LOG_FORMAT = os.getenv(
     "LOG_FORMAT",
-    "[WINGS-CONTROL][%(name)s] [%(levelname)s]%(asctime)s %(message)s",
+    "%(asctime)s [WINGS-CONTROL][%(name)s] [%(levelname)s] %(message)s",
 )
 
 #: 日期格式
@@ -103,8 +103,8 @@ class WingsControlFormatter(logging.Formatter):
             if not child_time:
                 child_time = self.formatTime(record, self.datefmt)
             return (
-                f"[WINGS-CONTROL][{record.name}] [{child_component}]  "
-                f"[{record.levelname}]{child_time}  {record.getMessage()}"
+                f"{child_time} [WINGS-CONTROL][{record.name}] "
+                f"[{child_component}] [{record.levelname}] {record.getMessage()}"
             )
         return super().format(record)
 
