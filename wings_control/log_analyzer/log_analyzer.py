@@ -304,6 +304,7 @@ class LogAnalyzer:
         # 获取日志模式
         self.log_patterns = self.plugin.get_log_patterns()
         self.error_patterns = self.plugin.get_error_patterns()
+        self.accel_patterns = self.plugin.get_accel_patterns()
 
         # 添加通用阶段的日志模式（与加速引擎无关）
         self._add_common_patterns()
