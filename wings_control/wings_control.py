@@ -77,7 +77,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 import requests
 
@@ -97,9 +97,16 @@ logger = logging.getLogger(LOGGER_LAUNCHER)
 # 旧版 wings.py 在模块加载时调用，新版需在 launcher 入口显式调用
 install_noise_filters()
 
+class ChildLogRelay(NamedTuple):
+    logger_name: str
+    level: int
+    message: str
+    extra: dict[str, str]
+
+
 _CHILD_STRUCTURED_LOG_RE = re.compile(
     r"^(?:\[WINGS-CONTROL\]\s+)?"
-    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?\s+"
+    r"(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)\s+"
     r"\[(?P<level>WARNING|ERROR|CRITICAL)\]\s+"
     r"\[(?P<logger>[^\]]+)\]\s+"
     r"(?P<message>.*)$",
@@ -126,7 +133,7 @@ _LOG_LEVELS = {
 def _normalize_child_log_line(
     proc_name: str,
     line: str,
-) -> tuple[str, int, str] | None:
+) -> ChildLogRelay | None:
     """Parse a managed child-process log line for launcher relay."""
     text = line.rstrip()
     if not text:
@@ -134,11 +141,14 @@ def _normalize_child_log_line(
 
     structured = _CHILD_STRUCTURED_LOG_RE.match(text)
     if structured:
-        level_name = structured.group("level").upper()
-        return (
-            structured.group("logger"),
-            _LOG_LEVELS[level_name],
-            f"[{proc_name}] {structured.group('message')}",
+        return ChildLogRelay(
+            LOGGER_LAUNCHER,
+            logging.WARNING,
+            structured.group("message"),
+            {
+                "wings_child_component": proc_name,
+                "wings_child_time": structured.group("timestamp"),
+            },
         )
 
     level_match = _CHILD_LEVEL_RE.search(text)
@@ -151,7 +161,12 @@ def _normalize_child_log_line(
         or level_match.group("error")
         or "WARNING"
     ).upper()
-    return LOGGER_LAUNCHER, _LOG_LEVELS.get(level_name, logging.WARNING), f"[{proc_name}] {text}"
+    return ChildLogRelay(
+        LOGGER_LAUNCHER,
+        _LOG_LEVELS.get(level_name, logging.WARNING),
+        text,
+        {"wings_child_component": proc_name},
+    )
 
 
 @dataclass
@@ -228,8 +243,11 @@ def _start_output_filter_thread(proc: ManagedProc) -> None:
                 line = raw.decode("utf-8", errors="replace")
                 relay = _normalize_child_log_line(proc.name, line)
                 if relay is not None:
-                    logger_name, level, message = relay
-                    logging.getLogger(logger_name).log(level, message)
+                    logging.getLogger(relay.logger_name).log(
+                        relay.level,
+                        relay.message,
+                        extra=relay.extra,
+                    )
         except (ValueError, OSError):
             pass
 

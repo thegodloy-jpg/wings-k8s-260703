@@ -25,7 +25,7 @@ import time
 #: 默认日志格式 — [name] 标签唯一标识组件，kubectl --all-containers 再叠加容器名
 LOG_FORMAT = os.getenv(
     "LOG_FORMAT",
-    "[WINGS-CONTROL] %(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+    "[WINGS-CONTROL][%(name)s] [%(levelname)s]%(asctime)s %(message)s",
 )
 
 #: 日期格式
@@ -93,6 +93,26 @@ class DedupErrorFilter(logging.Filter):
         return True
 
 
+class WingsControlFormatter(logging.Formatter):
+    """Format normal logs and launcher-relayed child logs without duplicate prefixes."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        child_component = getattr(record, "wings_child_component", None)
+        if child_component:
+            child_time = getattr(record, "wings_child_time", None)
+            if not child_time:
+                child_time = self.formatTime(record, self.datefmt)
+            return (
+                f"[WINGS-CONTROL][{record.name}] [{child_component}]  "
+                f"[{record.levelname}]{child_time}  {record.getMessage()}"
+            )
+        return super().format(record)
+
+
+def _make_formatter() -> WingsControlFormatter:
+    return WingsControlFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+
 def _resolve_log_levels(
     level: str | None,
     stderr_level: str | None,
@@ -153,7 +173,7 @@ def _setup_file_handler(root: logging.Logger) -> None:
             encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
+        file_handler.setFormatter(_make_formatter())
         root.addHandler(file_handler)
     except OSError:
         root.warning("Cannot write log file to %s, file logging disabled", LOG_FILE_PATH)
@@ -188,6 +208,9 @@ def setup_root_logging(
     )
 
     root = logging.getLogger()
+    formatter = _make_formatter()
+    for handler in root.handlers:
+        handler.setFormatter(formatter)
     _configure_stderr_handlers(root, stderr_log_level)
     _install_dedup_filter(root)
     _setup_file_handler(root)
