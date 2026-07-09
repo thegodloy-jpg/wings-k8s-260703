@@ -26,6 +26,28 @@ def test_start_script_prioritizes_opt_and_app_workdir_before_inherited_pythonpat
     assert script.index(expected) < script.index('exec "${PYTHON_BIN}" -m wings_control')
 
 
+def test_start_script_prefers_packaged_log_analyzer_over_standalone_copy():
+    script = Path("wings_control/wings_start.sh").read_text(encoding="utf-8")
+
+    package_source = 'LOG_ANALYZER_SOURCE="${WINGS_PACKAGE_DIR:-/opt/wings_control}/log_analyzer"'
+    fallback = 'LOG_ANALYZER_SOURCE="${DEFAULT_LOG_ANALYZER:-/opt/log_analyzer}"'
+
+    assert package_source in script
+    assert fallback in script
+    assert script.index(package_source) < script.index(fallback)
+
+
+def test_start_script_replaces_shared_log_analyzer_before_copying():
+    script = Path("wings_control/wings_start.sh").read_text(encoding="utf-8")
+
+    remove_existing = 'rm -rf "${SHARED_VOLUME_PATH:-/shared-volume}/log_analyzer"'
+    copy_analyzer = 'cp -r "$LOG_ANALYZER_SOURCE" "${SHARED_VOLUME_PATH:-/shared-volume}/"'
+
+    assert remove_existing in script
+    assert copy_analyzer in script
+    assert script.index(remove_existing) < script.index(copy_analyzer)
+
+
 def test_package_main_runs_launcher_entrypoint():
     main_py = Path("wings_control/__main__.py").read_text(encoding="utf-8")
 

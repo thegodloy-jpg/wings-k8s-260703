@@ -374,11 +374,17 @@ mkdir -p "${SHARED_VOLUME_PATH:-/shared-volume}" 2>/dev/null || true
 # 拷贝 log_analyzer 模块到共享卷
 # 注意: 必须清除 __pycache__ 目录，因为 wings-control 容器(Python 3.10)
 # 编译的 .pyc 文件与 engine 容器(Python 3.11+)不兼容，会导致 bad magic number 错误
-if [ -d "${DEFAULT_LOG_ANALYZER:-/opt/log_analyzer}" ]; then
-    echo "Copying ${DEFAULT_LOG_ANALYZER:-/opt/log_analyzer} module to /shared-volume..."
-    cp -r "${DEFAULT_LOG_ANALYZER:-/opt/log_analyzer}" "${SHARED_VOLUME_PATH:-/shared-volume}/"
+LOG_ANALYZER_SOURCE="${WINGS_PACKAGE_DIR:-/opt/wings_control}/log_analyzer"
+if [ ! -d "$LOG_ANALYZER_SOURCE" ]; then
+    LOG_ANALYZER_SOURCE="${DEFAULT_LOG_ANALYZER:-/opt/log_analyzer}"
+fi
+
+if [ -d "$LOG_ANALYZER_SOURCE" ]; then
+    echo "Copying $LOG_ANALYZER_SOURCE module to ${SHARED_VOLUME_PATH:-/shared-volume}..."
+    rm -rf "${SHARED_VOLUME_PATH:-/shared-volume}/log_analyzer"
+    cp -r "$LOG_ANALYZER_SOURCE" "${SHARED_VOLUME_PATH:-/shared-volume}/"
     find "${SHARED_VOLUME_PATH:-/shared-volume}/log_analyzer" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-    echo "${DEFAULT_LOG_ANALYZER:-/opt/log_analyzer} copied successfully !"
+    echo "$LOG_ANALYZER_SOURCE copied successfully !"
 fi
 
 # 设置 PYTHONPATH
