@@ -98,6 +98,13 @@ class DedupErrorFilter(logging.Filter):
 class WingsControlFormatter(logging.Formatter):
     """Format normal logs and launcher-relayed child logs without duplicate prefixes."""
 
+    @staticmethod
+    def _format_child_time(child_time: object) -> str:
+        text = str(child_time).strip().replace(",", ".")
+        if len(text) == len("YYYY-MM-DD HH:MM:SS"):
+            return f"{text}.000"
+        return text
+
     def format(self, record: logging.LogRecord) -> str:
         child_component = getattr(record, "wings_child_component", None)
         if child_component:
@@ -117,13 +124,6 @@ class WingsControlFormatter(logging.Formatter):
 
     def _format_record_time(self, record: logging.LogRecord) -> str:
         return f"{self.formatTime(record, self.datefmt)}.{int(record.msecs):03d}"
-
-    @staticmethod
-    def _format_child_time(child_time: object) -> str:
-        text = str(child_time).strip().replace(",", ".")
-        if len(text) == len("YYYY-MM-DD HH:MM:SS"):
-            return f"{text}.000"
-        return text
 
 
 def _make_formatter() -> WingsControlFormatter:
