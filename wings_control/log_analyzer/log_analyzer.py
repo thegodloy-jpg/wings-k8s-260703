@@ -21,7 +21,7 @@ from dataclasses import dataclass
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [WINGS-CONTROL][%(name)s] [%(levelname)s] %(message)s',
+    format='%(asctime)s.%(msecs)03d [%(levelname)s] WINGS-CONTROL [%(name)s#%(funcName)s:%(lineno)d] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)

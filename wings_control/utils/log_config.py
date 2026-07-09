@@ -23,9 +23,11 @@ import time
 # ---------------------------------------------------------------------------
 
 #: 默认日志格式 — [name] 标签唯一标识组件，kubectl --all-containers 再叠加容器名
+LOG_COMPONENT = os.getenv("LOG_COMPONENT", "WINGS-CONTROL")
 LOG_FORMAT = os.getenv(
     "LOG_FORMAT",
-    "%(asctime)s [WINGS-CONTROL][%(name)s] [%(levelname)s] %(message)s",
+    f"%(asctime)s.%(msecs)03d [%(levelname)s] {LOG_COMPONENT} "
+    "[%(name)s#%(funcName)s:%(lineno)d] %(message)s",
 )
 
 #: 日期格式
@@ -96,15 +98,30 @@ class DedupErrorFilter(logging.Filter):
 class WingsControlFormatter(logging.Formatter):
     """Format normal logs and launcher-relayed child logs without duplicate prefixes."""
 
+    def _format_record_time(self, record: logging.LogRecord) -> str:
+        return f"{self.formatTime(record, self.datefmt)}.{int(record.msecs):03d}"
+
+    @staticmethod
+    def _format_child_time(child_time: object) -> str:
+        text = str(child_time).strip().replace(",", ".")
+        if len(text) == len("YYYY-MM-DD HH:MM:SS"):
+            return f"{text}.000"
+        return text
+
     def format(self, record: logging.LogRecord) -> str:
         child_component = getattr(record, "wings_child_component", None)
         if child_component:
             child_time = getattr(record, "wings_child_time", None)
             if not child_time:
-                child_time = self.formatTime(record, self.datefmt)
+                child_time = self._format_record_time(record)
+            else:
+                child_time = self._format_child_time(child_time)
+            child_source = getattr(record, "wings_child_source", None)
+            if not child_source:
+                child_source = f"{record.name}#{child_component}"
             return (
-                f"{child_time} [WINGS-CONTROL][{record.name}] "
-                f"[{child_component}] [{record.levelname}] {record.getMessage()}"
+                f"{child_time} [{record.levelname}] {LOG_COMPONENT} "
+                f"[{child_source}] {record.getMessage()}"
             )
         return super().format(record)
 

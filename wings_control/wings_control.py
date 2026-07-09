@@ -104,25 +104,34 @@ class ChildLogRelay(NamedTuple):
     extra: dict[str, str]
 
 
+_CHILD_TIMESTAMP_RE = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,.]\d{3})?"
 _CHILD_STRUCTURED_LOG_RES = (
     re.compile(
         r"^(?:\[WINGS-CONTROL\]\s+)?"
-        r"(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)\s+"
+        rf"(?P<timestamp>{_CHILD_TIMESTAMP_RE})\s+"
         r"\[(?P<level>WARNING|ERROR|CRITICAL)\]\s+"
-        r"\[(?P<logger>[^\]]+)\]\s+"
+        r"\[(?P<source>[^\]]+)\]\s+"
         r"(?P<message>.*)$",
         re.IGNORECASE,
     ),
     re.compile(
-        r"^\[WINGS-CONTROL\]\[(?P<logger>[^\]]+)\]\s+"
+        rf"^(?P<timestamp>{_CHILD_TIMESTAMP_RE})\s+"
+        r"\[(?P<level>WARNING|ERROR|CRITICAL)\]\s+"
+        r"WINGS-CONTROL\s+"
+        r"\[(?P<source>[^\]]+)\]\s+"
+        r"(?P<message>.*)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\[WINGS-CONTROL\]\[(?P<source>[^\]]+)\]\s+"
         r"\[(?P<level>WARNING|ERROR|CRITICAL)\]\s*"
-        r"(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)\s+"
+        rf"(?P<timestamp>{_CHILD_TIMESTAMP_RE})\s+"
         r"(?P<message>.*)$",
         re.IGNORECASE,
     ),
     re.compile(
-        r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)\s+"
-        r"\[WINGS-CONTROL\]\[(?P<logger>[^\]]+)\]\s+"
+        rf"^(?P<timestamp>{_CHILD_TIMESTAMP_RE})\s+"
+        r"\[WINGS-CONTROL\]\[(?P<source>[^\]]+)\]\s+"
         r"\[(?P<level>WARNING|ERROR|CRITICAL)\]\s+"
         r"(?P<message>.*)$",
         re.IGNORECASE,
@@ -169,6 +178,7 @@ def _normalize_child_log_line(
             {
                 "wings_child_component": proc_name,
                 "wings_child_time": structured.group("timestamp"),
+                "wings_child_source": structured.group("source"),
             },
         )
 
