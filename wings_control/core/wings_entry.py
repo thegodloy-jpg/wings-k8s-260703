@@ -31,6 +31,8 @@ from engines.vllm_adapter import (
     resolve_speculative_strategy,
     resolve_sparse_variant,
     resolve_offload_variant,
+    resolve_effective_kv_mem_offload_size,
+    prepare_params_for_startup_status,
     lmcache_auto_floor_disables_all_backends,
     _is_deepseek_v4_flash_params,
     _inject_env_echo,
@@ -1041,13 +1043,20 @@ def _write_advanced_features_json(engine: str, merged: dict) -> None:
         "sparse_kv": resolve_sparse_variant(merged, engine) if features["sparse_kv"] else None,
         "kv_offload": kv_offload_variant,
     }
-    data = {"engine": engine, "features": features, "variants": variants}
+    others = {
+        "kv_mem_offload_size": resolve_effective_kv_mem_offload_size(
+            merged,
+            engine,
+            kv_offload_variant,
+        ),
+    }
+    data = {"engine": engine, "features": features, "variants": variants, "others": others}
     ok = safe_write_file(
         _ADVANCED_FEATURES_FILE, data, is_json=True,
         options=WriteOptions(is_json=True, atomic=True),
     )
     if ok:
-        logger.info("Wrote advanced_features.json: features=%s variants=%s", features, variants)
+        logger.info("Wrote advanced_features.json: features=%s variants=%s others=%s", features, variants, others)
     else:
         logger.error("Failed to write advanced_features.json")
 
@@ -1258,6 +1267,14 @@ else
         "sparse_kv": false,
         "kv_offload": false,
         "rag_acc": {rag_val}
+    }},
+    "variants": {{
+        "speculative_decode": null,
+        "sparse_kv": null,
+        "kv_offload": null
+    }},
+    "others": {{
+        "kv_mem_offload_size": 0
     }}
 }}
 FEATURES_EOF
@@ -1604,6 +1621,7 @@ def build_launcher_plan(launch_args: LaunchArgs, port_plan: PortPlan) -> Launche
     """
     hardware = detect_hardware(launch_args.device_count)
     merged = _prepare_merged_params(launch_args, port_plan, hardware)
+    prepare_params_for_startup_status(merged)
 
     engine, has_advanced_feature, active_features_label = _resolve_engine_and_features(
         merged, launch_args,

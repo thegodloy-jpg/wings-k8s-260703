@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 from engines import vllm_adapter  # noqa: E402
 from core import wings_entry  # noqa: E402
 from core import config_loader  # noqa: E402
+from core.port_plan import derive_port_plan  # noqa: E402
+from core.start_args_compat import parse_launch_args  # noqa: E402
 from features.kv_offload.memcache import hybrid as memcache_hybrid  # noqa: E402
 
 
@@ -389,8 +391,114 @@ def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch,
     assert snippet == ""
     assert data["features"]["kv_offload"] is False
     assert data["variants"]["kv_offload"] == "lmcache_cpu+auto+floor_disabled"
+    assert data["others"]["kv_mem_offload_size"] == 0
     assert wings_entry._collect_active_feature_names(params) == []
     assert wings_entry._has_advanced_features(params) is False
+
+
+def test_deepseek_v4_flash_ascend_auto_reports_effective_lmcache_size(monkeypatch, tmp_path):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_feats": ["offload"],
+    }
+
+    wings_entry._write_advanced_features_json("vllm_ascend", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is True
+    assert data["variants"]["kv_offload"] == "lmcache_cpu+auto"
+    assert data["others"]["kv_mem_offload_size"] == 15
+
+
+def test_launcher_plan_reports_lmcache_auto_size_from_generated_command(monkeypatch, tmp_path):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    state_file = tmp_path / "advanced_features.json"
+    monkeypatch.setattr(wings_entry, "_ADVANCED_FEATURES_FILE", str(state_file))
+
+    hardware_file = tmp_path / "hardware_info.json"
+    hardware_file.write_text(
+        json.dumps(
+            {
+                "device": "ascend",
+                "count": 8,
+                "hardware_family": "Ascend910B_64G",
+                "details": [
+                    {
+                        "device_id": index,
+                        "name": "Ascend910B3",
+                        "total_memory": 64,
+                        "free_memory": 60,
+                        "used_memory": 4,
+                    }
+                    for index in range(8)
+                ],
+                "units": "GB",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["DeepseekV4ForCausalLM"],
+                "model_type": "deepseek_v4",
+                "torch_dtype": "bfloat16",
+                "quantization_config": {"quant_method": "ascend"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    launch_args = parse_launch_args(
+        [
+            "--model-name", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "--model-path", str(model_dir),
+            "--engine", "vllm_ascend",
+            "--device-count", "8",
+            "--trust-remote-code",
+            "--port", "18000",
+            "--node-rank", "0",
+        ]
+    )
+    port_plan = derive_port_plan(
+        port=launch_args.port,
+        enable_reason_proxy=True,
+        health_port=19000,
+    )
+
+    plan = wings_entry.build_launcher_plan(launch_args, port_plan)
+
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=15" in plan.command
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is True
+    assert data["variants"]["kv_offload"] == "lmcache_cpu+auto"
+    assert data["others"]["kv_mem_offload_size"] == 15
 
 
 def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tmp_path, caplog):
@@ -427,6 +535,7 @@ def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tm
     assert data["features"]["kv_offload"] is False
     assert data["variants"]["speculative_decode"] == "mtp"
     assert data["variants"]["kv_offload"] == "native_kv_offloading_backend+auto+floor_disabled"
+    assert data["others"]["kv_mem_offload_size"] == 0
     assert wings_entry._collect_active_feature_names(params) == ["speculative_decode"]
 
     with caplog.at_level(logging.INFO):
@@ -438,6 +547,33 @@ def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tm
         "(variant=native_kv_offloading_backend+auto+floor_disabled)"
     ) in caplog.text
     assert "kv_transfer_config = " not in caplog.text
+
+
+def test_qwen35_nvfp4_native_reports_effective_kv_mem_size(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "200")
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.5-397B-A17B-NVFP4",
+        "model_path": "/models/Qwen3.5-397B-NVFP4",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_feats": ["spec", "offload"],
+    }
+
+    wings_entry._write_advanced_features_json("vllm", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is True
+    assert data["variants"]["kv_offload"] == "native_kv_offloading_backend"
+    assert data["others"]["kv_mem_offload_size"] == 80
 
 
 def test_lmcache_auto_floor_with_disk_keeps_patch_and_disk_variant(monkeypatch):
@@ -493,6 +629,38 @@ def test_deepseek_v4_flash_ascend_custom_kv_mem_size_wins_over_lmcache_size(monk
     rendered = "\n".join(commands)
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=10" in rendered
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=21" not in rendered
+
+
+def test_deepseek_v4_flash_ascend_custom_reports_effective_lmcache_size(monkeypatch, tmp_path):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "21")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_feats": ["offload"],
+    }
+
+    wings_entry._write_advanced_features_json("vllm_ascend", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is True
+    assert data["variants"]["kv_offload"] == "lmcache_cpu+custom"
+    assert data["others"]["kv_mem_offload_size"] == 10
 
 
 def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
@@ -702,6 +870,7 @@ def test_kimi_k27_code_memcache_reports_active_variant(monkeypatch, tmp_path):
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "memcache"
+    assert data["others"]["kv_mem_offload_size"] == 40
 
 
 def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatch):

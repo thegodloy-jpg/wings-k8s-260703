@@ -363,8 +363,8 @@ async def get_startup_accel():
         JSONResponse: 包含加速特性信息的响应
     """
     try:
-        engine, features, variants = _read_advanced_features_state(settings.ADVANCED_FEATURES_FILE)
-        accel_data = _build_accel_data(engine, features, variants)
+        engine, features, variants, others = _read_advanced_features_state(settings.ADVANCED_FEATURES_FILE)
+        accel_data = _build_accel_data(engine, features, variants, others)
         return _build_accel_response(accel_data)
     except Exception as e:
         _logger.error(f"Failed to get acceleration feature info: {e}")
@@ -424,10 +424,10 @@ async def proxy_engine_monitor_request(path: str, request: Request):
         return _create_generic_error_response(e)
 
 
-def _read_advanced_features_state(file_path: str) -> tuple[str, dict, dict]:
+def _read_advanced_features_state(file_path: str) -> tuple[str, dict, dict, dict]:
     """读取 advanced_features.json（页面状态汇报文件，使能真相源）。
 
-    该文件是单个 JSON 对象：``{"engine", "features": {bool}, "variants": {str|null}}``，
+    该文件是单个 JSON 对象：``{"engine", "features": {bool}, "variants": {str|null}, "others": {...}}``，
     由 wings_entry 在脚本生成阶段写入、shell 层在补丁失败时回写。
 
     Args:
@@ -442,15 +442,16 @@ def _read_advanced_features_state(file_path: str) -> tuple[str, dict, dict]:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         _logger.debug("advanced_features.json unavailable: %s", exc)
-        return "", {}, {}
+        return "", {}, {}, {}
     if not isinstance(data, dict):
-        return "", {}, {}
+        return "", {}, {}, {}
     features = data.get("features") if isinstance(data.get("features"), dict) else {}
     variants = data.get("variants") if isinstance(data.get("variants"), dict) else {}
-    return data.get("engine", ""), features, variants
+    others = data.get("others") if isinstance(data.get("others"), dict) else {}
+    return data.get("engine", ""), features, variants, others
 
 
-def _build_accel_data(engine: str, features: dict, variants: dict) -> dict:
+def _build_accel_data(engine: str, features: dict, variants: dict, others: dict | None = None) -> dict:
     """构建加速特性响应数据。
 
     Args:
@@ -465,6 +466,7 @@ def _build_accel_data(engine: str, features: dict, variants: dict) -> dict:
         "engine": engine or os.getenv("ENGINE", "vllm"),
         "features": features,
         "variants": variants,
+        "others": others or {},
     }
 
 

@@ -1087,6 +1087,59 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     return variant
 
 
+def _parse_kv_mem_size_gb(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        size_gb = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("[KVCache Offload] Invalid resolved KV memory size=%r; reporting null.", raw)
+        return None
+    return size_gb if size_gb >= 0 else None
+
+
+def resolve_effective_kv_mem_offload_size(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+    variant: Optional[str] = None,
+) -> Optional[int]:
+    """Return the effective KV memory offload size in GB for status reporting.
+
+    The returned value follows the engine-facing landing unit:
+      * LMCache reports the per-card value exported to LMCache.
+      * Native vLLM reports the node-level value used by --kv-offloading-size.
+      * MemCache reports the DRAM value written to mmc_local.conf.
+      * Floor-disabled/discarded memory offload reports 0.
+    """
+    params = params or {}
+    if not get_lmcache_env():
+        return None
+
+    resolved_variant = variant if variant is not None else resolve_offload_variant(params, engine)
+    if not resolved_variant or resolved_variant == "disabled":
+        return None
+    if "floor_disabled" in resolved_variant:
+        return 0
+    if resolved_variant == memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT:
+        return memcache_hybrid.resolve_memcache_dram_gb(params)
+    if resolved_variant.startswith("native_kv_offloading_backend"):
+        special = _classify_offload_special_case(params, engine)
+        if special == _OFFLOAD_V4_FLASH_NATIVE:
+            size_gb = _resolve_v4_flash_offload_gb(params)
+        elif special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
+            size_gb = _resolve_qwen35_nvfp4_offload_gb(params)
+        else:
+            return None
+        return max(0, int(size_gb))
+    if resolved_variant.startswith("lmcache_cpu"):
+        _, max_cpu_size = _resolve_lmcache_cpu_env(params)
+        return _parse_kv_mem_size_gb(max_cpu_size)
+    return None
+
+
 def _native_offload_auto_floor_disabled(
     params: Optional[Dict[str, Any]],
     special: str,
@@ -2217,6 +2270,19 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         params.setdefault("engine_config", {})["speculative_config"] = engine_config["speculative_config"]
     return engine_config
 
+
+def prepare_params_for_startup_status(params: Dict[str, Any]) -> None:
+    """Write back final topology defaults needed by startup status reporting.
+
+    ``advanced_features.json`` is written before the shell is executed, but its
+    offload status must match the command that ``build_start_script`` will
+    render. Reuse the same engine-config preparation step so auto KV offload
+    formulas see the final TP/DP values.
+    """
+    engine = str((params or {}).get("engine") or "")
+    if engine not in {"vllm", "vllm_ascend"}:
+        return
+    _prepare_engine_config(params)
 
 
 def _set_if_not_explicit(

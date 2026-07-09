@@ -24,6 +24,9 @@ def test_startup_accel_route_is_served_before_proxy_catch_all(monkeypatch, tmp_p
                     "speculative_decode": "mtp",
                     "lmcache_offload": None,
                 },
+                "others": {
+                    "kv_mem_offload_size": 40,
+                },
             }
         ),
         encoding="utf-8",
@@ -46,6 +49,9 @@ def test_startup_accel_route_is_served_before_proxy_catch_all(monkeypatch, tmp_p
             "variants": {
                 "speculative_decode": "mtp",
                 "lmcache_offload": None,
+            },
+            "others": {
+                "kv_mem_offload_size": 40,
             },
         },
     }
