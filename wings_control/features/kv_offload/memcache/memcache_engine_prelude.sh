@@ -1,3 +1,4 @@
+#!/bin/bash
 # --- wings-memcache: engine prelude ---
 export WINGS_MEMCACHE_DIR="${WINGS_MEMCACHE_DIR:-/shared-volume/memcache}"
 export WINGS_MEMCACHE_META_SERVICE_URL="${WINGS_MEMCACHE_META_SERVICE_URL:-{meta_service_url}}"

@@ -2295,7 +2295,21 @@ def prepare_params_for_startup_status(params: Dict[str, Any]) -> None:
     engine = str((params or {}).get("engine") or "")
     if engine not in {"vllm", "vllm_ascend"}:
         return
-    _prepare_engine_config(params)
+    try:
+        prepared_config = _prepare_engine_config(params)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[StartupStatus] Failed to prepare final engine config for status reporting."
+        )
+        raise
+    if not isinstance(prepared_config, dict):
+        raise TypeError(
+            "_prepare_engine_config must return a dict, "
+            f"got {type(prepared_config).__name__}"
+        )
+    # 显式消费准备结果并回写最终拓扑；该操作与 _prepare_engine_config 内部回写
+    # 幂等，既满足状态计算需要，也避免调用方静默丢弃非空返回值。
+    _writeback_dp_topology_to_params(params, prepared_config)
 
 
 def _set_if_not_explicit(
@@ -3398,6 +3412,101 @@ def _handle_suffix_case(config: List[str]) -> None:
     config.append('"suffix_decoding_max_cached_requests": 1000')
 
 
+def _normalize_mtp_strategy(
+    params: Dict[str, Any],
+    engine: str,
+    model_info: ModelIdentifier,
+    strategy: str,
+) -> Tuple[str, bool, bool, bool]:
+    """归一化 MTP 方法，并返回后续 token/eager 判定所需场景标记。"""
+    is_v4_flash = _is_deepseek_v4_flash_params(params, model_info)
+    is_v4_flash_pro5000 = (
+        engine == "vllm"
+        and is_deepseek_v4_flash_rtx_pro_5000(params, engine)
+    )
+    is_qwen35_nvfp4_native = is_qwen3_5_397b_nvfp4_vllm(params, engine)
+    if (
+        model_info.model_architecture == "Glm4MoeForCausalLM"
+        and _is_w8a8_quantize(model_info.model_quantize)
+    ):
+        strategy = "mtp"
+    # V4-Flash 的官方模板在 NVIDIA 和 Ascend 上都使用裸 ``mtp``。
+    if engine in {"vllm", "vllm_ascend"} and strategy.endswith("_mtp") and is_v4_flash:
+        strategy = "mtp"
+    return strategy, is_v4_flash, is_v4_flash_pro5000, is_qwen35_nvfp4_native
+
+
+def _resolve_mtp_speculative_token_count(
+    params: Dict[str, Any],
+    engine: str,
+    model_info: ModelIdentifier,
+    is_v4_flash: bool,
+    is_v4_flash_pro5000: bool,
+) -> int:
+    """按白名单和模型配方优先级计算 MTP token 数。"""
+    whitelist_tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
+    if whitelist_tokens is not None:
+        return whitelist_tokens
+    if is_v4_flash_pro5000:
+        return 2
+
+    glm52_ascend = engine == "vllm_ascend" and is_glm52_model(
+        params.get("model_name"),
+        params.get("model_path"),
+    )
+    glm51_ascend = engine == "vllm_ascend" and is_glm_moe_dsa_glm51(
+        model_info,
+        model_name=params.get("model_name"),
+        model_path=params.get("model_path"),
+    )
+    uses_single_token = (
+        _is_deepseek_v4_pro_params(params)
+        or is_v4_flash
+        or (
+            model_info.model_architecture == "GlmMoeDsaForCausalLM"
+            and not glm51_ascend
+        )
+    )
+    return 1 if not glm52_ascend and uses_single_token else 3
+
+
+def _build_mtp_speculative_cmd(
+    params: Dict[str, Any],
+    engine: str,
+    model_info: ModelIdentifier,
+    strategy: str,
+) -> str:
+    """构建已经选定 MTP 策略后的 speculative-config。"""
+    strategy, is_v4_flash, is_v4_flash_pro5000, is_qwen35_nvfp4_native = (
+        _normalize_mtp_strategy(params, engine, model_info, strategy)
+    )
+    token_count = _resolve_mtp_speculative_token_count(
+        params,
+        engine,
+        model_info,
+        is_v4_flash,
+        is_v4_flash_pro5000,
+    )
+    config = [
+        f'"method": "{strategy}"',
+        f'"num_speculative_tokens": {token_count}',
+    ]
+
+    # Qwen3.5 MTP 与非 Pro5000 的 V4-Flash 只让投机头退回 eager，
+    # 不影响主模型顶层的图编译策略。
+    if (
+        (_is_qwen35_arch(model_info.model_architecture) and not is_qwen35_nvfp4_native)
+        or (is_v4_flash and not is_v4_flash_pro5000)
+    ):
+        config.append('"enforce_eager": true')
+    if (
+        model_info.model_architecture == "Glm4MoeForCausalLM"
+        and _is_w8a8_quantize(model_info.model_quantize)
+    ):
+        config.append('"speculative_token_range": "256,512"')
+    return _format_speculative_result(config, compact=is_qwen35_nvfp4_native)
+
+
 def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     """推测解码方案的自动选取。
 
@@ -3420,8 +3529,6 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     logger.info("[AdvFeature-SpecDecode] Model architecture detection: %s (model_name=%s)",
                 model_info.model_architecture, params.get("model_name"))
 
-    speculative_config_temp = []
-
     strategy = resolve_speculative_strategy(params, engine)
     if not strategy:
         logger.info("[AdvFeature-SpecDecode] engine='%s' does not support speculative decode, skipping", engine)
@@ -3440,6 +3547,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         if _raw_draft not in ("none", ""):
             logger.info("[AdvFeature-SpecDecode] Draft model path detected: %s, using draft_model strategy",
                         spec_draft_raw)
+            speculative_config_temp = []
             _handle_draft_model_case(params, speculative_config_temp)
             return _format_speculative_result(speculative_config_temp)
         logger.info("[AdvFeature-SpecDecode] Draft model path is '%s' — treated as no draft model, "
@@ -3449,68 +3557,14 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     if strategy == "suffix":
         logger.info("[AdvFeature-SpecDecode] Architecture %s → suffix strategy",
                     model_info.model_architecture)
+        speculative_config_temp = []
         _handle_suffix_case(speculative_config_temp)
         return _format_speculative_result(speculative_config_temp)
 
     if strategy == "mtp" or strategy.endswith("_mtp"):
         logger.info("[AdvFeature-SpecDecode] Architecture %s → MTP strategy (%s)",
                     model_info.model_architecture, strategy)
-        is_v4_flash = _is_deepseek_v4_flash_params(params, model_info)
-        is_v4_flash_pro5000 = (
-            engine == "vllm"
-            and is_deepseek_v4_flash_rtx_pro_5000(params, engine)
-        )
-        is_qwen35_nvfp4_native = is_qwen3_5_397b_nvfp4_vllm(params, engine)
-        if model_info.model_architecture == "Glm4MoeForCausalLM" and _is_w8a8_quantize(model_info.model_quantize):
-            strategy = "mtp"
-        # [V4-Flash-NV-Day0] NV 上 V4-Flash 用裸 "mtp"；Ascend 维持 "deepseek_mtp"
-        # （官方模板要求，见 _resolve_mtp_method 注释），故按 engine 收口覆盖。
-        if engine in {"vllm", "vllm_ascend"} and strategy.endswith("_mtp") and is_v4_flash:
-            strategy = "mtp"
-        speculative_config_temp.append(f'"method": "{strategy}"')
-        # Token count policy:
-        # - V4-Flash + Pro5000 follows the tokenbox NVIDIA recipe: method=mtp, num=2.
-        # - DeepSeek-V4-Pro / Ascend V4-Flash keep num=1.
-        # - GLM-5.1/5.2 Ascend and other generic MTP paths use num=3.
-        glm52_ascend = engine == "vllm_ascend" and is_glm52_model(
-            params.get("model_name"), params.get("model_path"))
-        glm51_ascend = engine == "vllm_ascend" and is_glm_moe_dsa_glm51(
-            model_info,
-            model_name=params.get("model_name"),
-            model_path=params.get("model_path"),
-        )
-        whitelist_mtp_tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
-        _num1_arch = (
-            _is_deepseek_v4_pro_params(params)
-            or is_v4_flash
-            or (
-                model_info.model_architecture == "GlmMoeDsaForCausalLM"
-                and not glm51_ascend
-            )
-        )
-        if whitelist_mtp_tokens is not None:
-            speculative_config_temp.append(f'"num_speculative_tokens": {whitelist_mtp_tokens}')
-        elif is_v4_flash_pro5000:
-            speculative_config_temp.append('"num_speculative_tokens": 2')
-        elif not glm52_ascend and _num1_arch:
-            speculative_config_temp.append('"num_speculative_tokens": 1')
-        else:
-            speculative_config_temp.append('"num_speculative_tokens": 3')
-        # [Qwen3.5-MTP] Qwen3.5 默认 cudagraph_mode=FULL_DECODE_ONLY，全图 decode replay
-        # 会把 MTP 头一并捕获，触发 MTE 越界类崩溃（参见 GLM-5 aclgraph 案例）。这里只让
-        # MTP/草稿头退回 eager（spec config 内部开关），主模型仍享受全图编译性能；与顶层
-        # --enforce-eager（ASCEND_ENFORCE_EAGER 控制、整模型退 eager）是两个不同的旋钮。
-        if (
-            (_is_qwen35_arch(model_info.model_architecture) and not is_qwen35_nvfp4_native)
-            or (is_v4_flash and not is_v4_flash_pro5000)
-        ):
-            speculative_config_temp.append('"enforce_eager": true')
-        if model_info.model_architecture == "Glm4MoeForCausalLM" and _is_w8a8_quantize(model_info.model_quantize):
-            speculative_config_temp.append('"speculative_token_range": "256,512"')
-        return _format_speculative_result(
-            speculative_config_temp,
-            compact=is_qwen35_nvfp4_native,
-        )
+        return _build_mtp_speculative_cmd(params, engine, model_info, strategy)
 
     return ""
 

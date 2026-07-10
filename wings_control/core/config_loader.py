@@ -3342,6 +3342,96 @@ class _SpecialEngineScenario:
     minimax_m27_vllm_nvidia: bool = False
 
 
+def _build_model_config_lookup_names(model_name_lower: str, model_info=None) -> list[str]:
+    """构造模型默认配置查找名，并保持原有候选优先级。"""
+    lookup_names = [model_name_lower]
+    if model_name_lower.startswith("deepseek-v4-pro-") and model_name_lower.endswith("-mtp1"):
+        lookup_names.append(model_name_lower[:-1])
+    for extra in _fingerprint_model_config_keys(model_info):
+        if extra not in lookup_names:
+            lookup_names.append(extra)
+    return lookup_names
+
+
+def _resolve_preferred_ascend_engine_config(
+    arch_dict: Dict[str, Any],
+    lookup_names: list[str],
+    model_path_lower: str,
+    engine_key: str,
+    hardware_env: Dict[str, Any] | None,
+) -> Optional[Dict[str, Any]]:
+    """解析白名单精确配置及 DeepSeek-V4-Flash Ascend 兼容配置。"""
+    if engine_key not in {"vllm_ascend", "vllm_ascend_distributed"}:
+        return None
+    config_key = _resolve_whitelist_ascend_config_key(
+        arch_dict,
+        lookup_names,
+        model_path_lower,
+        engine_key,
+        hardware_env,
+    )
+    if config_key:
+        return arch_dict[config_key].get(engine_key, {})
+    if not _is_deepseek_v4_flash_lookup(lookup_names):
+        return None
+    config_key = _resolve_deepseek_v4_flash_ascend_config_key(arch_dict)
+    if not config_key:
+        return None
+    logger.info(
+        "Using DeepSeek-V4-Flash Ascend config '%s' (engine_key=%s)",
+        config_key,
+        engine_key,
+    )
+    return arch_dict[config_key].get(engine_key, {})
+
+
+def _resolve_special_nvidia_engine_config(
+    model: str,
+    config: Dict[str, Any],
+    engine_key: str,
+    scenario: _SpecialEngineScenario,
+    h20_model: str,
+    card_model: str,
+) -> Optional[Dict[str, Any]]:
+    """选择 DeepSeek/MiniMax NVIDIA 场景的卡型专属子配置。"""
+    engine_config = config.get(engine_key, {})
+    if scenario.deepseek_sglang_nvidia:
+        dedicated_h20 = h20_model in ("H20-96G", "H20-141G")
+        if dedicated_h20:
+            logger.info("Using dedicated config for model '%s' on %s", model, h20_model)
+        else:
+            logger.info(
+                "DeepSeek+SGLang+NVIDIA (non-H20): using engine-level config for '%s'",
+                model,
+            )
+        return engine_config.get(h20_model, {}) if dedicated_h20 else engine_config
+    if scenario.deepseek_v4_flash_vllm_nvidia:
+        dedicated_pro5000 = card_model == "rtx_pro_5000_72G"
+        if dedicated_pro5000:
+            logger.info("Using dedicated config for model '%s' on %s", model, card_model)
+        else:
+            logger.info(
+                "DeepSeek-V4-Flash+vLLM+NVIDIA (non-rtx_pro_5000_72G): "
+                "using default config for '%s'",
+                model,
+            )
+        config_key = card_model if dedicated_pro5000 else "default"
+        return engine_config.get(config_key, {})
+    if scenario.minimax_m27_vllm_nvidia:
+        dedicated_pro5000 = card_model == "rtx_pro_5000_72G"
+        if dedicated_pro5000:
+            logger.info("Using dedicated config for model '%s' on %s", model, card_model)
+        else:
+            logger.info(
+                "MiniMax-M2.7+vLLM+NVIDIA (non-rtx_pro_5000_72G): "
+                "using default config for '%s'",
+                model,
+            )
+        config_key = card_model if dedicated_pro5000 else "default"
+        return engine_config.get(config_key, {})
+    return None
+
+
 def _match_model_engine_config(
     arch_dict: Dict[str, Any],
     model_name_lower: str,
@@ -3370,80 +3460,33 @@ def _match_model_engine_config(
     Returns:
         匹配到的引擎参数字典；未匹配则返回空字典
     """
+    lookup_names = _build_model_config_lookup_names(model_name_lower, model_info)
+    preferred_config = _resolve_preferred_ascend_engine_config(
+        arch_dict,
+        lookup_names,
+        model_path_lower,
+        engine_key,
+        hardware_env,
+    )
+    if preferred_config is not None:
+        return preferred_config
+
     h20_model = _get_h20_model_hint()
     card_model = resolve_card_model(hardware_env)
-
-    lookup_names = [model_name_lower]
-    if model_name_lower.startswith("deepseek-v4-pro-") and model_name_lower.endswith("-mtp1"):
-        lookup_names.append(model_name_lower[:-1])
-    for extra in _fingerprint_model_config_keys(model_info):
-        if extra not in lookup_names:
-            lookup_names.append(extra)
-
-    if engine_key in {"vllm_ascend", "vllm_ascend_distributed"}:
-        config_key = _resolve_whitelist_ascend_config_key(
-            arch_dict,
-            lookup_names,
-            model_path_lower,
-            engine_key,
-            hardware_env,
-        )
-        if config_key:
-            return arch_dict[config_key].get(engine_key, {})
-
-    if (
-        engine_key in {"vllm_ascend", "vllm_ascend_distributed"}
-        and _is_deepseek_v4_flash_lookup(lookup_names)
-    ):
-        config_key = _resolve_deepseek_v4_flash_ascend_config_key(arch_dict)
-        if config_key:
-            logger.info(
-                "Using DeepSeek-V4-Flash Ascend config '%s' (engine_key=%s)",
-                config_key, engine_key,
-            )
-            return arch_dict[config_key].get(engine_key, {})
 
     for model, config in arch_dict.items():
         if not _model_config_key_matches_lookup_names(model.lower(), lookup_names):
             continue
-
-        if scenario.deepseek_sglang_nvidia and h20_model in ("H20-96G", "H20-141G"):
-            logger.info("Using dedicated config for model '%s' on %s", model, h20_model)
-            return config.get(engine_key, {}).get(h20_model, {})
-
-        if scenario.deepseek_sglang_nvidia:
-            logger.info(
-                "DeepSeek+SGLang+NVIDIA (non-H20): using engine-level config for '%s'",
-                model,
-            )
-            return config.get(engine_key, {})
-
-        if scenario.deepseek_v4_flash_vllm_nvidia and card_model == "rtx_pro_5000_72G":
-            logger.info("Using dedicated config for model '%s' on %s", model, card_model)
-            return config.get(engine_key, {}).get(card_model, {})
-
-        if scenario.deepseek_v4_flash_vllm_nvidia:
-            logger.info(
-                "DeepSeek-V4-Flash+vLLM+NVIDIA (non-rtx_pro_5000_72G): using default config for '%s'",
-                model,
-            )
-            return config.get(engine_key, {}).get("default", {})
-
-        # MiniMax-M2.7 + vLLM + NVIDIA：rtx_pro_5000_72G 用专属子块
-        # （use_vllm_serve/moe_backend/kv_cache_dtype/speculative_config 等固定配方）；
-        # 其余卡型降级 default（MiniMax-M2.7 无 default 子块时返回空，交由外层
-        # fallback 到 MiniMaxM2ForCausalLM.default.vllm）。
-        if scenario.minimax_m27_vllm_nvidia and card_model == "rtx_pro_5000_72G":
-            logger.info("Using dedicated config for model '%s' on %s", model, card_model)
-            return config.get(engine_key, {}).get(card_model, {})
-
-        if scenario.minimax_m27_vllm_nvidia:
-            logger.info(
-                "MiniMax-M2.7+vLLM+NVIDIA (non-rtx_pro_5000_72G): using default config for '%s'",
-                model,
-            )
-            return config.get(engine_key, {}).get("default", {})
-
+        special_config = _resolve_special_nvidia_engine_config(
+            model,
+            config,
+            engine_key,
+            scenario,
+            h20_model,
+            card_model,
+        )
+        if special_config is not None:
+            return special_config
         logger.info("Using engine config for model '%s' (engine_key=%s)", model, engine_key)
         return config.get(engine_key, {})
 

@@ -14,6 +14,7 @@ from core import wings_entry  # noqa: E402
 from core import config_loader  # noqa: E402
 from core.port_plan import derive_port_plan  # noqa: E402
 from core.start_args_compat import parse_launch_args  # noqa: E402
+from features.kv_offload import memcache as memcache_package  # noqa: E402
 from features.kv_offload.memcache import hybrid as memcache_hybrid  # noqa: E402
 
 
@@ -25,6 +26,11 @@ def test_memcache_helpers_are_not_owned_by_vllm_adapter():
 def test_memcache_transfer_config_is_owned_by_config_loader():
     assert not hasattr(memcache_hybrid, "build_memcache_ascend_store_config")
     assert hasattr(config_loader, "_build_memcache_ascend_store_config")
+
+
+def test_memcache_package_exports_all_declared_helpers():
+    for name in memcache_package.__all__:
+        assert hasattr(memcache_package, name)
 
 
 def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):
@@ -49,8 +55,46 @@ def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):
     assert fragment["enabled"] is True
     assert (template_dir / "memcache_engine_prelude.sh").exists()
     assert (template_dir / "memcache_master.sh").exists()
+    assert (template_dir / "memcache_engine_prelude.sh").read_text(
+        encoding="utf-8"
+    ).startswith("#!/bin/bash\n")
+    assert fragment["engine_prelude"].startswith("#!/bin/bash\n")
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
     assert "ock.mmc.local_service.dram.size" not in source
+
+
+def test_prepare_params_for_startup_status_consumes_prepared_topology(monkeypatch):
+    prepared = {
+        "tensor_parallel_size": 4,
+        "data_parallel_size": 2,
+        "data_parallel_size_local": 1,
+        "data_parallel_start_rank": 0,
+    }
+    monkeypatch.setattr(vllm_adapter, "_prepare_engine_config", lambda _params: prepared)
+    params = {"engine": "vllm_ascend", "engine_config": {}}
+
+    vllm_adapter.prepare_params_for_startup_status(params)
+
+    assert params["engine_config"] == prepared
+
+
+def test_prepare_params_for_startup_status_logs_and_reraises(monkeypatch, caplog):
+    def _raise_prepare_error(_params):
+        raise RuntimeError("prepare failed")
+
+    monkeypatch.setattr(vllm_adapter, "_prepare_engine_config", _raise_prepare_error)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="prepare failed"):
+        vllm_adapter.prepare_params_for_startup_status({"engine": "vllm"})
+
+    assert "Failed to prepare final engine config for status reporting" in caplog.text
+
+
+def test_prepare_params_for_startup_status_rejects_invalid_return(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "_prepare_engine_config", lambda _params: None)
+
+    with pytest.raises(TypeError, match="must return a dict"):
+        vllm_adapter.prepare_params_for_startup_status({"engine": "vllm"})
 
 
 def _clear_deepseek_v4_flash_lmcache_env(monkeypatch):

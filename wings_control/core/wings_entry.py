@@ -380,6 +380,52 @@ def _is_glm51_nvidia_vllm_merged(engine: str, merged: dict | None) -> bool:
     )
 
 
+def _is_lmcache_offload_allowed(engine: str, merged: dict | None) -> bool:
+    """返回当前模型是否通过 offload 白名单门控。"""
+    if not merged:
+        return True
+    smart_feats = merged.get("_smart_feats")
+    if smart_feats is not None:
+        return "offload" in smart_feats
+    return feature_allowed(
+        engine,
+        merged.get("model_name"),
+        merged.get("model_path"),
+        merged.get("_smart_card_token") or resolve_card_token(),
+        "offload",
+    )
+
+
+def _uses_non_lmcache_offload_backend(engine: str, merged: dict | None) -> bool:
+    """识别已由 MemCache 或 native backend 承担卸载的互斥场景。"""
+    if is_memcache_hybrid_params(merged, engine):
+        logger.info("[MemCache] Model uses official MemCache; skipping LMCache patch install.")
+        return True
+    if not merged or engine != "vllm":
+        return False
+    if _is_deepseek_v4_flash_params(merged):
+        logger.info(
+            "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
+            "--kv-offloading-backend; skipping LMCache patch install despite "
+            "ENABLE_KV_OFFLOAD=true."
+        )
+        return True
+    if is_qwen3_5_397b_nvfp4_vllm(merged, engine):
+        logger.info(
+            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native "
+            "--kv-offloading-backend; skipping LMCache patch install despite "
+            "ENABLE_KV_OFFLOAD=true."
+        )
+        return True
+    if _is_glm51_nvidia_vllm_merged(engine, merged):
+        logger.warning(
+            "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
+            "skipping LMCache patch install despite ENABLE_KV_OFFLOAD=true."
+        )
+        return True
+    return False
+
+
 def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | None:
     """决定是否安装 LMCache 补丁，并返回目标平台（vllm→nvidia-x86 / vllm_ascend→ascend-arm）。
 
@@ -389,28 +435,15 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
       * GLM-5.1 on NV/vllm → 强制关闭 LMCache；
       * 引擎无已知 lmcache-target 映射。
     """
-    
     if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() != "true":
         return None
 
-    if merged:
-        smart_feats = merged.get("_smart_feats")
-        if smart_feats is not None:
-            offload_allowed = "offload" in smart_feats
-        else:
-            offload_allowed = feature_allowed(
-                engine,
-                merged.get("model_name"),
-                merged.get("model_path"),
-                merged.get("_smart_card_token") or resolve_card_token(),
-                "offload",
-            )
-        if not offload_allowed:
-            logger.info(
-                "[SmartFeature] offload suppressed by whitelist in "
-                "_resolve_lmcache_install_target — skipping LMCache patch install."
-            )
-            return None
+    if not _is_lmcache_offload_allowed(engine, merged):
+        logger.info(
+            "[SmartFeature] offload suppressed by whitelist in "
+            "_resolve_lmcache_install_target — skipping LMCache patch install."
+        )
+        return None
 
     if lmcache_auto_floor_disables_all_backends(merged):
         logger.info(
@@ -419,33 +452,7 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
         )
         return None
 
-    # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv-offloading-backend（构建期 CLI flag），
-    # 与 LMCache 互斥：跳过 LMCache 补丁安装，避免两套卸载机制并存。
-    if is_memcache_hybrid_params(merged, engine):
-        logger.info("[MemCache] Model uses official MemCache; skipping LMCache patch install.")
-        return None
-
-    if merged and engine == "vllm" and _is_deepseek_v4_flash_params(merged):
-        logger.info(
-            "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
-            "--kv-offloading-backend; skipping LMCache patch install despite "
-            "ENABLE_KV_OFFLOAD=true."
-        )
-        return None
-
-    if merged and engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(merged, engine):
-        logger.info(
-            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native "
-            "--kv-offloading-backend; skipping LMCache patch install despite "
-            "ENABLE_KV_OFFLOAD=true."
-        )
-        return None
-
-    if _is_glm51_nvidia_vllm_merged(engine, merged):
-        logger.warning(
-            "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
-            "skipping LMCache patch install despite ENABLE_KV_OFFLOAD=true."
-        )
+    if _uses_non_lmcache_offload_backend(engine, merged):
         return None
 
     target = _ENGINE_LMCACHE_TARGET_MAP.get(engine)
