@@ -188,7 +188,7 @@ This fragment is directly concatenable with `script_body` in `wings_entry.py`.
 
 ## Master Script
 
-This is a standalone script artifact. It should not be inserted into the vLLM retry loop.
+This is a standalone script artifact. It is not inserted into the vLLM retry loop.
 The runtime source of this text is:
 
 ```text
@@ -221,7 +221,13 @@ Recommended artifact path:
 /shared-volume/memcache/start_memcache_master.sh
 ```
 
-The launcher may write this script for operators or a sidecar to run. It must not execute it inside the main vLLM engine start/retry path.
+The engine prelude writes this script before starting vLLM. When the configured
+ConfigStore host is `127.0.0.1` or `localhost` and the port is not already
+listening, the prelude starts the script once in the background and waits for
+ConfigStore readiness. This keeps MetaService outside the engine retry command
+while guaranteeing that the local endpoint is available before workers create
+`AscendStoreConnector`. For an external endpoint, the prelude does not start a
+local service; it only waits for the configured ConfigStore to become ready.
 
 ## Fallback Cleanup
 

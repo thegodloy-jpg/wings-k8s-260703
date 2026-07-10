@@ -60,6 +60,10 @@ def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):
     ).startswith("#!/bin/bash\n")
     assert fragment["engine_prelude"].startswith("#!/bin/bash\n")
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
+    assert "Starting local MetaService for ConfigStore" in fragment["engine_prelude"]
+    assert '"${WINGS_MEMCACHE_DIR}/start_memcache_master.sh"' in fragment["engine_prelude"]
+    assert "_wings_memcache_config_store_ready" in fragment["engine_prelude"]
+    assert "ConfigStore ${WINGS_MEMCACHE_CONFIG_STORE_URL} is ready" in fragment["engine_prelude"]
     assert "ock.mmc.local_service.dram.size" not in source
 
 
@@ -1045,8 +1049,10 @@ def test_kimi_k27_code_memcache_prelude_is_assembled_before_engine_body(monkeypa
     )
 
     prelude_index = command.index("# --- wings-memcache: engine prelude ---")
+    master_start_index = command.index("Starting local MetaService for ConfigStore")
+    config_ready_index = command.index("ConfigStore ${WINGS_MEMCACHE_CONFIG_STORE_URL} is ready")
     engine_index = command.index("exec vllm serve /harbor_data/Kimi-K2.7-Code")
-    assert prelude_index < engine_index
+    assert prelude_index < master_start_index < config_ready_index < engine_index
     assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in command
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in command
     assert "start_memcache_master.sh" in command
