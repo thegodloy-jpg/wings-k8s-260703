@@ -842,6 +842,48 @@ def test_qwen_day0_memcache_ports_follow_offload_whitelist(
     assert f"tcp://127.0.0.1:{expected_config_port}" in fragment["master_script"]
 
 
+def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch):
+    """Qwen Day0 MemCache 复用通用 auto floor，容量不足时应关闭 offload。"""
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "45056")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/usr/local/serving/models",
+        "model_type": "llm",
+        "tensor_parallel_size": 2,
+        "data_parallel_size": 1,
+        "_smart_card_token": "910b",
+        "_smart_feats": ["offload", "spec"],
+    }
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment("vllm_ascend", params)
+    engine_config = {}
+    config_loader._set_kv_cache_config(engine_config, params)
+    variant = vllm_adapter.resolve_offload_variant(params, "vllm_ascend")
+    resolved_size = vllm_adapter.resolve_effective_kv_mem_offload_size(
+        params,
+        "vllm_ascend",
+        variant,
+    )
+
+    assert memcache_hybrid.resolve_memcache_dram_gb(params) is None
+    assert fragment == {
+        "enabled": False,
+        "engine_prelude": "",
+        "fallback_cleanup": "",
+        "master_script": "",
+        "env": {},
+    }
+    assert "kv_transfer_config" not in engine_config
+    assert variant == "disabled"
+    assert resolved_size is None
+
+
 def test_kimi_k27_code_memcache_without_page_memory_is_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")

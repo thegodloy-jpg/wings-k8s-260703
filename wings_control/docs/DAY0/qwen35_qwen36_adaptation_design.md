@@ -190,7 +190,8 @@ QwenDay0Scenario = {
 `offload` 只覆盖：
 
 - `Qwen3.5-27B-910C`
-- Qwen3.6 全部 6 个场景
+- Qwen3.6 基准表 6 个场景
+- `Qwen3.6-27B-910B`、`Qwen3.6-35B-A3B-910B` 两个 910B 复用场景（复用 910C 特性，但在白名单中保留独立行，便于后续替换）
 
 明确不覆盖：
 
@@ -265,9 +266,11 @@ Qwen MemCache profile 只覆盖：
 
 - `Qwen3.5-27B-910C`
 - `Qwen3.6-27B-910C`
+- `Qwen3.6-27B-910B`（复用 910C 特性，910B 独立白名单行）
 - `Qwen3.6-27B-w8a8-910C`
 - `Qwen3.6-27B-w8a8-910B`
 - `Qwen3.6-35B-A3B-910C`
+- `Qwen3.6-35B-A3B-910B`（复用 910C 特性，910B 独立白名单行）
 - `Qwen3.6-35B-A3B-w8a8-910C`
 - `Qwen3.6-35B-A3B-w8a8-910B`
 
@@ -307,7 +310,12 @@ Qwen MemCache 应复用当前项目 `wings_control/features/kv_offload/memcache/
 - engine 重试或 fallback 到非 offload 路径时，必须清理 `MMC_LOCAL_CONFIG_PATH`，并移除 `AscendStoreConnector` / `kv_transfer_config`；
 - Qwen MemCache 不走 LMCache install/env/YAML 路径，也不复用 `CPUOffloadingConnector`。
 
-MemCache 容量仍由页面或环境变量下发的 offload memory 决定。没有有效 offload memory 时，应按有效态关闭 MemCache，而不是保留脚本里的固定容量默认值。
+MemCache 容量仍由页面或环境变量下发的 offload memory 决定，优先读取 `KV_MEM_OFFLOAD_SIZE`，缺失时兼容读取 `LMCACHE_MAX_LOCAL_CPU_SIZE`。容量规则如下：
+
+- 正整数：直接作为 `WINGS_MEMCACHE_DRAM_GB` 渲染到 `mmc_local.conf`；
+- `auto`：必须同时存在 `ENABLE_KV_MEM_OFFLOAD=true` 和 `AVAILABLE_POD_MEM_SIZE`；
+- `auto` 按 `container_gb - (7 * TP * DP + 3) - container_gb * 0.10` 计算，并沿用通用 LMCache CPU 池的 `100G` floor；
+- 如果没有容量字段，或者 `auto` 结果低于 floor / 无法解析出正数，仍按有效态关闭 MemCache，不保留脚本里的固定容量默认值。
 
 ### 生成命令要求
 

@@ -141,6 +141,12 @@ def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
         auto_total = _resolve_offload_cpu_capacity_gb(params, size_env_name=size_env_name)
         if auto_total and auto_total > 0:
             return int(auto_total)
+        if auto_total == 0:
+            logger.info(
+                "[MemCache] Page offload memory auto capacity is below %dG floor; "
+                "disabling MemCache.",
+                _OFFLOAD_MIN_GB,
+            )
         return None
     try:
         size_gb = int(raw_size)
