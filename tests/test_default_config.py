@@ -54,6 +54,47 @@ def test_deepseek_v4_flash_repo_name_selects_pro5000_vllm_defaults():
     assert "rtx_pro_5000_72G" not in config
 
 
+def test_special_nvidia_config_selector_preserves_all_card_branches():
+    config = {
+        "sglang": {
+            "engine_marker": True,
+            "H20-96G": {"selected": "h20"},
+        },
+        "vllm": {
+            "default": {"selected": "default"},
+            "rtx_pro_5000_72G": {"selected": "pro5000"},
+        },
+    }
+    sglang_scenario = config_loader._SpecialEngineScenario(
+        deepseek_sglang_nvidia=True,
+    )
+    flash_scenario = config_loader._SpecialEngineScenario(
+        deepseek_v4_flash_vllm_nvidia=True,
+    )
+    minimax_scenario = config_loader._SpecialEngineScenario(
+        minimax_m27_vllm_nvidia=True,
+    )
+
+    assert config_loader._resolve_special_nvidia_engine_config(
+        "model", config, "sglang", sglang_scenario, "H20-96G", ""
+    ) == {"selected": "h20"}
+    assert config_loader._resolve_special_nvidia_engine_config(
+        "model", config, "sglang", sglang_scenario, "", ""
+    ) == config["sglang"]
+    assert config_loader._resolve_special_nvidia_engine_config(
+        "model", config, "vllm", flash_scenario, "", "rtx_pro_5000_72G"
+    ) == {"selected": "pro5000"}
+    assert config_loader._resolve_special_nvidia_engine_config(
+        "model", config, "vllm", flash_scenario, "", "other"
+    ) == {"selected": "default"}
+    assert config_loader._resolve_special_nvidia_engine_config(
+        "model", config, "vllm", minimax_scenario, "", "rtx_pro_5000_72G"
+    ) == {"selected": "pro5000"}
+    assert config_loader._resolve_special_nvidia_engine_config(
+        "model", config, "vllm", minimax_scenario, "", "other"
+    ) == {"selected": "default"}
+
+
 def test_deepseek_v4_flash_repo_name_gets_pro5000_defaults_through_real_selector():
     params = config_loader._get_model_specific_config(
         {
