@@ -157,6 +157,10 @@ The runtime source of this text is:
 wings_control/features/kv_offload/memcache/memcache_engine_prelude.sh
 ```
 
+The excerpt below shows the generated config and master artifact; the runtime
+template continues with the guarded MetaService start and ConfigStore readiness
+check described in the next section.
+
 ```bash
 # --- wings-memcache: engine prelude ---
 export WINGS_MEMCACHE_DIR="${WINGS_MEMCACHE_DIR:-/shared-volume/memcache}"
@@ -181,6 +185,8 @@ cat > "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh" <<'WINGS_MEMCACHE_MASTER'
 <contents of wings_control/features/kv_offload/memcache/memcache_master.sh>
 WINGS_MEMCACHE_MASTER
 chmod +x "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh"
+# Local endpoints are started once and waited on here; external endpoints are
+# only waited on. See memcache_engine_prelude.sh for the executable block.
 # --- end wings-memcache: engine prelude ---
 ```
 
