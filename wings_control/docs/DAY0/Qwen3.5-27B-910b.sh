@@ -1,5 +1,5 @@
 #!/bin/bash
-# Qwen3.5-27B feature run on 910B: dense bf16 + MTP, optional MemCache offload.
+# Qwen3.5-27B feature run on 910B: dense bf16 + MTP, no KV offload.
 set +e
 
 MODEL_DIR=${MODEL_DIR:-/var/aispace/model/ai-storage/ai-prod/platform/Qwen3.5-27B}
@@ -7,7 +7,6 @@ SERVED=${SERVED:-qwen35}
 PORT=${PORT:-7898}
 GPU_MEM_UTIL=${GPU_MEM_UTIL:-0.75}
 LOG_DIR=${LOG_DIR:-/var/aispace/jsh/work/day0-jsh/logs2}
-ENABLE_MEMCACHE=${ENABLE_MEMCACHE:-0}
 mkdir -p "$LOG_DIR"
 
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-4,5,6,7}
@@ -34,18 +33,9 @@ VISIBLE_COUNT=$(awk -F',' '{print NF}' <<< "$ASCEND_RT_VISIBLE_DEVICES")
 TP_SIZE=${TP_SIZE:-$VISIBLE_COUNT}
 LOG_FILE="$LOG_DIR/qwen35_27b_910b-$(date +%Y%m%d_%H%M%S).log"
 
-KV_ARGS=()
-if [[ "$ENABLE_MEMCACHE" == "1" || "$ENABLE_MEMCACHE" == "true" ]]; then
-  export MMC_LOCAL_CONFIG_PATH=${MMC_LOCAL_CONFIG_PATH:-/var/aispace/jsh/work/day0-jsh/confs/mmc_local.conf}
-  KV_CONFIG=${KV_CONFIG:-'{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"backend":"memcache","lookup_rpc_port":"0"}}'}
-  KV_ARGS=(--no-disable-hybrid-kv-cache-manager --kv-transfer-config "$KV_CONFIG")
-fi
-
 {
   echo "[ENV] ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES}"
   echo "[ENV] TP_SIZE=${TP_SIZE}"
-  echo "[ENV] ENABLE_MEMCACHE=${ENABLE_MEMCACHE}"
-  [[ ${#KV_ARGS[@]} -gt 0 ]] && echo "[ENV] MMC_LOCAL_CONFIG_PATH=${MMC_LOCAL_CONFIG_PATH}"
 } > "$LOG_FILE"
 
 vllm serve "$MODEL_DIR" \
@@ -54,9 +44,9 @@ vllm serve "$MODEL_DIR" \
     --max-num-seqs 8 --max-model-len 8192 --max-num-batched-tokens 8192 \
     --gpu-memory-utilization "$GPU_MEM_UTIL" --seed 1024 --trust-remote-code \
     --language-model-only \
+    --enable-auto-tool-choice --tool-call-parser qwen3_coder \
     --speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":true}' \
     --additional-config '{"enable_cpu_binding":false,"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"multistream_overlap_shared_expert":false}' \
     --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
-    "${KV_ARGS[@]}" \
     --async-scheduling \
     >> "$LOG_FILE" 2>&1

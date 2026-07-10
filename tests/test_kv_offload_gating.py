@@ -787,7 +787,7 @@ def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
     assert commands == []
 
 
-def test_kimi_k27_code_memcache_engine_prelude_uses_page_offload_memory(monkeypatch):
+def test_kimi_k27_code_memcache_engine_prelude_uses_per_card_page_offload_memory(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
@@ -805,7 +805,8 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_page_offload_memory(monkeypa
     )
 
     assert fragment["enabled"] is True
-    assert 'export WINGS_MEMCACHE_DRAM_GB="40"' in fragment["engine_prelude"]
+    # 页面下发 40G 是节点总容量；16 卡与 LMCache 一样均分为每卡 2G。
+    assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in fragment["engine_prelude"]
     assert "tcp://127.0.0.1:5000" in fragment["engine_prelude"]
     assert "tcp://127.0.0.1:6000" in fragment["engine_prelude"]
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
@@ -813,16 +814,29 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_page_offload_memory(monkeypa
     assert "MMC_META_CONFIG_PATH" in fragment["master_script"]
 
 
+def test_memcache_auto_memory_is_evenly_split_per_card(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "204800")
+
+    # 200G 容器内存、TP=2 时，节点可卸载容量为 163G；4 卡向下均分为每卡 40G。
+    assert memcache_hybrid.resolve_memcache_dram_gb(
+        {
+            "device_count": 4,
+            "tensor_parallel_size": 2,
+            "data_parallel_size": 1,
+        }
+    ) == 40
+
+
 @pytest.mark.parametrize(
     ("model_name", "card_token", "expected_meta_port", "expected_config_port"),
     [
         ("Qwen/Qwen3.5-27B", "910c", 50051, 50061),
         ("Qwen/Qwen3.6-27B", "910c", 50071, 50081),
-        ("Qwen/Qwen3.6-27B", "910b", 50051, 50061),
-        ("Eco-Tech/Qwen3.6-27B-w8a8", "910b", 50051, 50061),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", "910c", 50071, 50081),
         ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081),
-        ("Qwen/Qwen3.6-35B-A3B", "910b", 50051, 50061),
-        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910b", 50051, 50061),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c", 50071, 50081),
     ],
 )
 def test_qwen_day0_memcache_ports_follow_offload_whitelist(
@@ -861,6 +875,41 @@ def test_qwen_day0_memcache_ports_follow_offload_whitelist(
     assert f"tcp://127.0.0.1:{expected_config_port}" in fragment["master_script"]
 
 
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-122B-A10B",
+        "Qwen/Qwen3.6-27B",
+        "Eco-Tech/Qwen3.6-27B-w8a8",
+        "Qwen/Qwen3.6-35B-A3B",
+        "Eco-Tech/Qwen3.6-35B-A3B-w8a8",
+    ],
+)
+def test_qwen_day0_910b_never_enables_memcache(monkeypatch, model_name):
+    """当前 Qwen3.5/3.6 910B 场景只保留 MTP，不允许 MemCache 卸载。"""
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": model_name,
+        "model_path": f"/models/{model_name}",
+        "model_type": "llm",
+        "device_count": 4,
+        "_smart_card_token": "910b",
+        "_smart_feats": ["offload", "spec"],
+    }
+
+    assert memcache_hybrid.is_qwen_day0_memcache_params(params, "vllm_ascend") is False
+    assert memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        params,
+    ) == memcache_hybrid.empty_memcache_hybrid_fragment()
+
+
 def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch):
     """Qwen Day0 MemCache 复用通用 auto floor，容量不足时应关闭 offload。"""
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
@@ -876,7 +925,7 @@ def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch):
         "model_type": "llm",
         "tensor_parallel_size": 2,
         "data_parallel_size": 1,
-        "_smart_card_token": "910b",
+        "_smart_card_token": "910c",
         "_smart_feats": ["offload", "spec"],
     }
 
@@ -954,7 +1003,7 @@ def test_kimi_k27_code_memcache_prelude_is_assembled_before_engine_body(monkeypa
     prelude_index = command.index("# --- wings-memcache: engine prelude ---")
     engine_index = command.index("exec vllm serve /harbor_data/Kimi-K2.7-Code")
     assert prelude_index < engine_index
-    assert 'export WINGS_MEMCACHE_DRAM_GB="40"' in command
+    assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in command
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in command
     assert "start_memcache_master.sh" in command
 
@@ -983,7 +1032,7 @@ def test_kimi_k27_code_memcache_reports_active_variant(monkeypatch, tmp_path):
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "memcache"
-    assert data["others"]["kv_mem_offload_size"] == 40
+    assert data["others"]["kv_mem_offload_size"] == 2
 
 
 def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatch):

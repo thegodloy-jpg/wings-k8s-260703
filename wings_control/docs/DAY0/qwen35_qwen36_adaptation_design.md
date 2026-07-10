@@ -41,6 +41,8 @@
 - `num_speculative_tokens` 按表逐场景使用。
 - `Offload=是` 才能生成 MemCache 相关片段。
 - `Offload=否` 的场景必须禁止 `MMC_LOCAL_CONFIG_PATH`、`AscendStoreConnector`、`--kv-transfer-config`。
+- 本次适配的 Qwen3.5 / Qwen3.6 910B 场景统一 `Offload=否`；910B 只保留各场景的 MTP、EP、量化和默认参数，不允许回退到 LMCache。
+- 页面下发的 MemCache 内存是节点总容量，和 LMCache 一样按 `device_count` 均分后，才写入单卡 `WINGS_MEMCACHE_DRAM_GB`。
 - Function Call 全部为 `是`，`tool_call_parser` 固定为 `qwen3_coder`。
 - Sparse 全部为 `否`，不进入 `sparse` 白名单。
 - Qwen3.6 910C 场景的完整优化参数来自原始 Excel 的 `J6 / qwen36_serve.sh`，不是 wrapper 单元格本身。
@@ -52,10 +54,10 @@
 
 | 扩展场景 | 默认参数来源 | 特性策略 | 说明 |
 | --- | --- | --- | --- |
-| Qwen3.5-35B-A3B-910B | 复用 Qwen3.5-35B-A3B-910C | `qwen3_5_mtp`, tokens=1, 无 offload | 独立默认配置 key，白名单按 910B 命中 |
-| Qwen3.5-122B-A10B-910B | 复用 Qwen3.5-122B-A10B-910C | `qwen3_5_mtp`, tokens=1, 无 offload | 独立默认配置 key，白名单按 910B 命中 |
-| Qwen3.6-27B-910B | 复用 Qwen3.6-27B-910C | `qwen3_5_mtp`, tokens=3, MemCache `50051/50061` | 独立默认配置 key，白名单按 910B 命中 |
-| Qwen3.6-35B-A3B-910B | 复用 Qwen3.6-35B-A3B-910C | `qwen3_5_mtp`, tokens=3, MemCache `50051/50061` | 独立默认配置 key，白名单按 910B 命中 |
+| Qwen3.5-35B-A3B-910B | 复用 Qwen3.5-35B-A3B-910C | `qwen3_5_mtp`, tokens=1, 无 offload | 独立默认配置 key；只命中 910B spec 白名单 |
+| Qwen3.5-122B-A10B-910B | 复用 Qwen3.5-122B-A10B-910C | `qwen3_5_mtp`, tokens=1, 无 offload | 独立默认配置 key；只命中 910B spec 白名单 |
+| Qwen3.6-27B-910B | 复用 Qwen3.6-27B-910C | `qwen3_5_mtp`, tokens=3, 无 offload | 独立默认配置 key；只命中 910B spec 白名单 |
+| Qwen3.6-35B-A3B-910B | 复用 Qwen3.6-35B-A3B-910C | `qwen3_5_mtp`, tokens=3, 无 offload | 独立默认配置 key；只命中 910B spec 白名单 |
 
 `Qwen3.5-397B-A17B-910B` 不纳入本次扩展；该场景 910B 跑不了，必须保持无 910B 默认配置和无 910B 白名单命中。
 
@@ -72,10 +74,10 @@
 | Qwen3.5-397B-A17B-910C | row5 / 910C 优化 | done | Qwen/Qwen3.5-397B-A17B | vllm_ascend | 910C | BF16 | 16 | 1 | 6901 | qwen3_5_mtp | 1 | MTP-only | 否 |  | 是 | 否 | 4 | 16384 | 16384 | 0.92 | 1024 | qwen35 | 是 | qwen3_coder | 否 |
 | Qwen3.6-27B-910C | row6 / 910C 优化 + J6 | done | Qwen/Qwen3.6-27B | vllm_ascend | 910C | BF16 | 2 | 1 | 7799 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 否 | 否 | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 | Qwen3.6-27B-w8a8-910C | row7 / 910C 优化 + J6 | done | Eco-Tech/Qwen3.6-27B-w8a8 | vllm_ascend | 910C | INT8 / W8A8 | 2 | 1 | 7799 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 否 | quantization=ascend | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
-| Qwen3.6-27B-w8a8-910B | row7 / 910B 优化 | done | Eco-Tech/Qwen3.6-27B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50051/50061 | 否 | quantization=ascend | 32 | 131702 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
+| Qwen3.6-27B-w8a8-910B | row7 / 910B 优化 | done | Eco-Tech/Qwen3.6-27B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP-only | 否 |  | 否 | quantization=ascend | 32 | 131702 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 | Qwen3.6-35B-A3B-910C | row8 / 910C 优化 + J6 | done | Qwen/Qwen3.6-35B-A3B | vllm_ascend | 910C | BF16 / MoE | 2 | 1 | 7799 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 是 | 否 | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 | Qwen3.6-35B-A3B-w8a8-910C | row9 / 910C 优化 + J6 | 基线 done | Eco-Tech/Qwen3.6-35B-A3B-w8a8 | vllm_ascend | 910C | INT8 / W8A8 | 2 | 1 | 7799 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 是 | quantization=ascend | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
-| Qwen3.6-35B-A3B-w8a8-910B | row9 / 910B 优化 | doing | Eco-Tech/Qwen3.6-35B-A3B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50051/50061 | 是 | quantization=ascend | 32 | 131702 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
+| Qwen3.6-35B-A3B-w8a8-910B | row9 / 910B 优化 | doing | Eco-Tech/Qwen3.6-35B-A3B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP-only | 否 |  | 是 | quantization=ascend | 32 | 131702 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 
 完整 `model_path` 以 `qwen优化参数适配基准.xlsx` 的 `model_path` 列为准。Markdown 表为了可读性不重复展开所有长路径。
 
@@ -187,11 +189,10 @@ QwenDay0Scenario = {
 
 ### offload
 
-`offload` 只覆盖：
+`offload` 只覆盖 910C：
 
 - `Qwen3.5-27B-910C`
-- Qwen3.6 基准表 6 个场景
-- `Qwen3.6-27B-910B`、`Qwen3.6-35B-A3B-910B` 两个 910B 复用场景（复用 910C 特性，但在白名单中保留独立行，便于后续替换）
+- Qwen3.6 的 4 个 910C 场景
 
 明确不覆盖：
 
@@ -199,6 +200,7 @@ QwenDay0Scenario = {
 - `Qwen3.5-35B-A3B-910C`
 - `Qwen3.5-122B-A10B-910C`
 - `Qwen3.5-397B-A17B-910C`
+- 本次适配的全部 Qwen3.5 / Qwen3.6 910B 标准和复用场景
 
 这些非 offload 场景即使请求了 `ENABLE_KV_OFFLOAD=true`，有效状态也必须被白名单压掉，最终命令不能出现 MemCache 或 LMCache 片段。
 
@@ -266,15 +268,11 @@ Qwen MemCache profile 只覆盖：
 
 - `Qwen3.5-27B-910C`
 - `Qwen3.6-27B-910C`
-- `Qwen3.6-27B-910B`（复用 910C 特性，910B 独立白名单行）
 - `Qwen3.6-27B-w8a8-910C`
-- `Qwen3.6-27B-w8a8-910B`
 - `Qwen3.6-35B-A3B-910C`
-- `Qwen3.6-35B-A3B-910B`（复用 910C 特性，910B 独立白名单行）
 - `Qwen3.6-35B-A3B-w8a8-910C`
-- `Qwen3.6-35B-A3B-w8a8-910B`
 
-其他 Qwen3.5 场景必须返回空 profile。
+其他 Qwen3.5 场景以及全部 910B Qwen3.5 / Qwen3.6 场景必须返回空 profile。
 
 ### profile 字段
 
@@ -295,7 +293,6 @@ Qwen MemCache profile 只覆盖：
 
 - `Qwen3.5-27B-910C`：`50051/50061`
 - Qwen3.6 910C：`50071/50081`
-- Qwen3.6 910B：`50051/50061`
 
 ### 配置文件和服务生命周期
 
@@ -310,11 +307,12 @@ Qwen MemCache 应复用当前项目 `wings_control/features/kv_offload/memcache/
 - engine 重试或 fallback 到非 offload 路径时，必须清理 `MMC_LOCAL_CONFIG_PATH`，并移除 `AscendStoreConnector` / `kv_transfer_config`；
 - Qwen MemCache 不走 LMCache install/env/YAML 路径，也不复用 `CPUOffloadingConnector`。
 
-MemCache 容量仍由页面或环境变量下发的 offload memory 决定，优先读取 `KV_MEM_OFFLOAD_SIZE`，缺失时兼容读取 `LMCACHE_MAX_LOCAL_CPU_SIZE`。容量规则如下：
+MemCache 容量仍由页面或环境变量下发的 offload memory 决定，优先读取 `KV_MEM_OFFLOAD_SIZE`，缺失时兼容读取 `LMCACHE_MAX_LOCAL_CPU_SIZE`。两个字段都表示节点总容量；最终 `WINGS_MEMCACHE_DRAM_GB` 表示单卡容量。规则如下：
 
-- 正整数：直接作为 `WINGS_MEMCACHE_DRAM_GB` 渲染到 `mmc_local.conf`；
+- 正整数：先按 `device_count` 向下均分，再作为 `WINGS_MEMCACHE_DRAM_GB` 渲染到 `mmc_local.conf`；
 - `auto`：必须同时存在 `ENABLE_KV_MEM_OFFLOAD=true` 和 `AVAILABLE_POD_MEM_SIZE`；
-- `auto` 按 `container_gb - (7 * TP * DP + 3) - container_gb * 0.10` 计算，并沿用通用 LMCache CPU 池的 `100G` floor；
+- `auto` 先按 `container_gb - (7 * TP * DP + 3) - container_gb * 0.10` 计算节点总容量，沿用通用 LMCache CPU 池的 `100G` floor，再按 `device_count` 向下均分；
+- 均分结果至少为 `1G`，与 LMCache 的每卡换算策略一致；
 - 如果没有容量字段，或者 `auto` 结果低于 floor / 无法解析出正数，仍按有效态关闭 MemCache，不保留脚本里的固定容量默认值。
 
 ### 生成命令要求
@@ -396,7 +394,7 @@ Reasoning parser 仍由：
 
 - `smart_feature_whitelist.json` 中 `spec` 覆盖 11 个场景。
 - `spec` 白名单 11 个场景行携带 `mtp_num_speculative_tokens`，数值与基准表一致。
-- `smart_feature_whitelist.json` 中 `offload` 只覆盖 Qwen3.6 系列和 `Qwen3.5-27B-910C`。
+- `smart_feature_whitelist.json` 中 Qwen Day0 `offload` 只覆盖 5 个 910C 场景，不包含任何 Qwen3.5 / Qwen3.6 910B 行。
 - `smart_feature_whitelist.json` 中不新增本批 Qwen `sparse` 行。
 - 白名单条目的 `name_tokens`、`card_tokens`、`architecture` 与“场景识别和芯片信息”表一致。
 - `ascend_default.json` 或 scenario profile 能提供表中 per-scenario 参数。
@@ -409,7 +407,9 @@ Reasoning parser 仍由：
 - `spec` 请求只有命中白名单才有效。
 - `offload` 请求只有命中白名单才有效。
 - Qwen3.5 非 offload 场景请求卸载后，最终命令没有 MemCache / LMCache 片段。
-- Qwen3.6 和 `Qwen3.5-27B-910C` 请求卸载后，能解析出 MemCache profile。
+- Qwen3.6 的 4 个 910C 场景和 `Qwen3.5-27B-910C` 请求卸载后，能解析出 MemCache profile。
+- 全部 Qwen3.5 / Qwen3.6 910B 场景请求卸载后，有效 offload 被白名单关闭，最终命令没有 MemCache / LMCache 片段，但 MTP 保持有效。
+- MemCache 自定义容量和 `auto` 容量均按 `device_count` 均分，启动脚本和状态中的容量都是每卡值。
 - MTP tokens 与基准表一致。
 - `910b` / `910c` 硬件 token 标准化后才能命中对应白名单；识别失败时不命中。
 - EP / quantization 与基准表一致。

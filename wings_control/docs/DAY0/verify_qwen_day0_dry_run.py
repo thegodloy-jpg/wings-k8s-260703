@@ -334,8 +334,6 @@ STANDARD_SCENARIOS: list[Scenario] = [
         served_model_name="qwen36",
         mtp_tokens=3,
         quantization="ascend",
-        offload=True,
-        memcache_ports=(50051, 50061),
         qwen36=True,
         source_row=7,
         source_column="910B optimized",
@@ -396,8 +394,6 @@ STANDARD_SCENARIOS: list[Scenario] = [
         served_model_name="qwen36",
         mtp_tokens=3,
         quantization="ascend",
-        offload=True,
-        memcache_ports=(50051, 50061),
         qwen36=True,
         source_row=9,
         source_column="910B optimized",
@@ -457,14 +453,12 @@ REUSE_SCENARIOS: list[Scenario] = [
         gpu_memory_utilization=0.9,
         served_model_name="qwen36",
         mtp_tokens=3,
-        offload=True,
-        memcache_ports=(50051, 50061),
         qwen36=True,
         source_row=6,
         source_column="910B reuse of row6 910C optimized + dependency script",
         source_cell_refs=("G6", "J6"),
         is_reuse=True,
-        notes="910B row is not measured in the source workbook; config intentionally reuses 910C parameters with 910B MemCache ports.",
+        notes="910B row is not measured in the source workbook; config reuses 910C model parameters but disables offload by the 910B policy.",
     ),
     _moe(
         name="Qwen3.6-35B-A3B-910B-reuse",
@@ -479,14 +473,12 @@ REUSE_SCENARIOS: list[Scenario] = [
         gpu_memory_utilization=0.9,
         served_model_name="qwen36",
         mtp_tokens=3,
-        offload=True,
-        memcache_ports=(50051, 50061),
         qwen36=True,
         source_row=8,
         source_column="910B reuse of row8 910C optimized + dependency script",
         source_cell_refs=("G8", "J6"),
         is_reuse=True,
-        notes="910B row is not measured in the source workbook; config intentionally reuses 910C parameters with 910B MemCache ports.",
+        notes="910B row is not measured in the source workbook; config reuses 910C model parameters but disables offload by the 910B policy.",
     ),
 ]
 
@@ -793,6 +785,18 @@ def _validate_memcache_ports(scenario: Scenario, script: str) -> list[dict[str, 
                     "ok": f"tcp://127.0.0.1:{port}" in script,
                 }
             )
+        # Dry-run 页面输入固定为节点总容量 40G。MemCache 与 LMCache 使用同一
+        # 口径，最终写入 mmc_local.conf 前必须按 device_count 均分。
+        expected_dram_gb = max(1, 40 // scenario.device_count)
+        dram_export = f'export WINGS_MEMCACHE_DRAM_GB="{expected_dram_gb}"'
+        checks.append(
+            {
+                "field": "memcache_dram_gb_per_card",
+                "expected": expected_dram_gb,
+                "actual": expected_dram_gb if dram_export in script else None,
+                "ok": dram_export in script,
+            }
+        )
     else:
         for label in ("memcache_meta_port", "memcache_config_port"):
             has_any = "WINGS_MEMCACHE_" in script or "tcp://127.0.0.1:500" in script
@@ -890,6 +894,8 @@ def _markdown_report(title: str, audit: dict[str, Any], results: list[dict[str, 
         "Hardware input standard: minimal hardware_info.json with `device` and `hardware_family`; no `details` input.",
         "Function Call parser expectation: `qwen3_coder` per adaptation decision, even where the source script text still says `hermes`.",
         "Qwen MemCache expectation: AscendStoreConnector config must not contain `kv_load_failure_policy`.",
+        "Qwen 910B policy: keep scenario-specific MTP, but suppress offload and all MemCache/LMCache launch fragments.",
+        "MemCache memory policy: page memory is node total and is evenly divided by `device_count` before writing per-card DRAM.",
         "",
         "| Scenario | Result | Source | Hardware | Active features | Failed checks | start_command.sh |",
         "|---|---:|---|---|---|---|---|",

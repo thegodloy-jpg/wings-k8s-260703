@@ -100,6 +100,24 @@ def _offload_parallel_size(params: Dict[str, Any], key: str) -> int:
     return 1
 
 
+def _resolve_memcache_per_card_gb(params: Dict[str, Any], total_gb: int) -> int:
+    """将页面下发或自动计算的节点总容量均分为 MemCache 每卡容量。
+
+    页面容量字段的口径与 LMCache 一致，表示当前节点可用于 KV offload 的总内存。
+    ``mmc_local.conf`` 中的 ``dram.size`` 则是单卡本地服务容量，因此必须按
+    ``device_count`` 均分，避免每张卡都重复申请整节点容量。
+    """
+    device_count = _safe_int(params.get("device_count")) or 1
+    per_card_gb = max(1, total_gb // device_count)
+    logger.info(
+        "[MemCache] per-card DRAM = node offload memory(%dG) / N_card(%d) = %dG.",
+        total_gb,
+        device_count,
+        per_card_gb,
+    )
+    return per_card_gb
+
+
 def _resolve_offload_cpu_capacity_gb(
     params: Dict[str, Any],
     size_env_name: str = "KV_MEM_OFFLOAD_SIZE",
@@ -128,7 +146,7 @@ def _resolve_offload_cpu_capacity_gb(
 
 
 def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
-    """从页面下发的 offload memory 解析 MemCache 本地 DRAM 容量。"""
+    """从节点 offload memory 解析 MemCache 单卡本地 DRAM 容量。"""
     params = params or {}
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     size_env_name = "KV_MEM_OFFLOAD_SIZE"
@@ -140,7 +158,7 @@ def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
     if raw_size.lower() == "auto":
         auto_total = _resolve_offload_cpu_capacity_gb(params, size_env_name=size_env_name)
         if auto_total and auto_total > 0:
-            return int(auto_total)
+            return _resolve_memcache_per_card_gb(params, int(auto_total))
         if auto_total == 0:
             logger.info(
                 "[MemCache] Page offload memory auto capacity is below %dG floor; "
@@ -155,7 +173,7 @@ def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
         return None
     if size_gb <= 0:
         return None
-    return size_gb
+    return _resolve_memcache_per_card_gb(params, size_gb)
 
 
 def _resolve_memcache_endpoint_defaults(

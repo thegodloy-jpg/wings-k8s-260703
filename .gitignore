@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Qwen Day0 dry-run 生成的启动命令、临时模型配置和比较报告。
+wings_control/docs/DAY0/dry_run/

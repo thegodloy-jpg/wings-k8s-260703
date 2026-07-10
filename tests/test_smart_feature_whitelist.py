@@ -382,13 +382,9 @@ def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
     [
         ("Qwen/Qwen3.5-27B", _FakeQwenDenseInfo(), "Ascend910C", 2),
         ("Qwen/Qwen3.6-27B", _FakeQwenDenseInfo(), "Ascend910C", 2),
-        ("Qwen/Qwen3.6-27B", _FakeQwenDenseInfo(), "Ascend910B_64G", 2),
         ("Eco-Tech/Qwen3.6-27B-w8a8", _FakeQwenDenseInfo(), "Ascend910C", 2),
-        ("Eco-Tech/Qwen3.6-27B-w8a8", _FakeQwenDenseInfo(), "Ascend910B_64G", 4),
         ("Qwen/Qwen3.6-35B-A3B", _FakeQwenMoeInfo(), "Ascend910C", 2),
-        ("Qwen/Qwen3.6-35B-A3B", _FakeQwenMoeInfo(), "Ascend910B_64G", 2),
         ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", _FakeQwenMoeInfo(), "Ascend910C", 2),
-        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", _FakeQwenMoeInfo(), "Ascend910B_64G", 4),
     ],
 )
 def test_qwen_day0_memcache_omits_recompute_load_failure_policy(
@@ -576,7 +572,7 @@ def test_qwen35_397b_a17b_ascend910b_is_not_in_day0_spec_whitelist():
     ) is None
 
 
-def test_qwen36_27b_ascend910b_reuses_910c_spec_and_offload(monkeypatch):
+def test_qwen36_27b_ascend910b_reuses_spec_but_disables_offload(monkeypatch):
     monkeypatch.setenv("ENABLE_SPARSE", "false")
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
@@ -599,9 +595,55 @@ def test_qwen36_27b_ascend910b_reuses_910c_spec_and_offload(monkeypatch):
         {"device": "ascend", "count": 1, "details": [{"name": "Ascend910B_64G"}]},
     )
 
-    assert params["_allowed_smart_feats"] == ["offload", "spec"]
-    assert params["_smart_feats"] == ["offload", "spec"]
+    assert params["_allowed_smart_feats"] == ["spec"]
+    assert params["_smart_feats"] == ["spec"]
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
     assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "qwen3_5_mtp"
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-122B-A10B",
+        "Qwen/Qwen3.6-27B",
+        "Eco-Tech/Qwen3.6-27B-w8a8",
+        "Qwen/Qwen3.6-35B-A3B",
+        "Eco-Tech/Qwen3.6-35B-A3B-w8a8",
+    ],
+)
+def test_qwen_day0_910b_is_absent_from_offload_whitelist(model_name):
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        model_name,
+        f"/models/{model_name}",
+        "910b",
+        "offload",
+    ) is None
+
+
+def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
+    """已跟踪的 910B 示例脚本也不能绕过运行时白名单直接注入卸载。"""
+    day0_dir = Path(__file__).resolve().parents[1] / "wings_control" / "docs" / "DAY0"
+    script_names = (
+        "Qwen3.5-27B-910b.sh",
+        "Qwen3.6-27B-w8a8-910b.sh",
+        "Qwen3.6-35B-A3B-w8a8-910b.sh",
+    )
+    forbidden = (
+        "AscendStoreConnector",
+        "MMC_",
+        "LMCACHE_",
+        "--kv-transfer-config",
+        "--no-disable-hybrid-kv-cache-manager",
+    )
+
+    for script_name in script_names:
+        script = (day0_dir / script_name).read_text(encoding="utf-8")
+        assert "qwen3_5_mtp" in script
+        assert "--tool-call-parser qwen3_coder" in script
+        assert not any(token in script for token in forbidden)
 
 
 @pytest.mark.parametrize(
