@@ -799,8 +799,10 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_page_offload_memory(monkeypa
     [
         ("Qwen/Qwen3.5-27B", "910c", 50051, 50061),
         ("Qwen/Qwen3.6-27B", "910c", 50071, 50081),
+        ("Qwen/Qwen3.6-27B", "910b", 50051, 50061),
         ("Eco-Tech/Qwen3.6-27B-w8a8", "910b", 50051, 50061),
         ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081),
+        ("Qwen/Qwen3.6-35B-A3B", "910b", 50051, 50061),
         ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910b", 50051, 50061),
     ],
 )

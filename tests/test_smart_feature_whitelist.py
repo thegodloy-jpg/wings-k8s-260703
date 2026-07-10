@@ -478,21 +478,22 @@ def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkey
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
 
 
-def test_qwen36_27b_ascend910b_is_not_in_day0_spec_whitelist():
+def test_qwen35_397b_a17b_ascend910b_is_not_in_day0_spec_whitelist():
     assert model_utils.resolve_feature_whitelist_row(
         "vllm_ascend",
-        "Qwen/Qwen3.6-27B",
-        "/models/Qwen/Qwen3.6-27B",
+        "Qwen/Qwen3.5-397B-A17B",
+        "/models/Qwen/Qwen3.5-397B-A17B",
         "910b",
         "spec",
     ) is None
 
 
-def test_qwen36_27b_ascend910b_spec_request_falls_back_to_suffix(monkeypatch):
+def test_qwen36_27b_ascend910b_reuses_910c_spec_and_offload(monkeypatch):
     monkeypatch.setenv("ENABLE_SPARSE", "false")
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
-    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
-    monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen35Identifier)
 
     params = {
@@ -510,9 +511,9 @@ def test_qwen36_27b_ascend910b_spec_request_falls_back_to_suffix(monkeypatch):
         {"device": "ascend", "count": 1, "details": [{"name": "Ascend910B_64G"}]},
     )
 
-    assert params["_allowed_smart_feats"] == []
-    assert params["_smart_feats"] == []
-    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_smart_feats"] == ["offload", "spec"]
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "qwen3_5_mtp"
 
 
 @pytest.mark.parametrize(
@@ -531,6 +532,10 @@ def test_qwen36_27b_ascend910b_spec_request_falls_back_to_suffix(monkeypatch):
         ("vllm_ascend", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910b", 3),
         ("vllm_ascend", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910c", 3),
         ("vllm_ascend", "vllm-ascend/DeepSeek-V3.2-w8a8", "/models/vllm-ascend/DeepSeek-V3.2-w8a8", "910c", 3),
+        ("vllm_ascend", "Qwen/Qwen3.5-35B-A3B", "/models/Qwen/Qwen3.5-35B-A3B", "910b", 1),
+        ("vllm_ascend", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "910b", 1),
+        ("vllm_ascend", "Qwen/Qwen3.6-27B", "/models/Qwen/Qwen3.6-27B", "910b", 3),
+        ("vllm_ascend", "Qwen/Qwen3.6-35B-A3B", "/models/Qwen/Qwen3.6-35B-A3B", "910b", 3),
     ],
 )
 def test_spec_whitelist_mtp_rows_carry_mtp_tokens(

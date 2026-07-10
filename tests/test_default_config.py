@@ -477,6 +477,23 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
     )
 
 
+def test_qwen_day0_910b_reuse_defaults_are_independent_copies():
+    llm = _model_deploy_config("ascend")["llm"]
+
+    dense = llm["Qwen3_5ForConditionalGeneration"]
+    assert dense["Qwen3.6-27B-Ascend910B"] == dense["Qwen3.6-27B-Ascend910C"]
+
+    moe = llm["Qwen3_5MoeForConditionalGeneration"]
+    for model_name in (
+        "Qwen3.5-35B-A3B",
+        "Qwen3.5-122B-A10B",
+        "Qwen3.6-35B-A3B",
+    ):
+        assert moe[f"{model_name}-Ascend910B"] == moe[f"{model_name}-Ascend910C"]
+
+    assert "Qwen3.5-397B-A17B-Ascend910B" not in moe
+
+
 def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
     llm = _model_deploy_config("ascend")["llm"]
     kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code"]

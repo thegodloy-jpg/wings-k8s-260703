@@ -1,0 +1,445 @@
+[
+  {
+    "scenario": "Qwen3.5-35B-A3B-910B-reuse",
+    "standard": {
+      "scenario": "Qwen3.5-35B-A3B-910B-reuse",
+      "reuse_from": "Qwen3.5-35B-A3B-910C",
+      "model_name": "Qwen/Qwen3.5-35B-A3B",
+      "arch": "Qwen3_5MoeForConditionalGeneration",
+      "device_count": 2,
+      "port": 7897,
+      "mtp_tokens": 1,
+      "offload": false,
+      "memcache": false,
+      "memcache_ports": [],
+      "ep": true,
+      "quantization": null,
+      "max_num_seqs": 32,
+      "max_model_len": 161072,
+      "max_num_batched_tokens": 8192,
+      "gpu_memory_utilization": 0.9,
+      "served_model_name": "qwen35",
+      "card": "910b",
+      "method": "qwen3_5_mtp",
+      "function_call": true,
+      "tool_call_parser": "qwen3_coder",
+      "sparse": false
+    },
+    "hardware_info": {
+      "device": "ascend",
+      "hardware_family": "Ascend910B_64G"
+    },
+    "actual": {
+      "smart_feats": [
+        "spec"
+      ],
+      "allowed_smart_feats": [
+        "spec"
+      ],
+      "engine_config": {
+        "trust_remote_code": true,
+        "max_model_len": 161072,
+        "task": "generate",
+        "seed": 1024,
+        "tensor_parallel_size": 2,
+        "data_parallel_size": 1,
+        "enable_expert_parallel": true,
+        "max_num_seqs": 32,
+        "max_num_batched_tokens": 8192,
+        "gpu_memory_utilization": 0.9,
+        "served_model_name": "qwen35",
+        "async_scheduling": true,
+        "compilation_config": "{\"cudagraph_mode\": \"FULL_DECODE_ONLY\"}",
+        "additional_config": "{\"enable_cpu_binding\": true, \"multistream_overlap_shared_expert\": true}",
+        "tool_call_parser": "qwen3_coder",
+        "port": 7897,
+        "model": "D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.5-35B-A3B-910B-reuse",
+        "enable_auto_tool_choice": true,
+        "default_chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "exec_command": "python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 161072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen35 --async-scheduling --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}' --additional-config '{\"enable_cpu_binding\":true,\"multistream_overlap_shared_expert\":true}' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7897 --model 'D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.5-35B-A3B-910B-reuse' --enable-auto-tool-choice --default-chat-template-kwargs '{\"enable_thinking\":false}' --speculative-config '{\"method\": \"qwen3_5_mtp\", \"num_speculative_tokens\": 1, \"enforce_eager\": true}'",
+      "speculative_config": {
+        "method": "qwen3_5_mtp",
+        "num_speculative_tokens": 1,
+        "enforce_eager": true
+      },
+      "kv_transfer_config": null
+    },
+    "checks": {
+      "hardware_info_minimal": true,
+      "hardware_info_no_details": true,
+      "whitelist_spec_hit": true,
+      "whitelist_offload_hit": true,
+      "smart_feats": true,
+      "allowed_smart_feats": true,
+      "tp": true,
+      "dp": true,
+      "port": true,
+      "spec_enabled": true,
+      "mtp_method": true,
+      "mtp_tokens": true,
+      "mtp_enforce_eager": true,
+      "no_suffix_fallback": true,
+      "offload": true,
+      "memcache": true,
+      "memcache_connector": true,
+      "memcache_ports": true,
+      "ep": true,
+      "quantization": true,
+      "max_num_seqs": true,
+      "max_model_len": true,
+      "max_num_batched_tokens": true,
+      "gpu_memory_utilization": true,
+      "seed": true,
+      "served_model_name": true,
+      "function_call_parser": true,
+      "function_call_switch": true,
+      "sparse_disabled_when_not_standard": true,
+      "no_hermes_parser": true,
+      "complete_start_command": true
+    },
+    "failed_checks": [],
+    "start_command": "wings_control/docs/DAY0/dry_run/qwen_day0_910b_reuse_current/Qwen3.5-35B-A3B-910B-reuse/start_command.sh"
+  },
+  {
+    "scenario": "Qwen3.5-122B-A10B-910B-reuse",
+    "standard": {
+      "scenario": "Qwen3.5-122B-A10B-910B-reuse",
+      "reuse_from": "Qwen3.5-122B-A10B-910C",
+      "model_name": "Qwen/Qwen3.5-122B-A10B",
+      "arch": "Qwen3_5MoeForConditionalGeneration",
+      "device_count": 8,
+      "port": 6901,
+      "mtp_tokens": 1,
+      "offload": false,
+      "memcache": false,
+      "memcache_ports": [],
+      "ep": true,
+      "quantization": null,
+      "max_num_seqs": 8,
+      "max_model_len": 131072,
+      "max_num_batched_tokens": 16384,
+      "gpu_memory_utilization": 0.9,
+      "served_model_name": "qwen35",
+      "card": "910b",
+      "method": "qwen3_5_mtp",
+      "function_call": true,
+      "tool_call_parser": "qwen3_coder",
+      "sparse": false
+    },
+    "hardware_info": {
+      "device": "ascend",
+      "hardware_family": "Ascend910B_64G"
+    },
+    "actual": {
+      "smart_feats": [
+        "spec"
+      ],
+      "allowed_smart_feats": [
+        "spec"
+      ],
+      "engine_config": {
+        "trust_remote_code": true,
+        "max_model_len": 131072,
+        "task": "generate",
+        "seed": 1024,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "enable_expert_parallel": true,
+        "max_num_seqs": 8,
+        "max_num_batched_tokens": 16384,
+        "gpu_memory_utilization": 0.9,
+        "served_model_name": "qwen35",
+        "async_scheduling": true,
+        "compilation_config": "{\"cudagraph_mode\": \"FULL_DECODE_ONLY\"}",
+        "additional_config": "{\"enable_cpu_binding\": true, \"multistream_overlap_shared_expert\": true}",
+        "tool_call_parser": "qwen3_coder",
+        "port": 6901,
+        "model": "D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.5-122B-A10B-910B-reuse",
+        "enable_auto_tool_choice": true,
+        "default_chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "exec_command": "python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 8 --data-parallel-size 1 --enable-expert-parallel --max-num-seqs 8 --max-num-batched-tokens 16384 --gpu-memory-utilization 0.9 --served-model-name qwen35 --async-scheduling --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}' --additional-config '{\"enable_cpu_binding\":true,\"multistream_overlap_shared_expert\":true}' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 6901 --model 'D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.5-122B-A10B-910B-reuse' --enable-auto-tool-choice --default-chat-template-kwargs '{\"enable_thinking\":false}' --speculative-config '{\"method\": \"qwen3_5_mtp\", \"num_speculative_tokens\": 1, \"enforce_eager\": true}'",
+      "speculative_config": {
+        "method": "qwen3_5_mtp",
+        "num_speculative_tokens": 1,
+        "enforce_eager": true
+      },
+      "kv_transfer_config": null
+    },
+    "checks": {
+      "hardware_info_minimal": true,
+      "hardware_info_no_details": true,
+      "whitelist_spec_hit": true,
+      "whitelist_offload_hit": true,
+      "smart_feats": true,
+      "allowed_smart_feats": true,
+      "tp": true,
+      "dp": true,
+      "port": true,
+      "spec_enabled": true,
+      "mtp_method": true,
+      "mtp_tokens": true,
+      "mtp_enforce_eager": true,
+      "no_suffix_fallback": true,
+      "offload": true,
+      "memcache": true,
+      "memcache_connector": true,
+      "memcache_ports": true,
+      "ep": true,
+      "quantization": true,
+      "max_num_seqs": true,
+      "max_model_len": true,
+      "max_num_batched_tokens": true,
+      "gpu_memory_utilization": true,
+      "seed": true,
+      "served_model_name": true,
+      "function_call_parser": true,
+      "function_call_switch": true,
+      "sparse_disabled_when_not_standard": true,
+      "no_hermes_parser": true,
+      "complete_start_command": true
+    },
+    "failed_checks": [],
+    "start_command": "wings_control/docs/DAY0/dry_run/qwen_day0_910b_reuse_current/Qwen3.5-122B-A10B-910B-reuse/start_command.sh"
+  },
+  {
+    "scenario": "Qwen3.6-27B-910B-reuse",
+    "standard": {
+      "scenario": "Qwen3.6-27B-910B-reuse",
+      "reuse_from": "Qwen3.6-27B-910C",
+      "model_name": "Qwen/Qwen3.6-27B",
+      "arch": "Qwen3_5ForConditionalGeneration",
+      "device_count": 2,
+      "port": 7799,
+      "mtp_tokens": 3,
+      "offload": true,
+      "memcache": true,
+      "memcache_ports": [
+        50051,
+        50061
+      ],
+      "ep": false,
+      "quantization": null,
+      "max_num_seqs": 32,
+      "max_model_len": 131072,
+      "max_num_batched_tokens": 8192,
+      "gpu_memory_utilization": 0.9,
+      "served_model_name": "qwen36",
+      "card": "910b",
+      "method": "qwen3_5_mtp",
+      "function_call": true,
+      "tool_call_parser": "qwen3_coder",
+      "sparse": false
+    },
+    "hardware_info": {
+      "device": "ascend",
+      "hardware_family": "Ascend910B_64G"
+    },
+    "actual": {
+      "smart_feats": [
+        "offload",
+        "spec"
+      ],
+      "allowed_smart_feats": [
+        "offload",
+        "spec"
+      ],
+      "engine_config": {
+        "trust_remote_code": true,
+        "task": "generate",
+        "async_scheduling": true,
+        "compilation_config": "{\"cudagraph_mode\": \"FULL_DECODE_ONLY\"}",
+        "additional_config": "{\"enable_cpu_binding\": true}",
+        "seed": 1024,
+        "tensor_parallel_size": 2,
+        "data_parallel_size": 1,
+        "max_num_seqs": 32,
+        "max_model_len": 131072,
+        "max_num_batched_tokens": 8192,
+        "gpu_memory_utilization": 0.9,
+        "served_model_name": "qwen36",
+        "tool_call_parser": "qwen3_coder",
+        "port": 7799,
+        "model": "D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.6-27B-910B-reuse",
+        "enable_auto_tool_choice": true,
+        "default_chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "kv_transfer_config": "{\"kv_connector\": \"AscendStoreConnector\", \"kv_role\": \"kv_both\", \"kv_load_failure_policy\": \"recompute\", \"kv_connector_extra_config\": {\"lookup_rpc_port\": \"0\", \"backend\": \"memcache\"}}"
+      },
+      "exec_command": "python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --async-scheduling --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}' --additional-config '{\"enable_cpu_binding\":true}' --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --max-num-seqs 32 --max-model-len 131072 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7799 --model 'D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.6-27B-910B-reuse' --enable-auto-tool-choice --default-chat-template-kwargs '{\"enable_thinking\":false}' --kv-transfer-config '{\"kv_connector\":\"AscendStoreConnector\",\"kv_role\":\"kv_both\",\"kv_load_failure_policy\":\"recompute\",\"kv_connector_extra_config\":{\"lookup_rpc_port\":\"0\",\"backend\":\"memcache\"}}' --speculative-config '{\"method\": \"qwen3_5_mtp\", \"num_speculative_tokens\": 3, \"enforce_eager\": true}'",
+      "speculative_config": {
+        "method": "qwen3_5_mtp",
+        "num_speculative_tokens": 3,
+        "enforce_eager": true
+      },
+      "kv_transfer_config": {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
+        "kv_load_failure_policy": "recompute",
+        "kv_connector_extra_config": {
+          "lookup_rpc_port": "0",
+          "backend": "memcache"
+        }
+      }
+    },
+    "checks": {
+      "hardware_info_minimal": true,
+      "hardware_info_no_details": true,
+      "whitelist_spec_hit": true,
+      "whitelist_offload_hit": true,
+      "smart_feats": true,
+      "allowed_smart_feats": true,
+      "tp": true,
+      "dp": true,
+      "port": true,
+      "spec_enabled": true,
+      "mtp_method": true,
+      "mtp_tokens": true,
+      "mtp_enforce_eager": true,
+      "no_suffix_fallback": true,
+      "offload": true,
+      "memcache": true,
+      "memcache_connector": true,
+      "memcache_ports": true,
+      "ep": true,
+      "quantization": true,
+      "max_num_seqs": true,
+      "max_model_len": true,
+      "max_num_batched_tokens": true,
+      "gpu_memory_utilization": true,
+      "seed": true,
+      "served_model_name": true,
+      "function_call_parser": true,
+      "function_call_switch": true,
+      "sparse_disabled_when_not_standard": true,
+      "no_hermes_parser": true,
+      "complete_start_command": true
+    },
+    "failed_checks": [],
+    "start_command": "wings_control/docs/DAY0/dry_run/qwen_day0_910b_reuse_current/Qwen3.6-27B-910B-reuse/start_command.sh"
+  },
+  {
+    "scenario": "Qwen3.6-35B-A3B-910B-reuse",
+    "standard": {
+      "scenario": "Qwen3.6-35B-A3B-910B-reuse",
+      "reuse_from": "Qwen3.6-35B-A3B-910C",
+      "model_name": "Qwen/Qwen3.6-35B-A3B",
+      "arch": "Qwen3_5MoeForConditionalGeneration",
+      "device_count": 2,
+      "port": 7799,
+      "mtp_tokens": 3,
+      "offload": true,
+      "memcache": true,
+      "memcache_ports": [
+        50051,
+        50061
+      ],
+      "ep": true,
+      "quantization": null,
+      "max_num_seqs": 32,
+      "max_model_len": 131072,
+      "max_num_batched_tokens": 8192,
+      "gpu_memory_utilization": 0.9,
+      "served_model_name": "qwen36",
+      "card": "910b",
+      "method": "qwen3_5_mtp",
+      "function_call": true,
+      "tool_call_parser": "qwen3_coder",
+      "sparse": false
+    },
+    "hardware_info": {
+      "device": "ascend",
+      "hardware_family": "Ascend910B_64G"
+    },
+    "actual": {
+      "smart_feats": [
+        "offload",
+        "spec"
+      ],
+      "allowed_smart_feats": [
+        "offload",
+        "spec"
+      ],
+      "engine_config": {
+        "trust_remote_code": true,
+        "max_model_len": 131072,
+        "task": "generate",
+        "seed": 1024,
+        "tensor_parallel_size": 2,
+        "data_parallel_size": 1,
+        "enable_expert_parallel": true,
+        "max_num_seqs": 32,
+        "max_num_batched_tokens": 8192,
+        "gpu_memory_utilization": 0.9,
+        "served_model_name": "qwen36",
+        "async_scheduling": true,
+        "compilation_config": "{\"cudagraph_mode\": \"FULL_DECODE_ONLY\"}",
+        "additional_config": "{\"enable_cpu_binding\": true, \"multistream_overlap_shared_expert\": true}",
+        "tool_call_parser": "qwen3_coder",
+        "port": 7799,
+        "model": "D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.6-35B-A3B-910B-reuse",
+        "enable_auto_tool_choice": true,
+        "default_chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "kv_transfer_config": "{\"kv_connector\": \"AscendStoreConnector\", \"kv_role\": \"kv_both\", \"kv_load_failure_policy\": \"recompute\", \"kv_connector_extra_config\": {\"lookup_rpc_port\": \"0\", \"backend\": \"memcache\"}}"
+      },
+      "exec_command": "python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}' --additional-config '{\"enable_cpu_binding\":true,\"multistream_overlap_shared_expert\":true}' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7799 --model 'D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_910b_reuse_current\\_model_configs\\Qwen3.6-35B-A3B-910B-reuse' --enable-auto-tool-choice --default-chat-template-kwargs '{\"enable_thinking\":false}' --kv-transfer-config '{\"kv_connector\":\"AscendStoreConnector\",\"kv_role\":\"kv_both\",\"kv_load_failure_policy\":\"recompute\",\"kv_connector_extra_config\":{\"lookup_rpc_port\":\"0\",\"backend\":\"memcache\"}}' --speculative-config '{\"method\": \"qwen3_5_mtp\", \"num_speculative_tokens\": 3, \"enforce_eager\": true}'",
+      "speculative_config": {
+        "method": "qwen3_5_mtp",
+        "num_speculative_tokens": 3,
+        "enforce_eager": true
+      },
+      "kv_transfer_config": {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
+        "kv_load_failure_policy": "recompute",
+        "kv_connector_extra_config": {
+          "lookup_rpc_port": "0",
+          "backend": "memcache"
+        }
+      }
+    },
+    "checks": {
+      "hardware_info_minimal": true,
+      "hardware_info_no_details": true,
+      "whitelist_spec_hit": true,
+      "whitelist_offload_hit": true,
+      "smart_feats": true,
+      "allowed_smart_feats": true,
+      "tp": true,
+      "dp": true,
+      "port": true,
+      "spec_enabled": true,
+      "mtp_method": true,
+      "mtp_tokens": true,
+      "mtp_enforce_eager": true,
+      "no_suffix_fallback": true,
+      "offload": true,
+      "memcache": true,
+      "memcache_connector": true,
+      "memcache_ports": true,
+      "ep": true,
+      "quantization": true,
+      "max_num_seqs": true,
+      "max_model_len": true,
+      "max_num_batched_tokens": true,
+      "gpu_memory_utilization": true,
+      "seed": true,
+      "served_model_name": true,
+      "function_call_parser": true,
+      "function_call_switch": true,
+      "sparse_disabled_when_not_standard": true,
+      "no_hermes_parser": true,
+      "complete_start_command": true
+    },
+    "failed_checks": [],
+    "start_command": "wings_control/docs/DAY0/dry_run/qwen_day0_910b_reuse_current/Qwen3.6-35B-A3B-910B-reuse/start_command.sh"
+  }
+]
