@@ -44,6 +44,7 @@ from utils.model_utils import (ModelIdentifier,
                                resolve_feature_whitelist, resolve_feature_whitelist_row,
                                resolve_forced_feature_whitelist, feature_allowed,
                                is_deepseek_v4_flash_rtx_pro_5000,
+                               is_minimax_m27_rtx_pro_5000_vllm,
                                is_qwen3_5_397b_nvfp4_vllm,
                                THINKING_ALWAYS_ON, THINKING_HYBRID, THINKING_NONE)
 from utils.device_utils import check_pcie_cards, resolve_card_token
@@ -278,6 +279,23 @@ def _set_trace_config(params):
         logger.info("OTLP Trace is enabled, endpoint: %s", endpoint)
 
 
+def _set_metrics_config(params):
+    """配置 Metrics 监控相关环境变量。
+
+    根据 params 中 enable_metrics 的值判断是否开启 metrics 监控特性。
+    该参数仅对 SGLang 引擎有效，vLLM 默认会开启指标监控特性。
+    本函数仅设置环境变量，不修改 engine_config 参数字典。
+    引擎侧的 metrics 参数在 load_and_merge_configs() 中
+    engine_config 合并完成后单独注入。
+    此模式与 _set_trace_config / _set_smartqos_config 保持一致。
+    """
+    enabled = bool(params.get("enable_metrics"))
+
+    if enabled:
+        os.environ['ENABLE_METRICS'] = 'true'
+        logger.info("Metrics monitoring is enabled")
+
+
 def _inject_smartqos_engine_params(params: Dict[str, Any]) -> None:
     """在 engine_config 合并完成后，注入引擎侧 priority 调度参数。
 
@@ -341,10 +359,40 @@ def _inject_trace_engine_params(params: Dict[str, Any]) -> None:
         engine_config.setdefault("otlp_traces_endpoint", endpoint)
         logger.info(
             "EnableTrace: SGLang OTLP trace enabled "
-            "(--enable-metrics, --enable-trace, --otlp-traces-endpoint %s)", endpoint
+            "(--enable-trace, --otlp-traces-endpoint %s)", endpoint
         )
     else:
         logger.warning("Engine '%s' does not support OTLP trace feature", engine)
+
+
+def _inject_metrics_engine_params(params: Dict[str, Any]) -> None:
+    """在 engine_config 合并完成后，注入引擎侧 metrics 监控参数。
+
+    本函数在 load_and_merge_configs() 中 _merge_final_config 之后调用，
+    此时 params["engine_config"] 已存在且所有合并已完成。
+    使用 setdefault 确保用户显式指定的参数不会被覆盖。
+
+    引擎支持情况：
+    - vLLM/vLLM_Ascend: 默认开启 metrics，无需注入
+    - SGLang: 注入 --enable-metrics
+    - MindIE: 不注入任何 metrics 相关参数
+    """
+    engine = str(params.get("engine", "")).lower()
+    engine_config = params.get("engine_config", {})
+
+    if engine == "sglang":
+        engine_config.setdefault("enable_metrics", True)
+        logger.info(
+            "EnableMetrics: SGLang metrics monitoring enabled "
+            "(--enable-metrics)"
+        )
+    elif engine in ("vllm", "vllm_ascend"):
+        logger.info(
+            "EnableMetrics: vLLM metrics monitoring is enabled by default, "
+            "no injection needed"
+        )
+    else:
+        logger.warning("Engine '%s' does not support metrics monitoring feature", engine)
 
 
 def _get_h20_model_hint() -> str:
@@ -453,7 +501,13 @@ def _build_engine_cmd_parameter(cmd_known_params: Dict[str, Any]) -> Dict[str, A
         "enable_auto_think_choice",
         "enable_sparse",
     ]
-    return {k: cmd_known_params.get(k) for k in keys}
+    result = {k: cmd_known_params.get(k) for k in keys}
+    # 传递 config-file 注入的 CLI key 集合，供 _set_sequence_length / _set_common_params
+    # 等下游函数识别 config-file 参数为"显式设置"
+    config_file_keys = cmd_known_params.get("_config_file_cli_keys")
+    if config_file_keys:
+        result["_config_file_cli_keys"] = config_file_keys
+    return result
 
 
 def _merge_cmd_params(hardware_env, engine_specific_defaults, cmd_known_params, model_info):
@@ -723,7 +777,7 @@ def _validate_embedding_rerank_params(params, ctx):
 def _set_common_params(params, engine_cmd_parameter, config_path):
     """根据参数映射表，将用户 CLI 参数翻译为引擎实际的参数键名并写入 params。
 
-    优先级保护：仅当用户通过 CLI 参数或环境变量 **显式** 指定了某个参数时，
+    优先级保护：仅当用户通过 CLI 参数、环境变量或 config-file **显式** 指定了某个参数时，
     才覆盖模型默认配置（nvidia_default.json / model_deploy_config）中的已有值。
     对于页面已删除的调优参数，用户未显式指定且模型配置没有值时不再用 argparse
     默认值补充；其他参数仍按旧逻辑补充。
@@ -742,13 +796,17 @@ def _set_common_params(params, engine_cmd_parameter, config_path):
         "enable_expert_parallel",
         "enable_prefix_caching",
     }
+    # 同时纳入 config-file 注入的 CLI key，使 config-file 参数也能触发翻译
+    config_file_keys = engine_cmd_parameter.get("_config_file_cli_keys", set())
+    if config_file_keys:
+        explicit_keys = explicit_keys | config_file_keys
     for key, value in vllm_param_map_config.items():
         if not value:
             continue
         cli_val = engine_cmd_parameter.get(key)
         if cli_val is None:
             continue
-        # 用户显式设置的参数（CLI 或环境变量）：始终覆盖
+        # 用户显式设置的参数（CLI / 环境变量 / config-file）：始终覆盖
         if key in explicit_keys:
             params[value] = cli_val
         # 模型默认配置中不存在的参数：用 argparse 默认值补充
@@ -764,8 +822,14 @@ def _set_sequence_length(params, engine_cmd_parameter, model_type: str = "llm"):
 
     - LLM：max_model_len = input_length + output_length
     - embedding / rerank：max_model_len = input_length（无生成阶段）
+
+    触发条件：用户通过 CLI、环境变量或 config-file 显式设置了 input_length / output_length。
     """
     explicit_keys = _detect_explicit_cli_keys()
+    # 同时纳入 config-file 注入的 CLI key，使 config-file 的 input_length/output_length 也能触发计算
+    config_file_keys = engine_cmd_parameter.get("_config_file_cli_keys", set())
+    if config_file_keys:
+        explicit_keys = explicit_keys | config_file_keys
     if not explicit_keys.intersection({"input_length", "output_length"}):
         return
 
@@ -946,6 +1010,13 @@ def _set_parallelism_params(params, ctx):
     # min(4,device_count) 冲突，且让 log_analyzer 等更早的下游读到错误的 TP=device_count。
     # 判定与 adapter 分支共用 is_deepseek_v4_flash_rtx_pro_5000，保证两处条件逐字一致。
     if is_deepseek_v4_flash_rtx_pro_5000(ctx):
+        return
+    # [MiniMax-M2.7-NVFP4-NV] 单机 TP/DP 由 vllm_adapter._apply_minimax_m27_nvfp4_nv_engine_defaults
+    # 接管 (TP=min(4,device_count) + DP=device_count/TP)，与 DeepSeek-V4-Flash-NV 同理短路：
+    # 此处若按非分布式通用公式把 TP 钉成 device_count(单机=全卡)，会与 adapter 的 min(4,device_count)
+    # 冲突，且让 log_analyzer 等更早的下游读到错误的 TP=device_count。
+    # 判定与 adapter 分支共用 is_minimax_m27_rtx_pro_5000_vllm，保证两处条件逐字一致。
+    if is_minimax_m27_rtx_pro_5000_vllm(ctx):
         return
     flash_identity = " ".join(
         str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
@@ -1656,6 +1727,22 @@ def _set_kv_cache_config(params, ctx, model_info=None):
         )
         return
 
+    # MiniMax-M2.7 + RTX-PRO-5000 + vLLM(NVIDIA)：注入含 kv_load_failure_policy 的完整
+    # LMCacheConnectorV1 配置（与 minimax-2.7-zyy.txt 对齐；通用 _build_lmcache_connector
+    # 产出的版本缺该字段），早退避免被通用 LMCacheConnectorV1 覆盖。
+    if lmcache_offload and model_info is not None and \
+            is_minimax_m27_rtx_pro_5000_vllm(ctx, ctx.get("engine")):
+        params['kv_transfer_config'] = json.dumps({
+            "kv_connector": "LMCacheConnectorV1",
+            "kv_role": "kv_both",
+            "kv_load_failure_policy": "recompute",
+        })
+        logger.info(
+            "[KVCache Offload] MiniMax-M2.7 (NV) -> LMCacheConnectorV1 "
+            "with kv_load_failure_policy=recompute."
+        )
+        return
+
     if lmcache_offload and model_info is not None and _is_glm51_nvidia_vllm(ctx, model_info):
         logger.warning(
             "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
@@ -1935,24 +2022,28 @@ def _set_mindie_common_params(params, engine_cmd_parameter):
     """MindIE 参数映射：翻译 CLI 参数名为 MindIE 原生键名。
 
     优先级保护（对齐 vLLM 的 _set_common_params）：
-    仅当用户通过 CLI 或环境变量显式指定了某个参数时才覆盖模型默认配置。
+    仅当用户通过 CLI、环境变量或 config-file 显式指定了某个参数时才覆盖模型默认配置。
     对于用户未显式指定的参数，若模型配置中已有值则保留，否则用 argparse 默认值补充。
     """
     engine_param_map_config_path = os.path.join(DEFAULT_CONFIG_DIR,
                                             DEFAULT_CONFIG_FILES.get("engine_parameter_mapping"))
     mindie_param_map_config = _load_mapping(engine_param_map_config_path, 'default_to_mindie_parameter_mapping')
     explicit_keys = _detect_explicit_cli_keys()
+    # 同时纳入 config-file 注入的 CLI key，使 config-file 参数也能触发翻译
+    config_file_keys = engine_cmd_parameter.get("_config_file_cli_keys", set())
+    if config_file_keys:
+        explicit_keys = explicit_keys | config_file_keys
     for key, value in mindie_param_map_config.items():
         if not value:
             continue
         cli_val = engine_cmd_parameter.get(key)
         if cli_val is None:
             continue
-        # 用户显式设置的参数（CLI 或环境变量）：始终覆盖
+        # 用户显式设置的参数（CLI / 环境变量 / config-file）：始终覆盖
         if key in explicit_keys:
             params[value] = cli_val
         # MindIE 的 NPU_MEMORY_FRACTION 默认值由 set_mindie_env.sh 统一提供。
-        # argparse 的 gpu_memory_utilization 默认值是 0.9；如果在这里按“缺省补充”
+        # argparse 的 gpu_memory_utilization 默认值是 0.9；如果在这里按"缺省补充"
         # 翻译成 npu_memory_fraction，会在启动脚本中把 set_mindie_env.sh 的 0.96
         # 二次覆盖成 0.9。只有用户显式传入 --gpu-memory-utilization 或
         # GPU_MEMORY_UTILIZATION 时，才允许覆盖 MindIE 默认值。
@@ -2011,6 +2102,10 @@ def _merge_sglang_params(params, ctx, engine_cmd_parameter):
                                             DEFAULT_CONFIG_FILES.get("engine_parameter_mapping"))
     sglang_param_map_config = _load_mapping(engine_param_map_config_path, 'default_to_sglang_parameter_mapping')
     explicit_keys = _detect_explicit_cli_keys()
+    # 同时纳入 config-file 注入的 CLI key，使 config-file 参数也能触发翻译
+    config_file_keys = engine_cmd_parameter.get("_config_file_cli_keys", set())
+    if config_file_keys:
+        explicit_keys = explicit_keys | config_file_keys
     for key, value in sglang_param_map_config.items():
         if not value or engine_cmd_parameter.get(key) is None:
             continue
@@ -2018,7 +2113,7 @@ def _merge_sglang_params(params, ctx, engine_cmd_parameter):
         # sglang 的 enable_prefix_caching 语义与 vllm 相反，需要取反
         if key == "enable_prefix_caching":
             cli_val = not cli_val
-        # 用户显式设置的参数（CLI 或环境变量）：始终覆盖
+        # 用户显式设置的参数（CLI / 环境变量 / config-file）：始终覆盖
         if key in explicit_keys:
             params[value] = cli_val
         # 模型默认配置中不存在的参数：用 argparse 默认值补充
@@ -2254,6 +2349,24 @@ def _load_engine_fallback_defaults(engine: str) -> Dict[str, Any]:
     return {}
 
 
+def _is_new_format(config: dict) -> bool:
+    """检测是否为 {"params": ..., "env": ...} 新格式。
+
+    判断依据：顶层 key 集合是 {"params", "env"} 的子集，且至少包含其中一个。
+    旧格式（平铺结构）的顶层 key 是引擎参数名（如 max_num_seqs），
+    不会恰好是 "params" 或 "env"。
+
+    注意：空字典 {} 不会被视为新格式（两个 key 都不存在）。
+    """
+    if not isinstance(config, dict):
+        return False
+    keys = set(config.keys())
+    # 新格式：顶层只有 params 和/或 env
+    if keys <= {"params", "env"} and ("params" in keys or "env" in keys):
+        return True
+    return False
+
+
 def _normalize_user_config_keys(user_config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize top-level user config keys from kebab-case to snake_case.
 
@@ -2292,43 +2405,60 @@ def _normalize_user_config_keys(user_config: Dict[str, Any]) -> Dict[str, Any]:
 def _load_user_config(config) -> Dict[str, Any]:
     """加载用户自定义 JSON 配置文件，合并到默认配置之上。
 
-    Args:
-        config: 配置来源，支持两种格式：
-            - 文件路径字符串（指向 JSON 文件）
-            - 已反序列化的 JSON 字典对象
-    """
-    user_config = {}
-    if not config:
-        return user_config
+    支持三种输入格式：
+        - 文件路径字符串（指向 JSON 文件）
+        - JSON 字符串（以 { 开头 } 结尾）
+        - 已反序列化的 JSON 字典对象
 
-    # 支持已反序列化的 dict 对象
+    支持两种 JSON 结构：
+        - 旧格式（平铺）：{"max_num_seqs": 256, ...}
+        - 新格式（分离）：{"params": {...}, "env": {...}}
+
+    新格式返回值：{"_params": {...}, "_env": {...}}
+    旧格式返回值：{"max_num_seqs": 256, ...}（不变）
+    """
+    if not config:
+        return {}
+
+    # 统一解析为 raw dict
+    raw: Dict[str, Any] = {}
     if isinstance(config, dict):
         logger.info("Config is already a dict, keys: %s", list(config.keys()))
-        return _normalize_user_config_keys(config)
-
-    if config.strip().startswith('{') and config.strip().endswith('}'):
-        # JSON
+        raw = config
+    elif isinstance(config, str) and config.strip().startswith('{') and config.strip().endswith('}'):
         try:
-            user_config = json.loads(config)
-            logger.info("Successfully parsed config from JSON string, keys: %s", list(user_config.keys()))
-            return _normalize_user_config_keys(user_config)
+            raw = json.loads(config)
+            logger.info("Successfully parsed config from JSON string, keys: %s", list(raw.keys()))
         except json.JSONDecodeError:
-            logger.info("The config-file is not JSON string, will load it as a file")
-    elif os.path.exists(config):
-        # 路径规范化：解析符号链接，防止路径遍历攻击
+            logger.info("The config-file is not valid JSON string, will try as file path")
+    elif isinstance(config, str) and os.path.exists(config):
         resolved = os.path.realpath(config)
         if not os.path.isfile(resolved):
             logger.warning("Config path is not a regular file: %s -> %s", config, resolved)
         else:
             logger.info("Loading user-specified config file: %s (resolved: %s)", config, resolved)
-            user_config = load_json_config(resolved)
-            if user_config:
-                logger.info("User config loaded, keys: %s", list(user_config.keys()))
-                user_config = _normalize_user_config_keys(user_config)
-    else:
+            raw = load_json_config(resolved)
+            if raw:
+                logger.info("User config loaded, keys: %s", list(raw.keys()))
+    elif isinstance(config, str):
         logger.warning("User-specified config not found or invalid: %s", config)
 
-    return user_config
+    if not isinstance(raw, dict) or not raw:
+        return {}
+
+    # 检测并处理新格式 {"params": {...}, "env": {...}}
+    if _is_new_format(raw):
+        logger.info("Detected new config-file format with params/env separation")
+        params = raw.get("params", {})
+        env = raw.get("env", {})
+        if isinstance(params, dict):
+            params = _normalize_user_config_keys(params)
+        if isinstance(env, dict):
+            env = _normalize_user_config_keys(env)
+        return {"_params": params, "_env": env}
+
+    # 旧格式：平铺结构
+    return _normalize_user_config_keys(raw)
 
 
 def _process_cmd_args(known_args: argparse.Namespace) -> Dict[str, Any]:
@@ -2561,6 +2691,7 @@ def _apply_engine_runtime_flags(cmd_known_params: Dict[str, Any]) -> None:
     _set_rag_acc_config(cmd_known_params)
     _set_smartqos_config(cmd_known_params)
     _set_trace_config(cmd_known_params)
+    _set_metrics_config(cmd_known_params)
 
 
 
@@ -2960,9 +3091,15 @@ def _handle_sglang_distributed(distributed_config: Dict[str, Any], cmd_params: D
     })
 
 
-_V4_PREFIX_MODEL_CONFIG_KEYS = {
+# 允许作为「前缀 token」匹配 model_deploy_config 键的集合。
+# 这些 config key 在 JSON 中以模型名为键（如 "DeepSeek-V4-Flash" / "MiniMax-M2.7"），
+# 但实际 CLI model_name 常带量化/版本后缀（如 "deepseek-v4-flash-w8a8" /
+# "minimax-m2.7-nvfp4"），无法精确匹配。故对集合内的 key 退化为 token 边界子串匹配
+# （_model_name_contains_config_token），其余 key 仍要求精确匹配以防误命中。
+_PREFIX_TOKEN_MATCH_CONFIG_KEYS = {
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    "minimax-m2.7",
 }
 _MODEL_NAME_TOKEN_BOUNDARY_CHARS = set("-_./:")
 
@@ -3066,7 +3203,7 @@ def _model_config_key_matches_lookup_names(config_key_lower: str, lookup_names: 
     """Match model_deploy_config keys against CLI model names."""
     if config_key_lower in lookup_names:
         return True
-    if config_key_lower not in _V4_PREFIX_MODEL_CONFIG_KEYS:
+    if config_key_lower not in _PREFIX_TOKEN_MATCH_CONFIG_KEYS:
         return False
     return any(
         _model_name_contains_config_token(name, config_key_lower)
@@ -3079,6 +3216,20 @@ def _is_deepseek_v4_flash_lookup(lookup_names: list) -> bool:
         "deepseek-v4-flash" in name
         or "deepseek_v4_flash" in name
         or "deepseekv4flash" in name
+        for name in lookup_names
+    )
+
+
+def _is_minimax_m27_lookup(lookup_names: list) -> bool:
+    """MiniMax-M2.7 系列模型名识别（覆盖 -NVFP4 等后缀）。
+
+    与 model_utils.is_minimax_m27_rtx_pro_5000_vllm 的名称匹配同口径，
+    但不含卡型/引擎判定--卡型选配留给 _match_model_engine_config 的 card_model 分支。
+    """
+    return any(
+        "minimax-m2.7" in name
+        or "minimax_m2.7" in name
+        or "minimaxm2.7" in name
         for name in lookup_names
     )
 
@@ -3163,9 +3314,10 @@ def _resolve_whitelist_ascend_config_key(
 
 @dataclass
 class _SpecialEngineScenario:
-    """DeepSeek + 引擎 + NVIDIA 的两类特殊卡型选配场景标记。"""
+    """DeepSeek/MiniMax + 引擎 + NVIDIA 的特殊卡型选配场景标记。"""
     deepseek_sglang_nvidia: bool = False
     deepseek_v4_flash_vllm_nvidia: bool = False
+    minimax_m27_vllm_nvidia: bool = False
 
 
 def _match_model_engine_config(
@@ -3181,7 +3333,8 @@ def _match_model_engine_config(
 
     遍历 arch_dict 中的模型条目，找到名称匹配项后返回对应的引擎参数。
     DeepSeek+SGLang+NVIDIA 场景下额外检测 H20 GPU 型号以选用专属配置。
-    DeepSeek-V4-Flash+vLLM+NVIDIA 场景下额外检测 NVIDIA GPU 型号以选用专属配置。
+    DeepSeek-V4-Flash+vLLM+NVIDIA / MiniMax-M2.7+vLLM+NVIDIA 场景下额外检测
+    NVIDIA GPU 型号以选用 rtx_pro_5000_72G 专属配置子块。
     匿名模型可通过 ``model_info`` 提供的架构 + 量化指纹补充查找名（如 w4a8
     DeepseekV4 → ``deepseek-v4-pro``），以匹配 JSON 中的对应条目。
 
@@ -3250,6 +3403,21 @@ def _match_model_engine_config(
         if scenario.deepseek_v4_flash_vllm_nvidia:
             logger.info(
                 "DeepSeek-V4-Flash+vLLM+NVIDIA (non-rtx_pro_5000_72G): using default config for '%s'",
+                model,
+            )
+            return config.get(engine_key, {}).get("default", {})
+
+        # MiniMax-M2.7 + vLLM + NVIDIA：rtx_pro_5000_72G 用专属子块
+        # （use_vllm_serve/moe_backend/kv_cache_dtype/speculative_config 等固定配方）；
+        # 其余卡型降级 default（MiniMax-M2.7 无 default 子块时返回空，交由外层
+        # fallback 到 MiniMaxM2ForCausalLM.default.vllm）。
+        if scenario.minimax_m27_vllm_nvidia and card_model == "rtx_pro_5000_72G":
+            logger.info("Using dedicated config for model '%s' on %s", model, card_model)
+            return config.get(engine_key, {}).get(card_model, {})
+
+        if scenario.minimax_m27_vllm_nvidia:
+            logger.info(
+                "MiniMax-M2.7+vLLM+NVIDIA (non-rtx_pro_5000_72G): using default config for '%s'",
                 model,
             )
             return config.get(engine_key, {}).get("default", {})
@@ -3444,9 +3612,22 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
             and not cmd_known_params.get("distributed")
             and _is_deepseek_v4_flash_lookup([model_name_lower])
         )
+
+        # MiniMax-M2.7 + vLLM + NVIDIA（非分布式）：与 V4-Flash 同构，
+        # 需在 _match_model_engine_config 内按 card_model 选中 rtx_pro_5000_72G 子块
+        # （否则只取到 {"rtx_pro_5000_72G": {...}} 外壳，丢失 use_vllm_serve/moe_backend
+        # /kv_cache_dtype/speculative_config 等固定 CLI 字段）。
+        is_minimax_m27_vllm_nvidia = (
+            model_architecture == "MiniMaxM2ForCausalLM"
+            and hardware_env.get("device") == "nvidia"
+            and engine == "vllm"
+            and not cmd_known_params.get("distributed")
+            and _is_minimax_m27_lookup([model_name_lower])
+        )
         scenario = _SpecialEngineScenario(
             deepseek_sglang_nvidia=is_deepseek_sglang_nvidia,
             deepseek_v4_flash_vllm_nvidia=is_deepseek_v4_flash_vllm_nvidia,
+            minimax_m27_vllm_nvidia=is_minimax_m27_vllm_nvidia,
         )
 
         engine_specific_defaults = _match_model_engine_config(
@@ -3488,7 +3669,14 @@ def _merge_final_config(engine_config: Dict[str, Any],
     if cmd_known_params.get("engine") in {"vllm", "vllm_ascend"}:
         engine_config.pop("chat_template", None)
     cmd_known_params['engine_config'] = engine_config
-    cmd_known_params['_explicit_cli_keys'] = sorted(_detect_explicit_cli_keys())
+    # 合并 CLI/ENV 显式 key 和 config-file 注入的 key，供 adapter 层
+    # _set_if_not_explicit / _force_set_if_not_explicit 等函数识别
+    # config-file 参数为"显式设置"，防止被模型默认配置覆盖
+    explicit_keys = set(_detect_explicit_cli_keys())
+    config_file_keys = cmd_known_params.get("_config_file_cli_keys", set())
+    if config_file_keys:
+        explicit_keys = explicit_keys | config_file_keys
+    cmd_known_params['_explicit_cli_keys'] = sorted(explicit_keys)
 
     return cmd_known_params
 
@@ -3582,9 +3770,68 @@ def load_and_merge_configs(
     raw_engine_config = getattr(known_args, "engine_config", None)
     raw_engine_config = raw_engine_config if isinstance(raw_engine_config, dict) else None
     inherited_explicit_keys = set(getattr(known_args, "_explicit_cli_keys", None) or [])
-    # 1.
-    # VRAM
+    # 1. 提取 CLI 参数
     cmd_known_params = _process_cmd_args(known_args)
+
+    # 1.5 加载 config-file 并注入到 cmd_known_params（CLI 参数层）
+    #     config-file 的 params 等价于 CLI 参数，需要走完整的 _auto_select_engine
+    #     等标准处理链路，而非直接合并到 engine_config。
+    #     加载时机：在 _process_cmd_args 之后、VRAM 检查 / _auto_select_engine 之前，
+    #     确保 config-file 中的 model_path / engine 等参数能参与引擎自动选择和校验。
+    config = known_args.config_file
+    raw_user_config = _load_user_config(config)
+
+    # ── 分离新格式的 params 和 env ──
+    user_env: Dict[str, Any] = {}
+    config_file_params: Dict[str, Any] = {}
+    if isinstance(raw_user_config, dict) and "_params" in raw_user_config:
+        # 新格式 {"_params": {...}, "_env": {...}}
+        user_env = raw_user_config.get("_env", {})
+        config_file_params = raw_user_config.get("_params", {})
+        if user_env:
+            logger.info("Extracted env vars from config-file: %s", list(user_env.keys()))
+    else:
+        # 旧格式：平铺结构，全部视为 CLI 参数
+        config_file_params = raw_user_config
+
+    # 将 config-file 参数分类注入：
+    #   - CLI 范围内的参数（cmd_known_params 中已存在的 key）→ 注入 cmd_known_params，
+    #     走 _auto_select_engine / _merge_cmd_params 等标准处理链路
+    #   - CLI 范围外的参数（cmd_known_params 中不存在的 key）→ 暂存到
+    #     _config_file_engine_params，后续直接合并到 engine_config，
+    #     作为引擎原生参数拼接到启动命令中
+    #
+    # 优先级规则：CLI 显式传参 > config-file > argparse 默认值
+    # config-file 等价于 CLI 传参，应覆盖 argparse 的默认值。
+    # 先检测用户显式指定的 CLI/ENV key，用于区分"用户显式传参"和"argparse 默认值"。
+    _config_file_engine_hint = config_file_params.get("engine") if config_file_params else None
+    explicit_cli_keys = _detect_explicit_cli_keys(_config_file_engine_hint)
+
+    config_file_engine_params: Dict[str, Any] = {}
+    # 记录 config-file 注入到 cmd_known_params 的 key，供下游函数
+    # （_set_sequence_length / _set_common_params 等）识别这些参数为"显式设置"
+    _config_file_cli_keys: set = set()
+    if config_file_params:
+        logger.info("Processing config-file params, keys: %s", list(config_file_params.keys()))
+        for key, value in config_file_params.items():
+            if key in cmd_known_params:
+                # CLI 范围内的参数：注入 cmd_known_params
+                # 仅当用户未通过 CLI/ENV 显式指定时才覆盖
+                if key not in explicit_cli_keys:
+                    cmd_known_params[key] = value
+                    _config_file_cli_keys.add(key)
+                    logger.debug("  [CLI scope] %s = %s (from config-file)", key, value)
+                else:
+                    logger.debug("  [CLI scope] %s = %s (CLI explicitly set, skipping config-file)", key, value)
+            else:
+                # CLI 范围外的参数：暂存，后续直接合并到 engine_config
+                config_file_engine_params[key] = value
+                logger.debug("  [engine scope] %s = %s (will merge to engine_config)", key, value)
+    # 将 config-file 注入的 CLI key 存入 cmd_known_params，供下游识别
+    if _config_file_cli_keys:
+        cmd_known_params["_config_file_cli_keys"] = _config_file_cli_keys
+
+    # VRAM 检查
     if cmd_known_params.get("model_path"):
         if cmd_known_params.get("nnodes"):
             nodes_count = cmd_known_params.get("nnodes")
@@ -3608,24 +3855,21 @@ def load_and_merge_configs(
     #     _merge_vllm_params→_set_kv_cache_config，否则卸载/稀疏收不掉。
     apply_effective_feature_enablement(cmd_known_params, hardware_env)
 
-    # 3. 加载用户配置
-    config = known_args.config_file
-    user_config = _load_user_config(config)
-
-    # 3.5 将 user_config 中的通用参数名翻译为引擎原生参数名
-    #     (如 SGLang: gpu_memory_utilization → mem_fraction_static)
+    # 3. 构建 engine_config：硬件默认 + 模型专属
+    #     注意：config_file_params 已在步骤 1.5 中注入 cmd_known_params，
+    #     引擎层参数会通过 _apply_cli_overrides 自然覆盖到 engine_config。
     engine_name = cmd_known_params.get("engine", "vllm")
-    if user_config:
-        user_config = _translate_user_config_for_engine(user_config, engine_name)
+    engine_specific_defaults = _get_model_specific_config(hardware_env, cmd_known_params, model_info)
+    engine_config = engine_specific_defaults
 
-    if user_config and get_config_force_env():
-        engine_config = user_config
-        logger.info("CONFIG_FORCE=true: using user config exclusively, keys: %s", list(engine_config.keys()))
-    else:
-        engine_specific_defaults = _get_model_specific_config(hardware_env, cmd_known_params, model_info)
-        engine_config = _merge_configs(engine_specific_defaults, user_config)
+    # CONFIG_FORCE 模式：完全使用 config-file 参数替代默认配置
+    if config_file_params and get_config_force_env():
+        # 翻译参数名后作为 engine_config
+        translated = _translate_user_config_for_engine(dict(config_file_params), engine_name)
+        engine_config = translated
+        logger.info("CONFIG_FORCE=true: using config-file params exclusively, keys: %s", list(engine_config.keys()))
 
-    # 4. CLI/ENV 参数覆盖 config-file（保证 CLI > config-file 优先级）
+    # 4. CLI/ENV 参数覆盖（包含 config-file 注入的参数）
     engine_config = _apply_cli_overrides(engine_config, cmd_known_params)
 
     # 4.1 分布式 Master -> Worker 下发的 engine_config 是上层已经合并好的
@@ -3636,6 +3880,18 @@ def load_and_merge_configs(
     # 绕过 adapter 后续的安全归一化（例如 DeepSeek DP 关闭 prefix-cache）。
     if raw_engine_config:
         engine_config = _merge_configs(engine_config, raw_engine_config)
+
+    # 4.5 合并 config-file 中 CLI 范围外的引擎原生参数
+    #     这些参数不在 wings_start.sh 的 CLI 参数范围内（如 max_num_seqs、
+    #     enable_prefix_caching 等），应直接拼接到引擎侧启动命令中。
+    #     合并时机：在 _apply_cli_overrides 和 raw_engine_config 之后，
+    #     确保 CLI/ENV 显式覆盖和分布式 Master 下发配置优先级高于 config-file。
+    if config_file_engine_params:
+        logger.info(
+            "Merging config-file engine-native params into engine_config, keys: %s",
+            list(config_file_engine_params.keys()),
+        )
+        engine_config = _merge_configs(engine_config, config_file_engine_params)
 
     # 4.6 embedding/rerank 最终守卫：移除不兼容参数
     #     必须在所有合并（user_config、raw_engine_config、CLI 覆盖）之后执行，
@@ -3654,6 +3910,10 @@ def load_and_merge_configs(
 
     # 5.
     final_engine_params = _merge_final_config(engine_config, cmd_known_params)
+
+    # ── 将 config-file 中的 env 挂载到返回字典 ──
+    if user_env:
+        final_engine_params["_config_file_env"] = user_env
     if inherited_explicit_keys:
         explicit_keys = set(final_engine_params.get("_explicit_cli_keys") or [])
         explicit_keys.update(inherited_explicit_keys)
@@ -3673,7 +3933,12 @@ def load_and_merge_configs(
     if final_engine_params.get("enable_otlp_traces"):
         _inject_trace_engine_params(final_engine_params)
 
-        # 6. PD external-lb：检测并应用 PD 模型配置注册表（pd_config.json）。
+    # 5.3 EnableMetrics: 在 engine_config 合并完成后注入引擎侧 metrics 监控参数
+    #     仅对 SGLang 引擎有效，vLLM 默认开启 metrics。
+    if final_engine_params.get("enable_metrics"):
+        _inject_metrics_engine_params(final_engine_params)
+
+    # 6. PD external-lb：检测并应用 PD 模型配置注册表（pd_config.json）。
     #    必须在所有合并 + explicit_keys 终定之后，确保不覆盖用户显式键。
     _apply_pd_external_lb(final_engine_params, model_info)
 

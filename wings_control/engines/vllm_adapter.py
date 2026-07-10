@@ -29,6 +29,7 @@ from utils.model_utils import (ModelIdentifier, ModelIdentifierDraft,
                                INDEXCACHE_ARCHS, is_glm_moe_dsa_glm51,
                                is_qwen3_5_397b_nvfp4_vllm,
                                is_deepseek_v4_flash_rtx_pro_5000,
+                               is_minimax_m27_rtx_pro_5000_vllm,
                                is_glm51_ascend_kvsparse_tmp_scope, is_glm52_model,
                                is_glm52_single_node_even, feature_allowed,
                                resolve_feature_whitelist_row, resolve_sparse_topk)
@@ -1983,6 +1984,14 @@ def _build_model_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
             'export VLLM_USE_FLASHINFER_MOE_FP4=1',
         ]
 
+    # [MiniMax-M2.7 + RTX-PRO-5000] 运行时配方：注入 LMCache env 集
+    # （LMCACHE_* / VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS 等，与 minimax-2.7-zyy.txt 对齐）。
+    # 这些 env 必须在 vllm 进程启动前 export，故写入 start_command.sh 的 env 段；
+    # _build_cache_env_commands 的通用 LMCache 流程已对本场景跳过，由本分支接管。
+    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
+        logger.info("[MiniMax-M2.7] inject LMCache runtime env for %s on vllm (RTX-PRO-5000)", arch)
+        return _build_minimax_m27_rtx_pro_5000_env_commands(params)
+
     if engine == "vllm_ascend" and _is_deepseek_v4_flash_params(params, model_info):
         return _build_deepseek_v4_flash_env(params)
     if engine == "vllm_ascend" and is_deepseek_v4_pro_adapted_scope(params, model_info):
@@ -2207,6 +2216,9 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     _apply_deepseek_v4_flash_engine_defaults(params, engine_config, explicit_keys)
     _apply_deepseek_v4_pro_engine_defaults(params, engine_config, explicit_keys)
     _apply_deepseek_v4_flash_nv_engine_defaults(params, engine_config, explicit_keys)
+    # MiniMax-M2.7-NVFP4 + RTX-PRO-5000 + vLLM(NVIDIA) TP/DP 动态策略
+    # （TP=min(4,device_count) + DP=device_count/TP，与 DeepSeek-V4-Flash-NV 同构）
+    _apply_minimax_m27_nvfp4_nv_engine_defaults(params, engine_config, explicit_keys)
     # block_size 固定 256 必须在所有可能写入 block_size 的默认注入之后执行，
     # 以确保最终值恒为 256（覆盖 json 默认与用户显式值）。
     _force_deepseek_v4_flash_nv_block_size(params, engine_config)
@@ -2509,6 +2521,50 @@ def _apply_deepseek_v4_flash_nv_engine_defaults(
         engine_config["data_parallel_size"] = dp
         params["data_parallel_size"] = dp
         logger.info("[DeepSeek-V4-Flash-NV] data_parallel_size = %d (%d / %d)", dp, device_count, tp)
+
+
+def _apply_minimax_m27_nvfp4_nv_engine_defaults(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+    explicit_keys: set,
+) -> None:
+    """MiniMax-M2.7-NVFP4 on rtx_pro_5000_72G + vllm(NVIDIA) 的 TP/DP 动态策略。
+
+    与 ``_apply_deepseek_v4_flash_nv_engine_defaults`` 同构（TP/DP 公式一致）：
+      - TP = min(4, device_count)
+      - DP = device_count / TP，必须整除，否则报错
+
+    config_loader._set_parallelism_params 已对 ``is_minimax_m27_rtx_pro_5000_vllm`` 短路
+    （不套用通用 TP=device_count 公式），TP/DP 由本函数接管；判定与 config_loader 短路
+    共用同一函数，保证「config_loader 让位 ⇔ adapter 接管」逐字一致。仅当用户未显式
+    指定 TP/DP 时注入（explicit_keys 优先）。
+    """
+    if not is_minimax_m27_rtx_pro_5000_vllm(params, params.get("engine", "vllm")):
+        return
+
+    device_count = _safe_int(params.get("device_count")) or 0
+    if device_count <= 0:
+        raise ValueError(
+            "MiniMax-M2.7-NVFP4(NV) TP/DP 策略需要正的 device_count，"
+            "当前为 %s；请通过 --device-count 或 DEVICE_COUNT 指定。" % params.get("device_count")
+        )
+
+    tp = min(4, device_count)
+    if device_count % tp != 0:
+        raise ValueError(
+            "MiniMax-M2.7-NVFP4(NV) DP 策略要求 device_count(%d) 能被 TP(%d) 整除，"
+            "当前 %d %% %d = %d；请调整 --device-count。" % (device_count, tp, device_count, tp, device_count % tp)
+        )
+    dp = device_count // tp
+
+    if "tensor_parallel_size" not in explicit_keys:
+        engine_config["tensor_parallel_size"] = tp
+        params["tensor_parallel_size"] = tp
+        logger.info("[MiniMax-M2.7-NVFP4-NV] tensor_parallel_size = %d (min(4, %d))", tp, device_count)
+    if "data_parallel_size" not in explicit_keys:
+        engine_config["data_parallel_size"] = dp
+        params["data_parallel_size"] = dp
+        logger.info("[MiniMax-M2.7-NVFP4-NV] data_parallel_size = %d (%d / %d)", dp, device_count, tp)
 
 
 # V4-Flash KV 稀疏路径（IndexCache / FLASHMLA_SPARSE_DSV4）要求 block_size 恒为 256，
@@ -3037,10 +3093,13 @@ def _is_mtp_or_suffix_strategy(params: Dict[str, Any], engine: str) -> bool:
 
     当启用投机推理且未指定草稿模型路径时，策略一定是 MTP 或 suffix。
     vllm_ascend 不注入 VLLM_EARS_TOLERANCE，Ascend 侧无需该参数。
+    MiniMax-M2.7 (NV) 不注入 VLLM_EARS_TOLERANCE（与 minimax-2.7-zyy.txt 对齐，无此项）。
     """
     if not params.get("enable_speculative_decode"):
         return False
     if engine != "vllm":
+        return False
+    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
         return False
     if params.get("speculative_decode_model_path"):
         _raw = str(params.get("speculative_decode_model_path", "")).strip().lower()
@@ -3571,6 +3630,12 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return f" --hf-overrides '{{\"use_index_cache\": true, \"index_topk_freq\": {topk}}}'"
 
+    # [MiniMax-M2.7-NVFP4-NV] kv_cache_dtype=fp8 已由 nvidia_default.json 提供，
+    # 跳过通用 FP8 路径注入的 calculate_kv_scales（与 minimax-2.7-zyy.txt 对齐，无此项）。
+    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
+        logger.info("[KV Sparse] MiniMax-M2.7 (NV) -> no-op (fp8 from json, no calculate_kv_scales)")
+        return ""
+
     if arch in INDEXCACHE_ARCHS:
         logger.info("[KV Sparse] Architecture %s → IndexCache strategy (--hf-overrides)", arch)
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
@@ -3606,10 +3671,14 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
     if _is_deepseek_v4_flash_params(params, model_info):
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return f"indexcache_use_index_cache_topk{topk}"
+    # [MiniMax-M2.7-NVFP4-NV] 同步 _build_kv_sparse_cmd：no-op（fp8 来自 json，无 calculate_kv_scales）
+    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
+        return "noop"
     if arch in INDEXCACHE_ARCHS:
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return f"indexcache_topk{topk}"
     return "fp8"
+
 
 
 def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
@@ -3631,6 +3700,7 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         return ""
     if not get_lmcache_env():
         return ""
+
     if _is_deepseek_v4_flash_params(params):
         size_gb = _resolve_v4_flash_offload_gb(params)
         logger.info("[KV Offload] DeepSeek-V4-Flash (NV) -> native backend, "
@@ -3648,6 +3718,120 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         )
         return ""
     return f" --kv-offloading-backend native --kv-offloading-size {size_gb}"
+
+
+# ── MiniMax-M2.7 + RTX-PRO-5000 + vLLM 集成（融入通用流程）──────────────────────
+# 不再走 build_start_script 早退分支，而是仿 DeepSeek-V4-Flash-NV / Qwen3.5 通过扩展点
+# 条件分支融入通用流程：
+#   * 固定 CLI 字段（trust_remote_code / kv_cache_dtype / served_model_name / moe_backend /
+#     tool_call_parser / enable_auto_tool_choice / speculative_config / use_vllm_serve）
+#     外置到 nvidia_default.json 的 MiniMaxM2ForCausalLM -> MiniMax-M2.7 -> vllm ->
+#     rtx_pro_5000_72G 子块，由通用 4 层合并注入 engine_config。
+#   * reasoning_parser 由 reason_parser.yaml 注入（MiniMax-M2.7 系列设为 minimax_m2），
+#     受 enable_auto_think_choice 开关控制（与 Qwen3.5 一致）。
+#   * tensor_parallel_size / data_parallel_size 由 _apply_minimax_m27_nvfp4_nv_engine_defaults
+#     动态推导（TP=min(4,device_count) + DP=device_count/TP），在 _prepare_engine_config 调用。
+#   * kv_transfer_config 由 config_loader._set_kv_cache_config 的 MiniMax 特例注入
+#     （含通用 LMCacheConnectorV1 缺失的 kv_load_failure_policy:recompute）。
+#   * 环境变量由 _build_model_env_commands 的 MiniMax 分支注入（仿 Qwen3.5 NVFP4 运行时配方，
+#     返回 txt 的 LMCache env 集）；_build_cache_env_commands 的通用 LMCache 流程对本场景跳过。
+#   * _build_kv_sparse_cmd 对 MiniMax 早退，跳过 calculate_kv_scales 注入（txt 无此项）。
+_MINIMAX_M27_DISK_SUFFIX = "kvcache"
+
+
+def _resolve_minimax_m27_lmcache_max_cpu_size(params: Dict[str, Any]) -> Optional[str]:
+    """解析 MiniMax-M2.7 配方下 ``LMCACHE_MAX_LOCAL_CPU_SIZE``（每卡 GB）。
+
+    复用通用 ``resolve_offload_cpu_capacity_gb`` 反向预算「本节点总」M_offload，再 ÷ 卡数
+    （LMCache 每 rank 一池需按卡平摊），与通用 LMCache 路径 ``_resolve_lmcache_cpu_env``
+    同源同公式（C4，需求一 §3.0）。auto 熔断（< 100G 不建池）亦复用通用语义，与
+    DeepSeek-V4-Flash-NV 一致。
+
+      * ``KV_MEM_OFFLOAD_SIZE == "auto"``：``resolve_offload_cpu_capacity_gb`` 返回 None（非 auto
+        透传）/ 0（熔断）/>0（本节点总）；仅 >0 时 ÷ device_count 得每卡值。
+      * 非 auto：``int(KV_MEM_OFFLOAD_SIZE) // device_count``。
+
+    Returns:
+        解析出的每卡容量字符串（无引号，由调用方加引号）；无法计算（auto 非命中 / 熔断 / 值非法）
+        时返回 ``None``，调用方据此省略该 env。
+    """
+    n_card = _safe_int(params.get("device_count")) or 1
+    raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+
+    if raw_size.lower() == "auto":
+        auto_total = resolve_offload_cpu_capacity_gb(params)
+        if auto_total is None or auto_total <= 0:
+            # 非 auto 透传 / 缺 POD_MEM_SIZE / 熔断（< 100G 不建池）-> 省略该 env
+            logger.info(
+                "[MiniMax-M2.7] auto CPU capacity not available (resolve_offload_cpu_capacity_gb=%s); "
+                "skip LMCACHE_MAX_LOCAL_CPU_SIZE.", auto_total,
+            )
+            return None
+        per_card = max(1, auto_total // n_card)
+        logger.info(
+            "[MiniMax-M2.7] auto CPU per-card = M_offload(%dG) / N_card(%d) = %dG.",
+            auto_total, n_card, per_card,
+        )
+        return str(per_card)
+
+    try:
+        total = int(raw_size)
+    except ValueError:
+        logger.warning(
+            "[MiniMax-M2.7] Invalid KV_MEM_OFFLOAD_SIZE=%r; skip LMCACHE_MAX_LOCAL_CPU_SIZE.",
+            raw_size,
+        )
+        return None
+    per_card = max(1, total // n_card)
+    logger.info(
+        "[MiniMax-M2.7] custom CPU per-card = M_offload(%dG) / N_card(%d) = %dG.",
+        total, n_card, per_card,
+    )
+    return str(per_card)
+
+
+def _build_minimax_m27_rtx_pro_5000_env_commands(params: Dict[str, Any]) -> List[str]:
+    """构建 MiniMax-M2.7 RTX-PRO-5000 配方的固定 LMCache 环境变量。
+
+    引号风格逐字对齐 minimax-2.7-zyy.txt：数字/布尔无引号、字符串双引号、JSON 单引号。
+    所有 LMCache 卸载相关变量仅在 ``ENABLE_KV_MEM_OFFLOAD`` 或 ``ENABLE_KV_DISK_OFFLOAD``
+    至少一个为 true 时才添加（不卸载则 LMCache 不启用，相关配置无意义）。
+    """
+    mem_offload = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+    disk_offload = os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true"
+
+    cmds: List[str] = [
+        "export PYTHONHASHSEED=0",
+        "export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=900",
+    ]
+
+    if not (mem_offload or disk_offload):
+        return cmds
+
+    # 内存卸载段：容量 + 启用标志
+    # 不回传 ENABLE_KV_MEM_OFFLOAD 开关：它是 xperf `-e` 传入的 wings 内部门控
+    # （仅用于决定是否构建本段 env），vLLM/LMCache 运行时实际读取 LMCACHE_* 系列。
+    if mem_offload:
+        max_cpu_size = _resolve_minimax_m27_lmcache_max_cpu_size(params)
+        if max_cpu_size is not None:
+            cmds.append(f'export LMCACHE_MAX_LOCAL_CPU_SIZE="{max_cpu_size}"')
+        cmds.append('export LMCACHE_LOCAL_CPU="True"')
+
+    # LMCache 通用配置（chunk size / ODirect / pre-caching hash）：仅在启用任一卸载时生效
+    cmds.append("export LMCACHE_CHUNK_SIZE=256")
+    cmds.append('export LMCACHE_EXTRA_CONFIG=\'{"use_odirect": true}\'')
+    cmds.append('export LMCACHE_PRE_CACHING_HASH_ALGORITHM="sha256_cbor_64bit"')
+
+    # 磁盘卸载段：路径 + 大小（同样不回传 ENABLE_KV_DISK_OFFLOAD 开关）
+    if disk_offload:
+        disk_base = os.getenv("KV_DISK_OFFLOAD_PATH", "").strip()
+        if disk_base:
+            cmds.append(f'export LMCACHE_LOCAL_DISK="{disk_base}/{_MINIMAX_M27_DISK_SUFFIX}"')
+        disk_size = os.getenv("KV_DISK_OFFLOAD_SIZE", "").strip()
+        if disk_size:
+            cmds.append(f'export LMCACHE_MAX_LOCAL_DISK_SIZE="{disk_size}"')
+
+    return cmds
 
 
 def build_start_command(params: Dict[str, Any]) -> str:

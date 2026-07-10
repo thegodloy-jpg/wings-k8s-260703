@@ -398,6 +398,50 @@ def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[s
     return False
 
 
+def is_minimax_m27_rtx_pro_5000_vllm(source: Optional[dict], engine: Optional[str] = None) -> bool:
+    """MiniMax-M2.7 + rtx_pro_5000_72G + vllm 的统一判定。
+
+    vllm_adapter.build_start_script 据此切换到「MiniMax-M2.7 RTX-PRO-5000 专属启动配方」
+    （固定 LMCache 环境变量 + 固定 vLLM CLI，仅 model_path/port 用实际值）。
+
+    三者同时满足才命中（与 smart_feature_whitelist.json 的 minimax-m2.7/rtxpro5000-72 行同口径）：
+      1. engine == "vllm"
+      2. model_name/model_path 含 minimax-m2.7 标识（覆盖 -NVFP4 等后缀）
+      3. 硬件为 rtx_pro_5000_72G（source.hardware_family/device_details/details，
+         或 loader 已解析出的 _smart_card_token=rtxpro5000-72）
+
+    ``source`` 须含 engine / model_name / model_path 键（ctx 与 params 同构）；
+    ``engine`` 参数可选，source 缺 engine 时用它兜底。
+    """
+    src = source or {}
+    eff_engine = engine or src.get("engine")
+    if eff_engine != "vllm":
+        return False
+    model_hit = False
+    for key in ("model_name", "model_path"):
+        val = str(src.get(key) or "").lower()
+        if ("minimax-m2.7" in val
+                or "minimax_m2.7" in val
+                or "minimaxm2.7" in val):
+            model_hit = True
+            break
+    if not model_hit:
+        return False
+    card_token = str(src.get("_smart_card_token") or src.get("card_token") or "").lower()
+    if "rtxpro5000-72" in card_token:
+        return True
+    hardware_texts = [str(src.get("hardware_family") or "")]
+    for detail in src.get("device_details") or src.get("details") or []:
+        if isinstance(detail, dict):
+            hardware_texts.append(str(detail.get("name") or ""))
+
+    for text in hardware_texts:
+        normalized = text.lower().replace("-", "_").replace(" ", "_")
+        if "rtx_pro_5000" in normalized and "72" in normalized:
+            return True
+    return False
+
+
 #
 _LLM_MODELS = {
     "DeepseekV3ForCausalLM": [

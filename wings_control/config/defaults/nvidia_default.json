@@ -539,6 +539,22 @@
             "trust_remote_code": true,
             "context_length": 4096
           }
+        },
+        "MiniMax-M2.7": {
+          "vllm": {
+            "rtx_pro_5000_72G": {
+              "use_vllm_serve": true,
+              "trust_remote_code": true,
+              "kv_cache_dtype": "fp8",
+              "moe_backend": "flashinfer_cutlass",
+              "tool_call_parser": "minimax_m2",
+              "enable_auto_tool_choice": true,
+              "speculative_config": {
+                "method": "suffix",
+                "num_speculative_tokens": 10
+              }
+            }
+          }
         }
       },
       "MiniMaxM3SparseForConditionalGeneration": {
