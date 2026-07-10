@@ -488,16 +488,7 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
     qwen35_dense = llm["Qwen3_5ForConditionalGeneration"]
     assert "enable_prefix_caching" not in qwen35_dense["default"]["vllm_ascend"]
     for model_name in ("Qwen3.5-27B-w8a8", "Qwen3.6-27B-w8a8"):
-        _assert_engines(
-            qwen35_dense[model_name],
-            ("vllm_ascend", "vllm_ascend_distributed"),
-            {
-                "seed": 1024,
-                "quantization": "ascend",
-                "gpu_memory_utilization": 0.9,
-                "no_enable_prefix_caching": True,
-            },
-        )
+        assert model_name not in qwen35_dense
 
     qwen35_moe = llm["Qwen3_5MoeForConditionalGeneration"]
     for engine in ("vllm_ascend", "vllm_ascend_distributed"):

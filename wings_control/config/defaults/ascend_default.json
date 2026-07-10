@@ -728,34 +728,6 @@
             "served_model_name": "qwen36",
             "tool_call_parser": "qwen3_coder"
           }
-        },
-        "Qwen3.5-27B-w8a8": {
-          "vllm_ascend": {
-            "seed": 1024,
-            "quantization": "ascend",
-            "gpu_memory_utilization": 0.9,
-            "no_enable_prefix_caching": true
-          },
-          "vllm_ascend_distributed": {
-            "seed": 1024,
-            "quantization": "ascend",
-            "gpu_memory_utilization": 0.9,
-            "no_enable_prefix_caching": true
-          }
-        },
-        "Qwen3.6-27B-w8a8": {
-          "vllm_ascend": {
-            "seed": 1024,
-            "quantization": "ascend",
-            "gpu_memory_utilization": 0.9,
-            "no_enable_prefix_caching": true
-          },
-          "vllm_ascend_distributed": {
-            "seed": 1024,
-            "quantization": "ascend",
-            "gpu_memory_utilization": 0.9,
-            "no_enable_prefix_caching": true
-          }
         }
       },
       "Qwen3_5MoeForConditionalGeneration": {
