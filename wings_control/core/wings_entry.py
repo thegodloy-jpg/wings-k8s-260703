@@ -40,7 +40,7 @@ from engines.vllm_adapter import (
 )
 from features.kv_offload.memcache import (
     build_memcache_hybrid_fragment,
-    is_kimi_k27_code_memcache_params,
+    is_memcache_hybrid_params,
 )
 from utils.vllm_helpers import (
     build_modelslim_quarot_patch_preamble,
@@ -417,8 +417,8 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
 
     # [V4-Flash-NV-Day0] NV V4-Flash 走 native --kv-offloading-backend（构建期 CLI flag），
     # 与 LMCache 互斥：跳过 LMCache 补丁安装，避免两套卸载机制并存。
-    if is_kimi_k27_code_memcache_params(merged, engine):
-        logger.info("[MemCache] Kimi-K2.7-Code uses official MemCache; skipping LMCache patch install.")
+    if is_memcache_hybrid_params(merged, engine):
+        logger.info("[MemCache] Model uses official MemCache; skipping LMCache patch install.")
         return None
 
     if merged and engine == "vllm" and _is_deepseek_v4_flash_params(merged):

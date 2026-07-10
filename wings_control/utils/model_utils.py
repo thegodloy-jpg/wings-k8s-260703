@@ -120,6 +120,16 @@ def feature_allowed(engine, model_name, model_path, card_token, feature) -> bool
     return _whitelist_table_hit(table, engine, hay, ct)
 
 
+def resolve_feature_whitelist_row(engine, model_name, model_path, card_token, feature) -> Optional[dict]:
+    """返回首条匹配 engine/model/card 的 smart feature 白名单行。"""
+    table = _SMART_WHITELISTS.get(feature)
+    if not table:
+        return None
+    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
+    ct = (card_token or "").lower()
+    return _whitelist_table_match(table, engine, hay, ct)
+
+
 def resolve_feature_whitelist(engine, model_name, model_path, card_token):
     """返回 (engine, model, card) 命中的允许特性 frozenset（聚合三独立表，保持原返回契约）。"""
     hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
@@ -473,6 +483,8 @@ _LLM_MODELS = {
     "Qwen3_5MoeForConditionalGeneration": [
         "Qwen3.5-397B-A17B-NVFP4",
         "Qwen3.5-397B-A17B-w8a8",
+        "Qwen3.5-35B-A3B",
+        "Qwen3.5-122B-A10B",
         "Qwen3.5-397B-A17B",
         "Qwen3.6-35B-A3B",
         "Qwen3.6-35B-A3B-w8a8",

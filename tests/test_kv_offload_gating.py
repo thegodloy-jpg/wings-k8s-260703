@@ -4,6 +4,8 @@ import logging
 import inspect
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
@@ -785,9 +787,57 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_page_offload_memory(monkeypa
 
     assert fragment["enabled"] is True
     assert 'export WINGS_MEMCACHE_DRAM_GB="40"' in fragment["engine_prelude"]
+    assert "tcp://127.0.0.1:5000" in fragment["engine_prelude"]
+    assert "tcp://127.0.0.1:6000" in fragment["engine_prelude"]
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
     assert "MMC_LOCAL_CONFIG_PATH" in fragment["engine_prelude"]
     assert "MMC_META_CONFIG_PATH" in fragment["master_script"]
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_token", "expected_meta_port", "expected_config_port"),
+    [
+        ("Qwen/Qwen3.5-27B", "910c", 50051, 50061),
+        ("Qwen/Qwen3.6-27B", "910c", 50071, 50081),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", "910b", 50051, 50061),
+        ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910b", 50051, 50061),
+    ],
+)
+def test_qwen_day0_memcache_ports_follow_offload_whitelist(
+    monkeypatch,
+    model_name,
+    card_token,
+    expected_meta_port,
+    expected_config_port,
+):
+    """Qwen Day0 MemCache 默认端口属于场景数据。
+
+    页面仍然可以通过 WINGS_MEMCACHE_META_SERVICE_URL 和
+    WINGS_MEMCACHE_CONFIG_STORE_URL 覆盖渲染后的 URL。页面未覆盖时，
+    Qwen 必须使用同一条 offload 白名单场景行中的模型+芯片端口。
+    """
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": model_name,
+            "model_path": f"/models/{model_name}",
+            "model_type": "llm",
+            "_smart_card_token": card_token,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert fragment["enabled"] is True
+    assert f"tcp://127.0.0.1:{expected_meta_port}" in fragment["engine_prelude"]
+    assert f"tcp://127.0.0.1:{expected_config_port}" in fragment["engine_prelude"]
+    assert f"tcp://127.0.0.1:{expected_meta_port}" in fragment["master_script"]
+    assert f"tcp://127.0.0.1:{expected_config_port}" in fragment["master_script"]
 
 
 def test_kimi_k27_code_memcache_without_page_memory_is_disabled(monkeypatch):
@@ -1148,3 +1198,30 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_env(monkeypatch):
     )
 
     assert commands == []
+
+
+def test_qwen_memcache_capability_follows_offload_whitelist_card_token():
+    """Qwen MemCache 能力必须来自 offload 白名单。
+
+    Day0 Qwen 矩阵对芯片敏感。局部模型 token 列表只能判断“是不是
+    Qwen”，不能判断“这个 Qwen 在当前芯片上是否允许 offload”。这个回归
+    测试确保 MemCache 与特性 gating 和 dry-run 命令生成使用同一份白名单行。
+    """
+    assert memcache_hybrid.is_qwen_day0_memcache_params(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Qwen/Qwen3.5-27B",
+            "model_path": "/models/Qwen/Qwen3.5-27B",
+            "_smart_card_token": "910c",
+        },
+        "vllm_ascend",
+    ) is True
+    assert memcache_hybrid.is_qwen_day0_memcache_params(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Qwen/Qwen3.5-27B",
+            "model_path": "/models/Qwen/Qwen3.5-27B",
+            "_smart_card_token": "910b",
+        },
+        "vllm_ascend",
+    ) is False

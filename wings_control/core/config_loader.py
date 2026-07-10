@@ -41,7 +41,8 @@ from utils.env_utils import get_master_ip, get_node_ips, get_lmcache_env, get_pd
 from utils.file_utils import check_torch_dtype, get_directory_size, check_permission_640, load_json_config
 from utils.model_utils import (ModelIdentifier,
                                is_glm_moe_dsa_glm51, is_glm52_single_node_even, resolve_thinking_off_policy,
-                               resolve_feature_whitelist, resolve_forced_feature_whitelist, feature_allowed,
+                               resolve_feature_whitelist, resolve_feature_whitelist_row,
+                               resolve_forced_feature_whitelist, feature_allowed,
                                is_deepseek_v4_flash_rtx_pro_5000,
                                is_qwen3_5_397b_nvfp4_vllm,
                                THINKING_ALWAYS_ON, THINKING_HYBRID, THINKING_NONE)
@@ -52,12 +53,12 @@ except ImportError:
     from core.version_util import resolve_card_model  # noqa: F401
 try:
     from wings_control.features.kv_offload.memcache import (
-        is_kimi_k27_code_memcache_params,
+        is_memcache_hybrid_params,
         resolve_memcache_dram_gb,
     )
 except ImportError:
     from features.kv_offload.memcache import (  # noqa: F401
-        is_kimi_k27_code_memcache_params,
+        is_memcache_hybrid_params,
         resolve_memcache_dram_gb,
     )
 try:
@@ -1606,13 +1607,13 @@ def _set_kv_cache_config(params, ctx, model_info=None):
     if ctx.get("_smart_feats") is not None:
         lmcache_offload = "offload" in ctx.get("_smart_feats")
 
-    if lmcache_offload and is_kimi_k27_code_memcache_params(ctx, ctx.get("engine")):
+    if lmcache_offload and is_memcache_hybrid_params(ctx, ctx.get("engine")):
         if resolve_memcache_dram_gb(ctx):
             params["kv_transfer_config"] = json.dumps(_build_memcache_ascend_store_config())
-            logger.info("[MemCache] Kimi-K2.7-Code uses AscendStoreConnector.")
+            logger.info("[MemCache] Model uses AscendStoreConnector.")
         else:
             logger.info(
-                "[MemCache] Kimi-K2.7-Code offload requested but page memory is missing "
+                "[MemCache] Model offload requested but page memory is missing "
                 "or invalid; not injecting AscendStoreConnector."
             )
         return
@@ -3094,6 +3095,72 @@ def _resolve_deepseek_v4_flash_ascend_config_key(arch_dict: Dict[str, Any]) -> s
     return ""
 
 
+def _standard_ascend_card_token(hardware_env: Dict[str, Any] | None) -> str:
+    card_token = resolve_card_token(hardware_env).lower()
+    if "910c" in card_token or card_token == "a3":
+        return "910c"
+    if "910b" in card_token or card_token == "a2":
+        return "910b"
+    return ""
+
+
+def _resolve_ascend_whitelist_config_key(
+    arch_dict: Dict[str, Any],
+    model_name_lower: str,
+    model_path_lower: str,
+    engine_key: str,
+    hardware_env: Dict[str, Any] | None,
+) -> str:
+    card_token = _standard_ascend_card_token(hardware_env)
+    if not card_token:
+        return ""
+    row = resolve_feature_whitelist_row(
+        "vllm_ascend",
+        model_name_lower,
+        model_path_lower,
+        card_token,
+        "spec",
+    )
+    if not row:
+        return ""
+    suffix = f"ascend{card_token}"
+    for token in row.get("name_tokens", ()):
+        model_token = str(token).lower().rstrip("/").rsplit("/", 1)[-1]
+        if not model_token:
+            continue
+        candidate = f"{model_token}-{suffix}"
+        for config_key in arch_dict:
+            if config_key.lower() == candidate:
+                logger.info(
+                    "Using whitelist-driven Ascend config '%s' from smart feature row "
+                    "(engine_key=%s)",
+                    config_key,
+                    engine_key,
+                )
+                return config_key
+    return ""
+
+
+def _resolve_whitelist_ascend_config_key(
+    arch_dict: Dict[str, Any],
+    lookup_names: list,
+    model_path_lower: str,
+    engine_key: str,
+    hardware_env: Dict[str, Any] | None,
+) -> str:
+    for name in lookup_names:
+        config_key = _resolve_ascend_whitelist_config_key(
+            arch_dict,
+            name,
+            model_path_lower,
+            engine_key,
+            hardware_env,
+        )
+        if config_key:
+            return config_key
+    return ""
+
+
 @dataclass
 class _SpecialEngineScenario:
     """DeepSeek + 引擎 + NVIDIA 的两类特殊卡型选配场景标记。"""
@@ -3108,6 +3175,7 @@ def _match_model_engine_config(
     scenario: _SpecialEngineScenario,
     model_info=None,
     hardware_env: Dict[str, Any] | None = None,
+    model_path_lower: str = "",
 ) -> Dict[str, Any]:
     """在架构配置字典中按模型名查找引擎参数，支持 H20 卡型适配。
 
@@ -3136,6 +3204,17 @@ def _match_model_engine_config(
     for extra in _fingerprint_model_config_keys(model_info):
         if extra not in lookup_names:
             lookup_names.append(extra)
+
+    if engine_key in {"vllm_ascend", "vllm_ascend_distributed"}:
+        config_key = _resolve_whitelist_ascend_config_key(
+            arch_dict,
+            lookup_names,
+            model_path_lower,
+            engine_key,
+            hardware_env,
+        )
+        if config_key:
+            return arch_dict[config_key].get(engine_key, {})
 
     if (
         engine_key in {"vllm_ascend", "vllm_ascend_distributed"}
@@ -3373,6 +3452,7 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
         engine_specific_defaults = _match_model_engine_config(
             model_architecture_dict, model_name_lower, engine_key,
             scenario, model_info, hardware_env,
+            str(cmd_known_params.get("model_path", "") or "").lower(),
         )
         if not engine_specific_defaults:
             logger.info("The default deploy configuration of the "

@@ -1,4 +1,4 @@
-"""MemCache Hybrid helpers for Kimi offload."""
+"""面向模型场景的 Ascend MemCache Hybrid offload 辅助函数。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Any, Dict, Optional
 
 try:
     from wings_control.utils.device_utils import resolve_card_token
-    from wings_control.utils.model_utils import feature_allowed
+    from wings_control.utils.model_utils import feature_allowed, resolve_feature_whitelist_row
 except ImportError:
     from utils.device_utils import resolve_card_token  # type: ignore
-    from utils.model_utils import feature_allowed  # type: ignore
+    from utils.model_utils import feature_allowed, resolve_feature_whitelist_row  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ _OFFLOAD_ENGINE_SELF_BASE_GB = 3
 _OFFLOAD_MARGIN_RATIO = 0.10
 _OFFLOAD_MIN_GB = 100
 _TEMPLATE_DIR = Path(__file__).resolve().parent
+_DEFAULT_META_SERVICE_URL = "tcp://127.0.0.1:5000"
+_DEFAULT_CONFIG_STORE_URL = "tcp://127.0.0.1:6000"
 
 
 def empty_memcache_hybrid_fragment() -> dict:
@@ -36,7 +38,7 @@ def empty_memcache_hybrid_fragment() -> dict:
 
 
 def is_kimi_k27_code_memcache_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
-    """Return whether params should use Kimi K2.7 Code MemCache offload."""
+    """判断当前参数是否应使用 Kimi K2.7 Code MemCache offload。"""
     if not params or engine != "vllm_ascend":
         return False
     text = " ".join(
@@ -44,6 +46,39 @@ def is_kimi_k27_code_memcache_params(params: Optional[Dict[str, Any]], engine: s
         for key in ("model_name", "model_path")
     )
     return "kimi-k2.7-code" in text and "w4a8" not in text
+
+
+def is_qwen_day0_memcache_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
+    """判断当前参数是否命中 Qwen Day0 MemCache 支持场景。"""
+    if not params or engine != "vllm_ascend":
+        return False
+
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is not None and "offload" not in smart_feats:
+        return False
+
+    # 这里不要再维护第二份 Qwen 模型 token 表。Day0 矩阵对模型和芯片都敏感，
+    # MemCache 能力必须跟随特性 gating 和 dry-run 命令生成已经使用的同一条
+    # offload 白名单行。arch 检查用于把该 helper 限定在 Qwen 场景，即使后续
+    # 其它 offload 模型也复用相同的 MemCache 传输。
+    row = resolve_feature_whitelist_row(
+        engine,
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("_smart_card_token") or resolve_card_token(),
+        "offload",
+    )
+    if not row:
+        return False
+    return str(row.get("arch", "")).startswith("Qwen3_5")
+
+
+def is_memcache_hybrid_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
+    """判断当前参数是否应使用 MemCache Hybrid offload 路径。"""
+    return (
+        is_kimi_k27_code_memcache_params(params, engine)
+        or is_qwen_day0_memcache_params(params, engine)
+    )
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -93,7 +128,7 @@ def _resolve_offload_cpu_capacity_gb(
 
 
 def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
-    """Resolve MemCache local DRAM size from the page-owned offload memory."""
+    """从页面下发的 offload memory 解析 MemCache 本地 DRAM 容量。"""
     params = params or {}
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     size_env_name = "KV_MEM_OFFLOAD_SIZE"
@@ -115,6 +150,36 @@ def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
     if size_gb <= 0:
         return None
     return size_gb
+
+
+def _resolve_memcache_endpoint_defaults(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> tuple[str, str]:
+    """返回场景拥有的 MemCache endpoint 默认值。
+
+    shell 模板仍允许部署层通过 WINGS_MEMCACHE_META_SERVICE_URL 和
+    WINGS_MEMCACHE_CONFIG_STORE_URL 覆盖。这里的默认值只决定部署层未显式
+    下发 URL 时渲染什么。对 Qwen Day0 来说，端口是模型+芯片 offload 场景
+    契约的一部分，因此放在允许 MemCache 的同一条白名单行上，避免能力判断、
+    connector 选择和端口默认值在多张表之间漂移。
+    """
+    params = params or {}
+    row = resolve_feature_whitelist_row(
+        engine,
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("_smart_card_token") or resolve_card_token(),
+        "offload",
+    )
+    meta_port = _safe_int((row or {}).get("memcache_meta_port"))
+    config_port = _safe_int((row or {}).get("memcache_config_port"))
+    if meta_port and config_port:
+        return (
+            f"tcp://127.0.0.1:{meta_port}",
+            f"tcp://127.0.0.1:{config_port}",
+        )
+    return _DEFAULT_META_SERVICE_URL, _DEFAULT_CONFIG_STORE_URL
 
 
 def _memcache_offload_allowed(engine: str, merged: dict | None) -> bool:
@@ -139,10 +204,10 @@ def _read_template(filename: str) -> str:
 
 
 def build_memcache_hybrid_fragment(engine: str, merged: dict | None) -> dict:
-    """Build directly concatenable MemCache Hybrid startup fragments."""
+    """构建可直接拼接进启动脚本的 MemCache Hybrid 片段。"""
     if (
         not merged
-        or not is_kimi_k27_code_memcache_params(merged, engine)
+        or not is_memcache_hybrid_params(merged, engine)
         or not _memcache_offload_allowed(engine, merged)
     ):
         return empty_memcache_hybrid_fragment()
@@ -151,10 +216,18 @@ def build_memcache_hybrid_fragment(engine: str, merged: dict | None) -> dict:
     if not dram_gb:
         return empty_memcache_hybrid_fragment()
 
-    master_script = _read_template("memcache_master.sh").rstrip()
+    meta_service_url, config_store_url = _resolve_memcache_endpoint_defaults(merged, engine)
+    master_script = (
+        _read_template("memcache_master.sh")
+        .rstrip()
+        .replace("{meta_service_url}", meta_service_url)
+        .replace("{config_store_url}", config_store_url)
+    )
     engine_prelude = (
         _read_template("memcache_engine_prelude.sh")
         .replace("{dram_gb}", str(dram_gb))
+        .replace("{meta_service_url}", meta_service_url)
+        .replace("{config_store_url}", config_store_url)
         .replace("{master_script}", master_script)
     )
     return {

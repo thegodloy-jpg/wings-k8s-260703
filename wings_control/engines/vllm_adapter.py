@@ -30,7 +30,8 @@ from utils.model_utils import (ModelIdentifier, ModelIdentifierDraft,
                                is_qwen3_5_397b_nvfp4_vllm,
                                is_deepseek_v4_flash_rtx_pro_5000,
                                is_glm51_ascend_kvsparse_tmp_scope, is_glm52_model,
-                               is_glm52_single_node_even, feature_allowed, resolve_sparse_topk)
+                               is_glm52_single_node_even, feature_allowed,
+                               resolve_feature_whitelist_row, resolve_sparse_topk)
 from utils.device_utils import resolve_card_token
 
 from utils.env_utils import get_local_ip, get_lmcache_env, \
@@ -984,8 +985,8 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
 
     # 守卫（条件由 _classify_offload_special_case 统一裁定；互斥特例跳过 env 导出）
     special = _classify_offload_special_case(params, engine)
-    if memcache_hybrid.is_kimi_k27_code_memcache_params(params, engine):
-        logger.info("[MemCache] Kimi-K2.7-Code uses MemCache; skipping LMCache env exports.")
+    if memcache_hybrid.is_memcache_hybrid_params(params, engine):
+        logger.info("[MemCache] Model uses MemCache; skipping LMCache env exports.")
         return env_commands
 
     if _lmcache_engine_env_skip(special):
@@ -1051,7 +1052,7 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     """
     if not get_lmcache_env():
         return ""
-    if memcache_hybrid.is_kimi_k27_code_memcache_params(params, engine):
+    if memcache_hybrid.is_memcache_hybrid_params(params, engine):
         return (
             memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT
             if memcache_hybrid.resolve_memcache_dram_gb(params)
@@ -3125,6 +3126,43 @@ def _resolve_mtp_method(model_architecture: str, engine: str) -> str:
     return mtp_methods_by_arch.get(model_architecture, "")
 
 
+def _resolve_whitelist_mtp_num_speculative_tokens(params: Dict[str, Any], engine: str) -> Optional[int]:
+    """从 spec 白名单场景行读取逐场景 MTP token 数。
+
+    MTP token 数属于模型+芯片场景契约。把它放在白名单行上，可以避免
+    adapter 内部再维护一张容易漂移的局部表；新增 Day0 profile，或同一模型
+    在不同芯片上使用不同 token 数时（例如 Qwen3.5-27B 的 910C 与 910B），
+    也能保持单一事实源。
+    """
+    row = resolve_feature_whitelist_row(
+        engine,
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("_smart_card_token") or resolve_card_token(),
+        "spec",
+    )
+    if not row:
+        return None
+    raw_tokens = row.get("mtp_num_speculative_tokens")
+    if raw_tokens is None:
+        return None
+    try:
+        tokens = int(raw_tokens)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[AdvFeature-SpecDecode] Invalid mtp_num_speculative_tokens=%r in spec whitelist row.",
+            raw_tokens,
+        )
+        return None
+    if tokens <= 0:
+        logger.warning(
+            "[AdvFeature-SpecDecode] Non-positive mtp_num_speculative_tokens=%s in spec whitelist row.",
+            tokens,
+        )
+        return None
+    return tokens
+
+
 def _lmcache_requires_suffix_speculative_strategy(
     params: Dict[str, Any],
     engine: str,
@@ -3163,6 +3201,16 @@ def _lmcache_requires_suffix_speculative_strategy(
         logger.info(
             "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native KV offload "
             "(coexists with MTP); keeping mtp speculative strategy."
+        )
+        return False
+    if engine == "vllm_ascend" and memcache_hybrid.is_memcache_hybrid_params(params, engine):
+        # 标记为 "MTP+MemCache" 的 Qwen Day0 优化行走 AscendStoreConnector，
+        # 不是历史上会强制切到 suffix 的 LMCacheConnector。这里保留 MTP，
+        # 让 spec 白名单中的逐场景 mtp_num_speculative_tokens 仍能落到最终
+        # --speculative-config。
+        logger.info(
+            "[KVCache Offload] MemCache Hybrid coexists with MTP; "
+            "keeping mtp speculative strategy."
         )
         return False
     return True
@@ -3372,6 +3420,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
             model_name=params.get("model_name"),
             model_path=params.get("model_path"),
         )
+        whitelist_mtp_tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
         _num1_arch = (
             _is_deepseek_v4_pro_params(params)
             or is_v4_flash
@@ -3380,7 +3429,9 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
                 and not glm51_ascend
             )
         )
-        if is_v4_flash_pro5000:
+        if whitelist_mtp_tokens is not None:
+            speculative_config_temp.append(f'"num_speculative_tokens": {whitelist_mtp_tokens}')
+        elif is_v4_flash_pro5000:
             speculative_config_temp.append('"num_speculative_tokens": 2')
         elif not glm52_ascend and _num1_arch:
             speculative_config_temp.append('"num_speculative_tokens": 1')

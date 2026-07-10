@@ -108,6 +108,8 @@ architectures:
       GLM-5.1:      {vllm: glm45, vllm_ascend: glm45}
       GLM-5.1-w8a8: {vllm: glm45, vllm_ascend: glm45}
       GLM-5.1-FP8:  {vllm: glm45, vllm_ascend: glm45}
+      GLM-5.2:      {vllm: glm45, vllm_ascend: glm45}
+      GLM-5.2-w8a8: {vllm: glm45, vllm_ascend: glm45}
 
   - name: Glm4MoeForCausalLM
     config:
@@ -156,10 +158,14 @@ architectures:
       vllm:        {default: qwen3}
       vllm_ascend: {default: qwen3}
     models:
+      Qwen3.5-397B-A17B-NVFP4: {vllm: qwen3, vllm_ascend: qwen3}
       Qwen3.5-397B-A17B-w8a8: {vllm: qwen3, vllm_ascend: qwen3}
+      Qwen3.5-35B-A3B:        {vllm: qwen3, vllm_ascend: qwen3}
+      Qwen3.5-122B-A10B:      {vllm: qwen3, vllm_ascend: qwen3}
       Qwen3.5-397B-A17B:      {vllm: qwen3, vllm_ascend: qwen3}
       Qwen3.6-35B-A3B:        {vllm: qwen3, vllm_ascend: qwen3}
       Qwen3.6-35B-A3B-w8a8:   {vllm: qwen3, vllm_ascend: qwen3}
+      Qwen-AgentWorld-35B-A3B: {vllm: qwen3, vllm_ascend: qwen3}
 
   - name: MiniMaxM2ForCausalLM
     config:

@@ -105,6 +105,32 @@ def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
     assert strategy == "qwen3_5_mtp"
 
 
+def test_qwen_day0_memcache_keeps_mtp_strategy_and_whitelist_tokens(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    command = vllm_adapter.build_speculative_cmd(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Qwen/Qwen3.5-27B",
+            "model_path": "/models/Qwen/Qwen3.5-27B",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "speculative_decode_model_path": "none",
+            "_smart_card_token": "910c",
+            "_smart_feats": ["offload", "spec"],
+        },
+        "vllm_ascend",
+    )
+
+    assert '"method": "qwen3_5_mtp"' in command
+    assert '"num_speculative_tokens": 1' in command
+    assert '"enforce_eager": true' in command
+    assert "suffix" not in command
+
+
 def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
 

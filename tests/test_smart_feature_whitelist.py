@@ -3,6 +3,8 @@ import sys
 import json
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
@@ -170,14 +172,14 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Qwen3.6-27B",
         "/models/Qwen3.6-27B",
         "910c",
-    ) == frozenset({"spec"})
+    ) == frozenset({"spec", "offload"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
         "Qwen3.6-35B-A3B",
         "/models/Qwen3.6-35B-A3B",
         "910c",
-    ) == frozenset({"spec"})
+    ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
         "Eco-Tech/GLM-5.1-w8a8",
@@ -476,7 +478,17 @@ def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkey
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
 
 
-def test_qwen36_27b_ascend910b_spec_whitelist_uses_native_mtp(monkeypatch):
+def test_qwen36_27b_ascend910b_is_not_in_day0_spec_whitelist():
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "Qwen/Qwen3.6-27B",
+        "/models/Qwen/Qwen3.6-27B",
+        "910b",
+        "spec",
+    ) is None
+
+
+def test_qwen36_27b_ascend910b_spec_request_falls_back_to_suffix(monkeypatch):
     monkeypatch.setenv("ENABLE_SPARSE", "false")
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
@@ -498,15 +510,55 @@ def test_qwen36_27b_ascend910b_spec_whitelist_uses_native_mtp(monkeypatch):
         {"device": "ascend", "count": 1, "details": [{"name": "Ascend910B_64G"}]},
     )
 
-    assert params["_allowed_smart_feats"] == ["spec"]
-    assert params["_smart_feats"] == ["spec"]
-    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "qwen3_5_mtp"
+    assert params["_allowed_smart_feats"] == []
+    assert params["_smart_feats"] == []
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+
+
+@pytest.mark.parametrize(
+    ("engine", "model_name", "model_path", "card_token", "expected_tokens"),
+    [
+        ("vllm", "Qwen3.5-397B-A17B-NVFP4", "/models/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", 3),
+        ("vllm", "Qwen3.5-397B-A17B", "/models/Qwen/Qwen3.5-397B-A17B", "rtxpro5000-72", 3),
+        ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 3),
+        ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
+        ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
+        ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
+        ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910b", 1),
+        ("vllm_ascend", "Eco-Tech/GLM-5.2-w8a8", "/models/Eco-Tech/GLM-5.2-w8a8", "910c", 3),
+        ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910b", 3),
+        ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910c", 3),
+        ("vllm_ascend", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910b", 3),
+        ("vllm_ascend", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910c", 3),
+        ("vllm_ascend", "vllm-ascend/DeepSeek-V3.2-w8a8", "/models/vllm-ascend/DeepSeek-V3.2-w8a8", "910c", 3),
+    ],
+)
+def test_spec_whitelist_mtp_rows_carry_mtp_tokens(
+    engine,
+    model_name,
+    model_path,
+    card_token,
+    expected_tokens,
+):
+    row = model_utils.resolve_feature_whitelist_row(
+        engine,
+        model_name,
+        model_path,
+        card_token,
+        "spec",
+    )
+
+    assert row is not None
+    assert row.get("mtp_num_speculative_tokens") == expected_tokens
 
 
 def test_detect_hardware_accepts_minimal_ascend_hardware_family_file(tmp_path, monkeypatch):
     hardware_file = tmp_path / "hardware_info.json"
+    # Day0 适配基准的硬件文件只保留 device/hardware_family。
+    # details 不是输入契约的一部分；detect_hardware 内部可以为了兼容旧调用链
+    # 补齐 details，但卡型判断必须以 hardware_family 为准。
     hardware_file.write_text(
-        json.dumps({"device": "ascend", "hardware_family": "Ascend910B_64G", "count": 2}),
+        json.dumps({"device": "ascend", "hardware_family": "Ascend910B_64G"}),
         encoding="utf-8",
     )
     monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
