@@ -1,0 +1,17 @@
+{
+    "engine": "vllm_ascend",
+    "features": {
+        "speculative_decode": true,
+        "sparse_kv": false,
+        "kv_offload": true,
+        "rag_acc": false
+    },
+    "variants": {
+        "speculative_decode": "qwen3_5_mtp",
+        "sparse_kv": null,
+        "kv_offload": "memcache"
+    },
+    "others": {
+        "kv_mem_offload_size": 40
+    }
+}

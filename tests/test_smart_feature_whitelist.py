@@ -426,6 +426,7 @@ def test_qwen_day0_memcache_omits_recompute_load_failure_policy(
 
     kv_transfer = json.loads(config["kv_transfer_config"])
     assert params["_smart_feats"] == ["offload", "spec"]
+    assert config["no_disable_hybrid_kv_cache_manager"] is True
     assert kv_transfer == {
         "kv_connector": "AscendStoreConnector",
         "kv_role": "kv_both",

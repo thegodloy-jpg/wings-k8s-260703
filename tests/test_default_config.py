@@ -562,6 +562,39 @@ def test_qwen_day0_additional_config_matches_excel_baseline():
             assert _as_dict(moe[model_name][engine]["additional_config"]) == expected
 
 
+def test_qwen35_day0_defaults_keep_language_model_only_from_excel():
+    llm = _model_deploy_config("ascend")["llm"]
+    dense = llm["Qwen3_5ForConditionalGeneration"]
+    moe = llm["Qwen3_5MoeForConditionalGeneration"]
+
+    qwen35_models = [
+        dense["Qwen3.5-27B-Ascend910C"],
+        dense["Qwen3.5-27B-Ascend910B"],
+        moe["Qwen3.5-35B-A3B-Ascend910C"],
+        moe["Qwen3.5-35B-A3B-Ascend910B"],
+        moe["Qwen3.5-122B-A10B-Ascend910C"],
+        moe["Qwen3.5-122B-A10B-Ascend910B"],
+        moe["Qwen3.5-397B-A17B-Ascend910C"],
+    ]
+    for config in qwen35_models:
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            assert config[engine]["language_model_only"] is True
+
+    qwen36_models = [
+        dense["Qwen3.6-27B-Ascend910C"],
+        dense["Qwen3.6-27B-Ascend910B"],
+        dense["Qwen3.6-27B-w8a8-Ascend910C"],
+        dense["Qwen3.6-27B-w8a8-Ascend910B"],
+        moe["Qwen3.6-35B-A3B-Ascend910C"],
+        moe["Qwen3.6-35B-A3B-Ascend910B"],
+        moe["Qwen3.6-35B-A3B-w8a8-Ascend910C"],
+        moe["Qwen3.6-35B-A3B-w8a8-Ascend910B"],
+    ]
+    for config in qwen36_models:
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            assert "language_model_only" not in config[engine]
+
+
 def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
     llm = _model_deploy_config("ascend")["llm"]
     kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code"]

@@ -41,21 +41,21 @@ echo "[wings-env] export PROMETHEUS_MULTIPROC_DIR=${PROMETHEUS_MULTIPROC_DIR:-}"
 # 清空旧的日志文件，确保 log_analyzer 只分析新的日志（避免残留内容触发误判）
 rm -f /var/log/wings/engine.log
 rm -f /var/log/wings/engine-full.log
-rm -f /shared-volume/progress.jsonl
+rm -f D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/progress.jsonl
 
 # 记录脚本开始时间（用于计算耗时）
 SCRIPT_START_EPOCH=$(date +%s)
 
-ANALYZER_CONFIG='{"engine": "vllm_ascend", "deployment_mode": "single", "hardware": "ascend", "nnodes": 1, "node_rank": 0, "distributed_backend": "ray", "tensor_parallel_size": 1, "model_name": "Eco-Tech/Qwen3.6-35B-A3B-w8a8", "model_path": "D:\\project\\wings-k8s-260703\\wings_control\\docs\\DAY0\\dry_run\\qwen_day0_current\\_model_configs\\Qwen3.6-35B-A3B-w8a8-910C", "backend_port": 7799}'
+ANALYZER_CONFIG='{"engine": "vllm_ascend", "deployment_mode": "single", "hardware": "ascend", "nnodes": 1, "node_rank": 0, "distributed_backend": "mp", "tensor_parallel_size": 2, "model_name": "Eco-Tech/Qwen3.6-35B-A3B-w8a8", "model_path": "D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_model_configs/Qwen3.6-35B-A3B-w8a8-910C", "backend_port": 7799}'
 echo "[log_analyzer] 配置信息: $ANALYZER_CONFIG"
 
 # 启动日志分析器（后台）
 # 清除旧 __pycache__，防止跨 Python 版本的 pyc magic number 不匹配
-find /shared-volume/log_analyzer -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-cd /shared-volume && python3 -B -m log_analyzer.log_analyzer \
+find D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/log_analyzer -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+cd D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared && python3 -B -m log_analyzer.log_analyzer \
     --config "$ANALYZER_CONFIG" \
     --log-file /var/log/wings/engine.log \
-    --progress-file /shared-volume/progress.jsonl &
+    --progress-file D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/progress.jsonl &
 LOG_ANALYZER_PID=$!
 echo "[log_analyzer] 分析器PID: $LOG_ANALYZER_PID"
 
@@ -83,7 +83,7 @@ cleanup_analyzer() {
             start_time=$(date -Iseconds -d "@${SCRIPT_START_EPOCH}")
             local elapsed
             elapsed=$(( $(date +%s) - SCRIPT_START_EPOCH ))
-            cat >> "/shared-volume/progress.jsonl" <<EARLY_FAIL_EOF
+            cat >> "D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/progress.jsonl" <<EARLY_FAIL_EOF
 {"progress": 0, "phase_code": "script_error", "phase_name": "启动脚本执行失败", "status": "failed", "key_log": "引擎启动前脚本异常退出，退出码: $exit_code", "curr_time": "$curr_time", "start_time": "$start_time", "elapsed_time_s": $elapsed}
 EARLY_FAIL_EOF
         fi
@@ -162,7 +162,7 @@ if [ -f "/accel-volume/install.py" ]; then
     set -e
     if [ $SPEC_RC -ne 0 ]; then
         echo "[wings-accel] WARNING: Speculative decoding runtime deps install failed (exit=$SPEC_RC), skipping. Service will continue without patches."
-        python3 -c "import json, os; p='/shared-volume/advanced_features.json'; d=json.load(open(p)) if os.path.exists(p) else {'engine':'','features':{}}; d.setdefault('features',{})['speculative_decode']=False; f=open(p+'.tmp','w'); json.dump(d,f,indent=4); f.close(); os.replace(p+'.tmp',p)"
+        python3 -c "import json, os; p='D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/advanced_features.json'; d=json.load(open(p)) if os.path.exists(p) else {'engine':'','features':{}}; d.setdefault('features',{})['speculative_decode']=False; f=open(p+'.tmp','w'); json.dump(d,f,indent=4); f.close(); os.replace(p+'.tmp',p)"
     else
         echo '[wings-accel] Speculative decoding runtime deps installed successfully.'
     fi
@@ -285,8 +285,8 @@ export TASK_QUEUE_ENABLE=1
 echo "[wings-env] export TASK_QUEUE_ENABLE=${TASK_QUEUE_ENABLE:-}"
 export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-AIV}
 echo "[wings-env] export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-}"
-echo '[wings-cmd] >>> exec python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"' --additional-config '"'"'{"enable_cpu_binding":true,"multistream_overlap_shared_expert":true}'"'"' --tool-call-parser qwen3_coder --port 7799 --model '"'"'D:\project\wings-k8s-260703\wings_control\docs\DAY0\dry_run\qwen_day0_current\_model_configs\Qwen3.6-35B-A3B-w8a8-910C'"'"' --enable-auto-tool-choice --default-chat-template-kwargs '"'"'{"enable_thinking":false}'"'"' --kv-transfer-config '"'"'{"kv_connector":"AscendStoreConnector","kv_ro...<truncated>'
-python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' --additional-config '{"enable_cpu_binding":true,"multistream_overlap_shared_expert":true}' --tool-call-parser qwen3_coder --port 7799 --model 'D:\project\wings-k8s-260703\wings_control\docs\DAY0\dry_run\qwen_day0_current\_model_configs\Qwen3.6-35B-A3B-w8a8-910C' --enable-auto-tool-choice --default-chat-template-kwargs '{"enable_thinking":false}' --kv-transfer-config '{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache"}}' --speculative-config '{"method": "qwen3_5_mtp", "num_speculative_tokens": 3, "enforce_eager": true}' &
+echo '[wings-cmd] >>> exec python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"' --additional-config '"'"'{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":true}}'"'"' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7799 --model D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_model_configs/Qwen3.6-35B-A3B-w8a8-910C --enable-auto-tool-choice --default-chat-template-kwargs '"'"'{"enable_thinking":false}'"'"' --kv-transfer-config '"'"'{"kv_connector"...<truncated>'
+python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' --additional-config '{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":true}}' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7799 --model D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_model_configs/Qwen3.6-35B-A3B-w8a8-910C --enable-auto-tool-choice --default-chat-template-kwargs '{"enable_thinking":false}' --kv-transfer-config '{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache"}}' --no-disable-hybrid-kv-cache-manager --speculative-config '{"method": "qwen3_5_mtp", "num_speculative_tokens": 3, "enforce_eager": true}' &
 ENGINE_PID=$!
 echo "[Engine] Engine PID: $ENGINE_PID (advanced features enabled)"
 
@@ -311,7 +311,7 @@ else
   echo "[AdvFeature] └── Fallback command about to execute..."
   echo "[Engine] Falling back to basic mode (disabled: speculative_decode, lmcache_offload)..."
   # 更新 advanced_features.json：引擎级特性全部置 false，RAG 保持不变
-  cat > "/shared-volume/advanced_features.json" <<'FEATURES_EOF'
+  cat > "D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/advanced_features.json" <<'FEATURES_EOF'
 {
     "engine": "vllm_ascend",
     "features": {
@@ -414,8 +414,8 @@ export TASK_QUEUE_ENABLE=1
 echo "[wings-env] export TASK_QUEUE_ENABLE=${TASK_QUEUE_ENABLE:-}"
 export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-AIV}
 echo "[wings-env] export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-}"
-echo '[wings-cmd] >>> exec python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"' --additional-config '"'"'{"enable_cpu_binding":true,"multistream_overlap_shared_expert":true}'"'"' --tool-call-parser qwen3_coder --port 7799 --model '"'"'D:\project\wings-k8s-260703\wings_control\docs\DAY0\dry_run\qwen_day0_current\_model_configs\Qwen3.6-35B-A3B-w8a8-910C'"'"' --enable-auto-tool-choice --default-chat-template-kwargs '"'"'{"enable_thinking":false}'"'"''
-python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' --additional-config '{"enable_cpu_binding":true,"multistream_overlap_shared_expert":true}' --tool-call-parser qwen3_coder --port 7799 --model 'D:\project\wings-k8s-260703\wings_control\docs\DAY0\dry_run\qwen_day0_current\_model_configs\Qwen3.6-35B-A3B-w8a8-910C' --enable-auto-tool-choice --default-chat-template-kwargs '{"enable_thinking":false}' &
+echo '[wings-cmd] >>> exec python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"' --additional-config '"'"'{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":true}}'"'"' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7799 --model D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_model_configs/Qwen3.6-35B-A3B-w8a8-910C --enable-auto-tool-choice --default-chat-template-kwargs '"'"'{"enable_thinking":false}'"'"' --no-disable-hybrid-kv-cache-manager'
+python3 -m vllm.entrypoints.openai.api_server --trust-remote-code --max-model-len 131072 --seed 1024 --tensor-parallel-size 2 --data-parallel-size 1 --quantization ascend --enable-expert-parallel --max-num-seqs 32 --max-num-batched-tokens 8192 --gpu-memory-utilization 0.9 --served-model-name qwen36 --async-scheduling --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' --additional-config '{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":true}}' --tool-call-parser qwen3_coder --host 127.0.0.1 --port 7799 --model D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_model_configs/Qwen3.6-35B-A3B-w8a8-910C --enable-auto-tool-choice --default-chat-template-kwargs '{"enable_thinking":false}' --no-disable-hybrid-kv-cache-manager &
 ENGINE_PID=$!
 echo "[Engine] Engine PID: $ENGINE_PID (advanced features disabled: speculative_decode, lmcache_offload, fallback mode)"
   echo "[AdvFeature] Fallback-mode engine started, waiting for process exit..."
@@ -435,7 +435,7 @@ echo "[Engine] Engine PID: $ENGINE_PID (advanced features disabled: speculative_
     START_TIME=$(date -Iseconds -d "@${SCRIPT_START_EPOCH}")
     ELAPSED_TIME=$(( $(date +%s) - SCRIPT_START_EPOCH ))
 
-    cat >> "/shared-volume/progress.jsonl" <<EOF
+    cat >> "D:/project/wings-k8s-260703/wings_control/docs/DAY0/dry_run/qwen_day0_current/_shared/progress.jsonl" <<EOF
 {"progress": 0, "phase_code": "engine_crash", "phase_name": "引擎进程异常退出", "status": "failed", "key_log": "引擎进程异常退出，退出码: $EXIT_CODE", "curr_time": "$CURR_TIME", "start_time": "$START_TIME", "elapsed_time_s": $ELAPSED_TIME}
 EOF
 

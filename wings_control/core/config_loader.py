@@ -1699,6 +1699,10 @@ def _set_kv_cache_config(params, ctx, model_info=None):
                     include_load_failure_policy=include_load_failure_policy,
                 )
             )
+            # Qwen Day0 标准里的 AscendStoreConnector MemCache 场景要求保留
+            # vLLM 的 hybrid KV cache manager；这里仅在实际注入 MemCache
+            # connector 时下发，避免影响非 MemCache 的卸载路径。
+            params["no_disable_hybrid_kv_cache_manager"] = True
             logger.info("[MemCache] Model uses AscendStoreConnector.")
         else:
             logger.info(

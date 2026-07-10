@@ -4,5 +4,8 @@
   ],
   "model_type": "qwen3_5_moe",
   "torch_dtype": "bfloat16",
-  "max_position_embeddings": 131072
+  "num_hidden_layers": 64,
+  "quantization_config": {
+    "quant_method": "ascend"
+  }
 }

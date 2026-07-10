@@ -1,2 +1,1 @@
-
-vllm_ascend
+Eco-Tech/Qwen3.6-27B-w8a8
