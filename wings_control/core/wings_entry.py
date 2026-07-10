@@ -95,12 +95,16 @@ _PATCH_FEATURE_STATUS_KEYS: dict[str, str] = {
 }
 
 # 引擎到 LMCache 安装目标的映射
-# 当 ENABLE_KV_OFFLOAD=true 时，通过 install.py --lmcache-target <target> 安装 LMCache 补丁；
+# 当 ENABLE_KV_OFFLOAD=true 时，Ascend 通过 install.py --config 安装固定版本包，
+# NVIDIA 暂时保留 install.py --lmcache-target <target> 安装方式；
 # DeepSeek-V4-Pro on vllm_ascend 不走此路径；DeepSeek-V4-Flash 0.21 需要安装 LMCache。
 _ENGINE_LMCACHE_TARGET_MAP = {
     "vllm": "nvidia-x86",
     "vllm_ascend": "ascend-arm",
 }
+
+_LMCACHE_ASCEND_PACKAGE_CONFIG = '{"packages": ["lmcache-ascend:v0.4.5"]}'
+
 
 def _shell_escape_single_quote(value: str) -> str:
     """对字符串中的单引号进行 shell 安全转义。"""
@@ -458,13 +462,22 @@ def _render_lmcache_install_snippet(target: str) -> str:
     """渲染 LMCache 补丁安装的容错 shell 片段（目标平台已由调用方确定）。"""
     accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
     update_json = _shell_update_feature_json("kv_offload", False)
+    if target == "ascend-arm":
+        install_command = (
+            f"    (cd \"{accel_dir}\" && python install.py --config "
+            f"'{_LMCACHE_ASCEND_PACKAGE_CONFIG}')\n"
+        )
+    else:
+        install_command = (
+            f"    python3 {accel_dir}/install.py --lmcache-target {target}\n"
+        )
     return (
         "# --- wings-accel: install LMCache patches (fault-tolerant) ---\n"
         f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
         f"    echo '[wings-accel] Installing LMCache patches (target: {target})...'\n"
         "    set +e\n"
-        f"    python3 {accel_dir}/install.py --lmcache-target {target}\n"
-        "    LMCACHE_RC=$?\n"
+        + install_command
+        + "    LMCACHE_RC=$?\n"
         "    set -e\n"
         "    if [ $LMCACHE_RC -ne 0 ]; then\n"
         '        echo "[wings-accel] WARNING: LMCache patch install failed'
@@ -481,7 +494,7 @@ def _render_lmcache_install_snippet(target: str) -> str:
 
 
 def _build_lmcache_install_snippet(engine: str, merged: dict | None = None) -> str:
-    """为 LMCache KV 卸载生成 --lmcache-target 的容错 shell 片段。
+    """为 LMCache KV 卸载生成平台对应的容错安装 shell 片段。
 
     安装决策（含 native 卸载等互斥/豁免路径）由 ``_resolve_lmcache_install_target``
     收口；命中跳过条件时返回空字符串，否则渲染安装片段。
@@ -618,7 +631,7 @@ def _build_accel_preamble(engine: str, merged: dict) -> str:
 
     安装策略（容错）：
       1. 投机推理（ENABLE_SPECULATIVE_DECODE）使用 --install-runtime-deps 独立安装
-      2. LMCache KV 卸载（ENABLE_KV_OFFLOAD）使用 --lmcache-target 独立安装
+      2. LMCache KV 卸载（ENABLE_KV_OFFLOAD）使用平台对应命令独立安装
       3. IndexCache（KV 稀疏 + IndexCache 架构）使用 --features indexcache 安装
       4. 其他高级特性继续走 --features 路径
       5. 先尝试批量安装所有特性
@@ -640,10 +653,10 @@ def _build_accel_preamble(engine: str, merged: dict) -> str:
         logger.info("Accel: injecting speculative decoding runtime deps (--install-runtime-deps)")
         preamble_parts.append(spec_snippet)
 
-    # ── LMCache KV 卸载：独立使用 --lmcache-target ──
+    # ── LMCache KV 卸载：独立使用平台对应安装命令 ──
     lmcache_snippet = _build_lmcache_install_snippet(engine, merged)
     if lmcache_snippet:
-        logger.info("Accel: injecting LMCache patch install (--lmcache-target)")
+        logger.info("Accel: injecting LMCache package install")
         preamble_parts.append(lmcache_snippet)
 
     patch_key = _ENGINE_PATCH_KEY_MAP.get(engine)

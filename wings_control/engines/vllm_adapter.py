@@ -943,8 +943,8 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
     """构建 KVCache Offload 特性的环境变量设置命令。
 
     KVCache Offload 允许将 KV 缓存卸载到主机内存或远端存储。
-    LMCache 所需的共享库已在 accel-volume 安装阶段通过
-    ``install.py --lmcache-target`` 注入，无需再手动设置 LD_LIBRARY_PATH。
+    LMCache 所需的共享库已在 accel-volume 安装阶段通过平台对应的
+    ``install.py`` 安装命令注入，无需再手动设置 LD_LIBRARY_PATH。
 
     只要传入了任何容量/路径类配置（CPU/Disk/cold_start/QAT），就会
     生成 LMCache YAML 配置文件并通过 ``LMCACHE_CONFIG_FILE`` 环境变量

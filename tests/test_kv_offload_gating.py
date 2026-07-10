@@ -693,7 +693,7 @@ def test_kimi_k27_code_ascend_env_includes_jemalloc_and_pythonhashseed():
     assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in ld_preload
 
 
-def test_deepseek_v4_flash_ascend_v021_uses_lmcache_patch(monkeypatch):
+def test_deepseek_v4_flash_ascend_v021_uses_lmcache_package_config(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     params = {
         "engine": "vllm_ascend",
@@ -710,25 +710,44 @@ def test_deepseek_v4_flash_ascend_v021_uses_lmcache_patch(monkeypatch):
         snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
 
         assert target == "ascend-arm"
-        assert "python3 /accel-volume/install.py --lmcache-target ascend-arm" in snippet
+        assert (
+            "python install.py --config "
+            "'{\"packages\": [\"lmcache-ascend:v0.4.5\"]}'"
+        ) in snippet
+        assert 'cd "/accel-volume"' in snippet
+        assert "--lmcache-target ascend-arm" not in snippet
 
 
 def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENGINE_VERSION", "v0.22.0-a2")
 
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "_smart_feats": ["offload"],
+    }
     target = wings_entry._resolve_lmcache_install_target(
         "vllm_ascend",
-        {
-            "engine": "vllm_ascend",
-            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
-            "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
-            "model_type": "llm",
-            "_smart_feats": ["offload"],
-        },
+        params,
     )
+    snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
 
     assert target == "ascend-arm"
+    assert "lmcache-ascend:v0.4.5" in snippet
+    assert "--lmcache-target ascend-arm" not in snippet
+
+
+def test_nvidia_lmcache_keeps_target_install_command():
+    snippet = wings_entry._render_lmcache_install_snippet("nvidia-x86")
+
+    assert (
+        "python3 /accel-volume/install.py --lmcache-target nvidia-x86"
+        in snippet
+    )
+    assert "lmcache-ascend:v0.4.5" not in snippet
 
 
 def test_kimi_k27_code_memcache_skips_lmcache_patch(monkeypatch):
