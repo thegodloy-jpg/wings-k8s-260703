@@ -550,7 +550,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -566,7 +566,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -584,7 +584,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "seed": 1024,
             "tensor_parallel_size": 4,
             "data_parallel_size": 1,
@@ -600,7 +600,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "seed": 1024,
             "tensor_parallel_size": 4,
             "data_parallel_size": 1,
@@ -618,7 +618,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -634,7 +634,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -652,7 +652,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -668,7 +668,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -686,7 +686,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -703,7 +703,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 2,
             "data_parallel_size": 1,
@@ -722,7 +722,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 4,
             "data_parallel_size": 1,
@@ -739,7 +739,7 @@
             "task": "generate",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "seed": 1024,
             "tensor_parallel_size": 4,
             "data_parallel_size": 1,
@@ -823,7 +823,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -840,7 +840,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -859,7 +859,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -876,7 +876,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -895,7 +895,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -912,7 +912,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -931,7 +931,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -948,7 +948,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -967,7 +967,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -984,7 +984,7 @@
             "served_model_name": "qwen35",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": false, "ascend_compilation_config": {"enable_npugraph_ex": true, "enable_static_kernel": false}, "multistream_overlap_shared_expert": false},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -1003,7 +1003,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -1020,7 +1020,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -1039,7 +1039,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -1056,7 +1056,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -1076,7 +1076,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -1094,7 +1094,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           }
         },
@@ -1114,7 +1114,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           },
           "vllm_ascend_distributed": {
@@ -1132,7 +1132,7 @@
             "served_model_name": "qwen36",
             "async_scheduling": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true, "multistream_overlap_shared_expert": true},
+            "additional_config": {"enable_cpu_binding": true, "ascend_compilation_config": {"enable_npugraph_ex": true}},
             "tool_call_parser": "qwen3_coder"
           }
         },

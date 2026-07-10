@@ -55,11 +55,13 @@ except ImportError:
 try:
     from wings_control.features.kv_offload.memcache import (
         is_memcache_hybrid_params,
+        is_qwen_day0_memcache_params,
         resolve_memcache_dram_gb,
     )
 except ImportError:
     from features.kv_offload.memcache import (  # noqa: F401
         is_memcache_hybrid_params,
+        is_qwen_day0_memcache_params,
         resolve_memcache_dram_gb,
     )
 try:
@@ -1632,17 +1634,22 @@ def _build_deepseek_v4_flash_lmcache_dynamic_config() -> Dict[str, Any]:
     }
 
 
-def _build_memcache_ascend_store_config() -> Dict[str, Any]:
-    """Build the vLLM AscendStoreConnector config used by Kimi MemCache offload."""
-    return {
+def _build_memcache_ascend_store_config(
+    *,
+    include_load_failure_policy: bool = True,
+) -> Dict[str, Any]:
+    """Build the vLLM AscendStoreConnector config used by MemCache offload."""
+    config = {
         "kv_connector": "AscendStoreConnector",
         "kv_role": "kv_both",
-        "kv_load_failure_policy": "recompute",
         "kv_connector_extra_config": {
             "lookup_rpc_port": "0",
             "backend": "memcache",
         },
     }
+    if include_load_failure_policy:
+        config["kv_load_failure_policy"] = "recompute"
+    return config
 
 
 def _set_kv_cache_config(params, ctx, model_info=None):
@@ -1680,7 +1687,18 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 
     if lmcache_offload and is_memcache_hybrid_params(ctx, ctx.get("engine")):
         if resolve_memcache_dram_gb(ctx):
-            params["kv_transfer_config"] = json.dumps(_build_memcache_ascend_store_config())
+            # Qwen Day0 标准脚本的 AscendStoreConnector 不带 kv_load_failure_policy。
+            # Hybrid Qwen 模型在 vLLM-Ascend 中不支持 recompute 模式；Kimi 仍保留
+            # 既有官方 MemCache 配置。
+            include_load_failure_policy = not is_qwen_day0_memcache_params(
+                ctx,
+                ctx.get("engine"),
+            )
+            params["kv_transfer_config"] = json.dumps(
+                _build_memcache_ascend_store_config(
+                    include_load_failure_policy=include_load_failure_policy,
+                )
+            )
             logger.info("[MemCache] Model uses AscendStoreConnector.")
         else:
             logger.info(

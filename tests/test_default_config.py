@@ -494,6 +494,74 @@ def test_qwen_day0_910b_reuse_defaults_are_independent_copies():
     assert "Qwen3.5-397B-A17B-Ascend910B" not in moe
 
 
+def test_qwen_day0_additional_config_matches_excel_baseline():
+    llm = _model_deploy_config("ascend")["llm"]
+    dense = llm["Qwen3_5ForConditionalGeneration"]
+    moe = llm["Qwen3_5MoeForConditionalGeneration"]
+
+    qwen35_expected = {
+        "enable_cpu_binding": False,
+        "ascend_compilation_config": {
+            "enable_npugraph_ex": True,
+            "enable_static_kernel": False,
+        },
+        "multistream_overlap_shared_expert": False,
+    }
+    qwen36_expected = {
+        "enable_cpu_binding": True,
+        "ascend_compilation_config": {
+            "enable_npugraph_ex": True,
+        },
+    }
+
+    expected_by_model = {
+        **{
+            model_name: qwen35_expected
+            for model_name in (
+                "Qwen3.5-27B-Ascend910C",
+                "Qwen3.5-27B-Ascend910B",
+            )
+        },
+        **{
+            model_name: qwen36_expected
+            for model_name in (
+                "Qwen3.6-27B-Ascend910C",
+                "Qwen3.6-27B-Ascend910B",
+                "Qwen3.6-27B-w8a8-Ascend910C",
+                "Qwen3.6-27B-w8a8-Ascend910B",
+            )
+        },
+    }
+    for model_name, expected in expected_by_model.items():
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            assert _as_dict(dense[model_name][engine]["additional_config"]) == expected
+
+    expected_by_model = {
+        **{
+            model_name: qwen35_expected
+            for model_name in (
+                "Qwen3.5-35B-A3B-Ascend910C",
+                "Qwen3.5-35B-A3B-Ascend910B",
+                "Qwen3.5-122B-A10B-Ascend910C",
+                "Qwen3.5-122B-A10B-Ascend910B",
+                "Qwen3.5-397B-A17B-Ascend910C",
+            )
+        },
+        **{
+            model_name: qwen36_expected
+            for model_name in (
+                "Qwen3.6-35B-A3B-Ascend910C",
+                "Qwen3.6-35B-A3B-Ascend910B",
+                "Qwen3.6-35B-A3B-w8a8-Ascend910C",
+                "Qwen3.6-35B-A3B-w8a8-Ascend910B",
+            )
+        },
+    }
+    for model_name, expected in expected_by_model.items():
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            assert _as_dict(moe[model_name][engine]["additional_config"]) == expected
+
+
 def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
     llm = _model_deploy_config("ascend")["llm"]
     kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code"]

@@ -30,6 +30,34 @@ class _FakeDeepSeekV4Info:
         return "llm"
 
 
+class _FakeQwenDenseInfo:
+    model_name = "Qwen"
+    model_path = "/usr/local/serving/models/"
+    model_architecture = "Qwen3_5ForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_architecture():
+        return "Qwen3_5ForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
+
+
+class _FakeQwenMoeInfo:
+    model_name = "Qwen"
+    model_path = "/usr/local/serving/models/"
+    model_architecture = "Qwen3_5MoeForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_architecture():
+        return "Qwen3_5MoeForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
+
+
 class _FakeDeepSeekV4Identifier:
     model_architecture = "DeepseekV4ForCausalLM"
     model_quantize = "fp4"
@@ -342,6 +370,65 @@ def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
         "kv_connector": "AscendStoreConnector",
         "kv_role": "kv_both",
         "kv_load_failure_policy": "recompute",
+        "kv_connector_extra_config": {
+            "lookup_rpc_port": "0",
+            "backend": "memcache",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_name", "model_info", "card_name", "device_count"),
+    [
+        ("Qwen/Qwen3.5-27B", _FakeQwenDenseInfo(), "Ascend910C", 2),
+        ("Qwen/Qwen3.6-27B", _FakeQwenDenseInfo(), "Ascend910C", 2),
+        ("Qwen/Qwen3.6-27B", _FakeQwenDenseInfo(), "Ascend910B_64G", 2),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", _FakeQwenDenseInfo(), "Ascend910C", 2),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", _FakeQwenDenseInfo(), "Ascend910B_64G", 4),
+        ("Qwen/Qwen3.6-35B-A3B", _FakeQwenMoeInfo(), "Ascend910C", 2),
+        ("Qwen/Qwen3.6-35B-A3B", _FakeQwenMoeInfo(), "Ascend910B_64G", 2),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", _FakeQwenMoeInfo(), "Ascend910C", 2),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", _FakeQwenMoeInfo(), "Ascend910B_64G", 4),
+    ],
+)
+def test_qwen_day0_memcache_omits_recompute_load_failure_policy(
+    monkeypatch,
+    model_name,
+    model_info,
+    card_name,
+    device_count,
+):
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": model_name,
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "distributed": False,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "device_count": device_count,
+    }
+    hardware_env = {"device": "ascend", "details": [{"name": card_name}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+    config = config_loader._get_model_specific_config(
+        hardware_env,
+        params,
+        model_info,
+    )
+
+    kv_transfer = json.loads(config["kv_transfer_config"])
+    assert params["_smart_feats"] == ["offload", "spec"]
+    assert kv_transfer == {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
         "kv_connector_extra_config": {
             "lookup_rpc_port": "0",
             "backend": "memcache",
