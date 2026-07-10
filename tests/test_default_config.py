@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from core import config_loader  # noqa: E402
+from engines import vllm_adapter  # noqa: E402
 
 
 class _FakeDeepSeekV4Info:
@@ -543,6 +544,97 @@ def test_qwen_day0_910b_reuse_defaults_are_independent_copies():
         assert moe[f"{model_name}-Ascend910B"] == moe[f"{model_name}-Ascend910C"]
 
     assert "Qwen3.5-397B-A17B-Ascend910B" not in moe
+
+
+def test_deepseek_v4_pro_parallelism_depends_on_device_count(monkeypatch):
+    config = (
+        _model_deploy_config("ascend")["llm"]["DeepseekV4ForCausalLM"]
+        ["DeepSeek-V4-Pro"]["vllm_ascend_distributed"]
+    )
+    for key in (
+        "tensor_parallel_size",
+        "data_parallel_size",
+        "data_parallel_size_local",
+    ):
+        assert key not in config
+
+    monkeypatch.setattr(
+        vllm_adapter,
+        "is_deepseek_v4_pro_adapted_scope",
+        lambda _params: True,
+    )
+    for device_count in (8, 16):
+        engine_config = dict(config)
+        params = {
+            "engine": "vllm_ascend",
+            "distributed": True,
+            "device_count": device_count,
+            "nnodes": 2,
+            "node_rank": 1,
+        }
+        vllm_adapter._apply_deepseek_v4_pro_engine_defaults(
+            params,
+            engine_config,
+            explicit_keys=set(),
+        )
+
+        assert engine_config["tensor_parallel_size"] == device_count
+        assert engine_config["data_parallel_size"] == 2
+        assert engine_config["data_parallel_size_local"] == 1
+        assert engine_config["data_parallel_start_rank"] == 1
+
+
+def test_qwen_day0_defaults_leave_parallelism_to_device_count(monkeypatch):
+    llm = _model_deploy_config("ascend")["llm"]
+    dense = llm["Qwen3_5ForConditionalGeneration"]
+    qwen_architectures = (
+        dense,
+        llm["Qwen3_5MoeForConditionalGeneration"],
+    )
+
+    for architecture in qwen_architectures:
+        for model_name, model_config in architecture.items():
+            if not model_name.endswith(("-Ascend910B", "-Ascend910C")):
+                continue
+            for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+                assert "tensor_parallel_size" not in model_config[engine]
+                assert "data_parallel_size" not in model_config[engine]
+
+    monkeypatch.setattr(
+        config_loader,
+        "check_pcie_cards",
+        lambda *_args: (False, None),
+    )
+    single_node = dict(dense["Qwen3.6-27B-Ascend910C"]["vllm_ascend"])
+    config_loader._set_parallelism_params(
+        single_node,
+        {
+            "engine": "vllm_ascend",
+            "distributed": False,
+            "device_count": 6,
+            "nnodes": 1,
+            "model_name": "Qwen3.6-27B",
+            "model_path": "/models/Qwen3.6-27B",
+        },
+    )
+    assert single_node["tensor_parallel_size"] == 6
+    assert "data_parallel_size" not in single_node
+
+    distributed = dict(dense["Qwen3.6-27B-Ascend910C"]["vllm_ascend_distributed"])
+    config_loader._set_parallelism_params(
+        distributed,
+        {
+            "engine": "vllm_ascend",
+            "distributed": True,
+            "device_count": 4,
+            "nnodes": 2,
+            "node_ips": "10.0.0.1,10.0.0.2",
+            "model_name": "Qwen3.6-27B",
+            "model_path": "/models/Qwen3.6-27B",
+        },
+    )
+    assert distributed["tensor_parallel_size"] == 8
+    assert "data_parallel_size" not in distributed
 
 
 def test_qwen_day0_additional_config_matches_excel_baseline():

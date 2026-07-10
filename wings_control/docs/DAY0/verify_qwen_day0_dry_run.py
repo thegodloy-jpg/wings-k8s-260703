@@ -699,11 +699,13 @@ def _flag_float(flags: dict[str, Any], key: str) -> float | None:
 
 def _actual_from_command(flags: dict[str, Any], command: str, script: str) -> dict[str, Any]:
     kv_config = _json_flag(flags, "kv-transfer-config")
+    explicit_dp = _flag_int(flags, "data-parallel-size")
     return {
         "command": command,
         "port": _flag_int(flags, "port"),
         "tensor_parallel_size": _flag_int(flags, "tensor-parallel-size"),
-        "data_parallel_size": _flag_int(flags, "data-parallel-size"),
+        "data_parallel_size": 1 if explicit_dp is None else explicit_dp,
+        "data_parallel_size_explicit": explicit_dp is not None,
         "max_num_seqs": _flag_int(flags, "max-num-seqs"),
         "max_model_len": _flag_int(flags, "max-model-len"),
         "max_num_batched_tokens": _flag_int(flags, "max-num-batched-tokens"),
@@ -741,6 +743,7 @@ def _expected(scenario: Scenario) -> dict[str, Any]:
         "port": scenario.port,
         "tensor_parallel_size": scenario.tp,
         "data_parallel_size": scenario.dp,
+        "data_parallel_size_explicit": False,
         "max_num_seqs": scenario.max_num_seqs,
         "max_model_len": scenario.max_model_len,
         "max_num_batched_tokens": scenario.max_num_batched_tokens,
@@ -914,6 +917,7 @@ def _markdown_report(title: str, audit: dict[str, Any], results: list[dict[str, 
         "Function Call parser expectation: `qwen3_coder` per adaptation decision, even where the source script text still says `hermes`.",
         "Qwen MemCache expectation: AscendStoreConnector config must not contain `kv_load_failure_policy`.",
         "Qwen 910B policy: keep scenario-specific MTP, but suppress offload and all MemCache/LMCache launch fragments.",
+        "Parallelism policy: TP is derived from `device_count`; DP is not emitted and uses the vLLM default `1`.",
         "MemCache memory policy: page memory is node total and is evenly divided by `device_count` before writing per-card DRAM.",
         "",
         "| Scenario | Result | Source | Hardware | Active features | Failed checks | start_command.sh |",

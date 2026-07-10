@@ -2474,23 +2474,57 @@ def _apply_deepseek_v4_pro_engine_defaults(
     """Apply runtime-only DeepSeek-V4-Pro launch defaults that cannot live in JSON.
 
     适配范围：仅 A3 双机（nnodes==2、distributed==True）。其它部署形态不进入此分支。
-    所有静态字段（TP/DP/DP_local、max_model_len、quantization、compilation_config、
-    additional_config 等）均由 ``ascend_default.json`` 的 ``DeepSeek-V4-Pro`` 条目承载，
-    经 config_loader 注入到 engine_config。这里只注入唯一无法用 JSON 表达的字段：
-    ``data_parallel_start_rank`` —— 它必须等于运行时的 ``node_rank``。
+    max_model_len、quantization、compilation_config、additional_config 等静态字段仍由
+    ``ascend_default.json`` 的 ``DeepSeek-V4-Pro`` 条目承载。并行拓扑必须依赖运行时
+    ``device_count`` / ``nnodes`` 动态推导，避免把官方 16 卡双机示例固化进默认 JSON：
+
+    - TP = device_count（每节点一个 TP replica）
+    - DP-local = device_count / TP
+    - DP = DP-local * nnodes
+    - DP-start-rank = node_rank * DP-local
     """
     if params.get("engine") != "vllm_ascend":
         return
     if not is_deepseek_v4_pro_adapted_scope(params):
         return
+    device_count = _safe_int(params.get("device_count"))
+    nnodes = _safe_int(params.get("nnodes")) or 1
+    node_rank = _safe_int(params.get("node_rank")) or 0
+    if not device_count or device_count <= 0:
+        raise ValueError(
+            "DeepSeek-V4-Pro requires a positive device_count to compute TP/DP topology"
+        )
+
+    tp_size = _safe_int(engine_config.get("tensor_parallel_size")) or device_count
+    if tp_size <= 0 or device_count % tp_size != 0:
+        raise ValueError(
+            "DeepSeek-V4-Pro requires device_count to be divisible by tensor_parallel_size: "
+            f"device_count={device_count}, tensor_parallel_size={tp_size}"
+        )
+    dp_size_local = device_count // tp_size
+    dynamic_topology = {
+        "tensor_parallel_size": tp_size,
+        "data_parallel_size": dp_size_local * nnodes,
+        "data_parallel_size_local": dp_size_local,
+        "data_parallel_start_rank": node_rank * dp_size_local,
+    }
+    for key, value in dynamic_topology.items():
+        if key not in explicit_keys:
+            engine_config[key] = value
+    logger.info(
+        "[DeepSeek-V4-Pro] dynamic topology from device_count/nnodes: "
+        "TP=%d, DP=%d, DP-local=%d, DP-start-rank=%d",
+        tp_size,
+        dynamic_topology["data_parallel_size"],
+        dp_size_local,
+        dynamic_topology["data_parallel_start_rank"],
+    )
     # MTP (enable_speculative_decode) 由上层 CLI/ENV (--enable-speculative-decode)
     # 控制，本路径不再默认强制开启。模型权重虽含 MTP head，但 LMCache、调试场景
     # 不一定希望同时启用投机解码，强制 True 会让用户无法关闭。
     if params.get("rpc_port") in (None, "", 13355, "13355"):
         params["rpc_port"] = 13399
     params["_force_data_parallel_start_rank_on_rank0"] = True
-    if "data_parallel_start_rank" not in explicit_keys:
-        engine_config["data_parallel_start_rank"] = _safe_int(params.get("node_rank")) or 0
 
 
 def _apply_deepseek_v4_flash_nv_engine_defaults(
