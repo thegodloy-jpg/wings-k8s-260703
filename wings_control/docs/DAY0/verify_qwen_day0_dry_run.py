@@ -80,6 +80,7 @@ class Scenario:
     enable_expert_parallel: bool = False
     offload: bool = False
     memcache_ports: tuple[int, int] | None = None
+    memcache_protocol: str = "device_rdma"
     language_model_only: bool = False
     seed: int = 1024
     is_reuse: bool = False
@@ -107,6 +108,7 @@ def _dense(
     quantization: str | None = None,
     offload: bool = False,
     memcache_ports: tuple[int, int] | None = None,
+    memcache_protocol: str = "device_rdma",
     is_reuse: bool = False,
     notes: str = "",
 ) -> Scenario:
@@ -129,6 +131,7 @@ def _dense(
         quantization=quantization,
         offload=offload,
         memcache_ports=memcache_ports,
+        memcache_protocol=memcache_protocol,
         language_model_only=not qwen36,
         source_row=source_row,
         source_column=source_column,
@@ -159,6 +162,7 @@ def _moe(
     quantization: str | None = None,
     offload: bool = False,
     memcache_ports: tuple[int, int] | None = None,
+    memcache_protocol: str = "device_rdma",
     is_reuse: bool = False,
     notes: str = "",
 ) -> Scenario:
@@ -182,6 +186,7 @@ def _moe(
         enable_expert_parallel=True,
         offload=offload,
         memcache_ports=memcache_ports,
+        memcache_protocol=memcache_protocol,
         language_model_only=not qwen36,
         source_row=source_row,
         source_column=source_column,
@@ -207,6 +212,7 @@ STANDARD_SCENARIOS: list[Scenario] = [
         mtp_tokens=1,
         offload=True,
         memcache_ports=(50051, 50061),
+        memcache_protocol="device_sdma",
         source_row=2,
         source_column="910C optimized",
         source_cell_refs=("G2", "J2"),
@@ -795,6 +801,19 @@ def _validate_memcache_ports(scenario: Scenario, script: str) -> list[dict[str, 
                 "expected": expected_dram_gb,
                 "actual": expected_dram_gb if dram_export in script else None,
                 "ok": dram_export in script,
+            }
+        )
+        protocol_export = (
+            'export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-'
+            f'{scenario.memcache_protocol}'
+            '}"'
+        )
+        checks.append(
+            {
+                "field": "memcache_protocol",
+                "expected": scenario.memcache_protocol,
+                "actual": scenario.memcache_protocol if protocol_export in script else None,
+                "ok": protocol_export in script,
             }
         )
     else:

@@ -5,7 +5,7 @@ export WINGS_MEMCACHE_META_SERVICE_URL="${WINGS_MEMCACHE_META_SERVICE_URL:-{meta
 export WINGS_MEMCACHE_CONFIG_STORE_URL="${WINGS_MEMCACHE_CONFIG_STORE_URL:-{config_store_url}}"
 export WINGS_MEMCACHE_LOG_LEVEL="${WINGS_MEMCACHE_LOG_LEVEL:-error}"
 export WINGS_MEMCACHE_WORLD_SIZE="${WINGS_MEMCACHE_WORLD_SIZE:-256}"
-export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_rdma}"
+export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-{protocol}}"
 export WINGS_MEMCACHE_DRAM_GB="{dram_gb}"
 
 mkdir -p "${WINGS_MEMCACHE_DIR}"
@@ -18,10 +18,14 @@ ock.mmc.local_service.protocol = ${WINGS_MEMCACHE_PROTOCOL}
 ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB
 EOF
 export MMC_LOCAL_CONFIG_PATH="${WINGS_MEMCACHE_DIR}/mmc_local.conf"
+echo "[wings-memcache] MMC_LOCAL_CONFIG_PATH=${MMC_LOCAL_CONFIG_PATH}"
+echo "[wings-memcache] Effective mmc_local.conf:"
+sed 's/^/[wings-memcache]   /' "${MMC_LOCAL_CONFIG_PATH}"
 cat > "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh" <<'WINGS_MEMCACHE_MASTER'
 {master_script}
 WINGS_MEMCACHE_MASTER
 chmod +x "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh"
+echo "[wings-memcache] MetaService script=${WINGS_MEMCACHE_DIR}/start_memcache_master.sh"
 
 _wings_memcache_config_addr="${WINGS_MEMCACHE_CONFIG_STORE_URL#tcp://}"
 _wings_memcache_config_host="${_wings_memcache_config_addr%:*}"
@@ -48,10 +52,12 @@ if ! _wings_memcache_config_store_ready; then
         127.0.0.1|localhost)
             if [ -z "${_wings_memcache_master_pid}" ]; then
                 echo "[wings-memcache] Starting local MetaService for ConfigStore ${WINGS_MEMCACHE_CONFIG_STORE_URL}..."
+                echo "[wings-memcache] MetaService log=${_wings_memcache_master_log}"
                 "${WINGS_MEMCACHE_DIR}/start_memcache_master.sh" \
                     >>"${_wings_memcache_master_log}" 2>&1 &
                 _wings_memcache_master_pid=$!
                 echo "${_wings_memcache_master_pid}" > "${_wings_memcache_master_pid_file}"
+                echo "[wings-memcache] MetaService PID=${_wings_memcache_master_pid}"
             else
                 echo "[wings-memcache] Reusing MetaService process PID ${_wings_memcache_master_pid}."
             fi
@@ -82,5 +88,10 @@ if ! _wings_memcache_config_store_ready; then
     fi
 fi
 echo "[wings-memcache] ConfigStore ${WINGS_MEMCACHE_CONFIG_STORE_URL} is ready."
+if [ -s "${_wings_memcache_master_log}" ]; then
+    echo "[wings-memcache] MetaService startup log:"
+    tail -n 50 "${_wings_memcache_master_log}" \
+        | sed 's/^/[wings-memcache-master] /'
+fi
 unset -f _wings_memcache_config_store_ready
 # --- end wings-memcache: engine prelude ---

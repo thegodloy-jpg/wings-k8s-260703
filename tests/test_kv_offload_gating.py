@@ -64,6 +64,10 @@ def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):
     assert '"${WINGS_MEMCACHE_DIR}/start_memcache_master.sh"' in fragment["engine_prelude"]
     assert "_wings_memcache_config_store_ready" in fragment["engine_prelude"]
     assert "ConfigStore ${WINGS_MEMCACHE_CONFIG_STORE_URL} is ready" in fragment["engine_prelude"]
+    assert "Effective mmc_local.conf" in fragment["engine_prelude"]
+    assert "MetaService startup log" in fragment["engine_prelude"]
+    assert "Effective mmc_meta.conf" in fragment["master_script"]
+    assert "Executing: python -c" in fragment["master_script"]
     assert "ock.mmc.local_service.dram.size" not in source
 
 
@@ -878,27 +882,34 @@ def test_memcache_auto_memory_is_evenly_split_per_card(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("model_name", "card_token", "expected_meta_port", "expected_config_port"),
+    (
+        "model_name",
+        "card_token",
+        "expected_meta_port",
+        "expected_config_port",
+        "expected_protocol",
+    ),
     [
-        ("Qwen/Qwen3.5-27B", "910c", 50051, 50061),
-        ("Qwen/Qwen3.6-27B", "910c", 50071, 50081),
-        ("Eco-Tech/Qwen3.6-27B-w8a8", "910c", 50071, 50081),
-        ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081),
-        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c", 50071, 50081),
+        ("Qwen/Qwen3.5-27B", "910c", 50051, 50061, "device_sdma"),
+        ("Qwen/Qwen3.6-27B", "910c", 50071, 50081, "device_rdma"),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", "910c", 50071, 50081, "device_rdma"),
+        ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081, "device_rdma"),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c", 50071, 50081, "device_rdma"),
     ],
 )
-def test_qwen_day0_memcache_ports_follow_offload_whitelist(
+def test_qwen_day0_memcache_profile_follows_offload_whitelist(
     monkeypatch,
     model_name,
     card_token,
     expected_meta_port,
     expected_config_port,
+    expected_protocol,
 ):
-    """Qwen Day0 MemCache 默认端口属于场景数据。
+    """Qwen Day0 MemCache 端口和协议必须来自同一条场景白名单。
 
     页面仍然可以通过 WINGS_MEMCACHE_META_SERVICE_URL 和
-    WINGS_MEMCACHE_CONFIG_STORE_URL 覆盖渲染后的 URL。页面未覆盖时，
-    Qwen 必须使用同一条 offload 白名单场景行中的模型+芯片端口。
+    WINGS_MEMCACHE_CONFIG_STORE_URL、WINGS_MEMCACHE_PROTOCOL 覆盖最终值。
+    页面未覆盖时，不能用全局 RDMA 默认值覆盖 Qwen3.5 的 SDMA 标准。
     """
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -921,6 +932,14 @@ def test_qwen_day0_memcache_ports_follow_offload_whitelist(
     assert f"tcp://127.0.0.1:{expected_config_port}" in fragment["engine_prelude"]
     assert f"tcp://127.0.0.1:{expected_meta_port}" in fragment["master_script"]
     assert f"tcp://127.0.0.1:{expected_config_port}" in fragment["master_script"]
+    assert (
+        f'export WINGS_MEMCACHE_PROTOCOL="${{WINGS_MEMCACHE_PROTOCOL:-{expected_protocol}}}"'
+        in fragment["engine_prelude"]
+    )
+    assert (
+        "ock.mmc.local_service.protocol = ${WINGS_MEMCACHE_PROTOCOL}"
+        in fragment["engine_prelude"]
+    )
 
 
 @pytest.mark.parametrize(

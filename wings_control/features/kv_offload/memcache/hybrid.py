@@ -176,17 +176,17 @@ def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
     return _resolve_memcache_per_card_gb(params, size_gb)
 
 
-def _resolve_memcache_endpoint_defaults(
+def _resolve_memcache_profile_defaults(
     params: Optional[Dict[str, Any]],
     engine: str,
-) -> tuple[str, str]:
-    """返回场景拥有的 MemCache endpoint 默认值。
+) -> tuple[str, str, str]:
+    """返回场景拥有的 MemCache endpoint 和传输协议默认值。
 
     shell 模板仍允许部署层通过 WINGS_MEMCACHE_META_SERVICE_URL 和
-    WINGS_MEMCACHE_CONFIG_STORE_URL 覆盖。这里的默认值只决定部署层未显式
-    下发 URL 时渲染什么。对 Qwen Day0 来说，端口是模型+芯片 offload 场景
-    契约的一部分，因此放在允许 MemCache 的同一条白名单行上，避免能力判断、
-    connector 选择和端口默认值在多张表之间漂移。
+    WINGS_MEMCACHE_CONFIG_STORE_URL、WINGS_MEMCACHE_PROTOCOL 覆盖。这里的默认值
+    只决定部署层未显式下发时渲染什么。对 Qwen Day0 来说，端口和协议都是
+    模型+芯片 offload 场景契约的一部分，因此与能力判断共用同一条白名单行，
+    避免 Qwen3.5 的 device_sdma 被全局 device_rdma 默认值覆盖。
     """
     params = params or {}
     row = resolve_feature_whitelist_row(
@@ -198,12 +198,20 @@ def _resolve_memcache_endpoint_defaults(
     )
     meta_port = _safe_int((row or {}).get("memcache_meta_port"))
     config_port = _safe_int((row or {}).get("memcache_config_port"))
+    protocol = str((row or {}).get("memcache_protocol") or "device_rdma").strip()
+    if protocol not in {"device_rdma", "device_sdma"}:
+        logger.warning(
+            "[MemCache] Invalid whitelist memcache_protocol=%r; using device_rdma.",
+            protocol,
+        )
+        protocol = "device_rdma"
     if meta_port and config_port:
         return (
             f"tcp://127.0.0.1:{meta_port}",
             f"tcp://127.0.0.1:{config_port}",
+            protocol,
         )
-    return _DEFAULT_META_SERVICE_URL, _DEFAULT_CONFIG_STORE_URL
+    return _DEFAULT_META_SERVICE_URL, _DEFAULT_CONFIG_STORE_URL, protocol
 
 
 def _memcache_offload_allowed(engine: str, merged: dict | None) -> bool:
@@ -240,7 +248,7 @@ def build_memcache_hybrid_fragment(engine: str, merged: dict | None) -> dict:
     if not dram_gb:
         return empty_memcache_hybrid_fragment()
 
-    meta_service_url, config_store_url = _resolve_memcache_endpoint_defaults(merged, engine)
+    meta_service_url, config_store_url, protocol = _resolve_memcache_profile_defaults(merged, engine)
     master_script = (
         _read_template("memcache_master.sh")
         .rstrip()
@@ -252,6 +260,7 @@ def build_memcache_hybrid_fragment(engine: str, merged: dict | None) -> dict:
         .replace("{dram_gb}", str(dram_gb))
         .replace("{meta_service_url}", meta_service_url)
         .replace("{config_store_url}", config_store_url)
+        .replace("{protocol}", protocol)
         .replace("{master_script}", master_script)
     )
     return {

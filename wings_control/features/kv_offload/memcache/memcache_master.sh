@@ -13,5 +13,9 @@ ock.mmc.meta_service.config_store_url = ${WINGS_MEMCACHE_CONFIG_STORE_URL}
 ock.mmc.log_level = ${WINGS_MEMCACHE_LOG_LEVEL}
 EOF
 export MMC_META_CONFIG_PATH="${WINGS_MEMCACHE_DIR}/mmc_meta.conf"
+echo "[wings-memcache-master] MMC_META_CONFIG_PATH=${MMC_META_CONFIG_PATH}"
+echo "[wings-memcache-master] Effective mmc_meta.conf:"
+sed 's/^/[wings-memcache-master]   /' "${MMC_META_CONFIG_PATH}"
 
+echo '[wings-memcache-master] Executing: python -c "from memcache_hybrid import MetaService; MetaService.main()"'
 exec python -c "from memcache_hybrid import MetaService; MetaService.main()"

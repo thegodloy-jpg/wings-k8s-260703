@@ -283,7 +283,7 @@ Qwen MemCache profile 只覆盖：
 - `role=kv_both`
 - `meta_service_url=tcp://127.0.0.1:<meta_port>`
 - `config_store_url=tcp://127.0.0.1:<config_store_port>`
-- `protocol=device_rdma`
+- `protocol` 必须来自场景 profile，不能使用一个全局固定值
 - `world_size=256`
 - `log_level=error`
 - `MMC_LOCAL_CONFIG_PATH`
@@ -293,6 +293,14 @@ Qwen MemCache profile 只覆盖：
 
 - `Qwen3.5-27B-910C`：`50051/50061`
 - Qwen3.6 910C：`50071/50081`
+
+协议按原始标准配置文件：
+
+- `Qwen3.5-27B-910C`：`device_sdma`
+- Qwen3.6 910C 四个 offload 场景：`device_rdma`
+
+协议与端口一样属于模型+芯片场景数据，必须放在同一条 offload 白名单/profile
+中解析。禁止用全局 `device_rdma` 默认值覆盖 Qwen3.5 的 `device_sdma`。
 
 ### 配置文件和服务生命周期
 
@@ -444,7 +452,8 @@ Reasoning parser 仍由：
 - 启动 `start_memcache_master.sh`；
 - 确认 `MetaService.main()` 可以成功 import；
 - 确认 `MMC_META_CONFIG_PATH` 和 `MMC_LOCAL_CONFIG_PATH` 指向渲染出的文件；
-- 确认 `mmc_local.conf` / `mmc_meta.conf` 中端口、`world_size=256`、`protocol=device_rdma`、`log_level=error` 与 profile 一致；
+- 确认 `mmc_local.conf` / `mmc_meta.conf` 中端口、`world_size=256`、场景协议、`log_level=error` 与 profile 一致；
+- 确认主启动日志打印最终 `mmc_local.conf`、`mmc_meta.conf`、MetaService 命令、PID、日志路径和 ConfigStore 就绪状态；
 - 启动 engine；
 - 发送一次请求；
 - 确认没有 connector 初始化错误。
