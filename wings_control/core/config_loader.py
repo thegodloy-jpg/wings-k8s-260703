@@ -3342,6 +3342,17 @@ class _SpecialEngineScenario:
     minimax_m27_vllm_nvidia: bool = False
 
 
+@dataclass(frozen=True)
+class _SpecialNvidiaConfigSelection:
+    """NVIDIA 特殊场景选择模型配置所需的具名上下文。"""
+    model: str
+    config: Dict[str, Any]
+    engine_key: str
+    scenario: _SpecialEngineScenario
+    h20_model: str
+    card_model: str
+
+
 def _build_model_config_lookup_names(model_name_lower: str, model_info=None) -> list[str]:
     """构造模型默认配置查找名，并保持原有候选优先级。"""
     lookup_names = [model_name_lower]
@@ -3386,14 +3397,15 @@ def _resolve_preferred_ascend_engine_config(
 
 
 def _resolve_special_nvidia_engine_config(
-    model: str,
-    config: Dict[str, Any],
-    engine_key: str,
-    scenario: _SpecialEngineScenario,
-    h20_model: str,
-    card_model: str,
+    selection: _SpecialNvidiaConfigSelection,
 ) -> Optional[Dict[str, Any]]:
     """选择 DeepSeek/MiniMax NVIDIA 场景的卡型专属子配置。"""
+    model = selection.model
+    scenario = selection.scenario
+    h20_model = selection.h20_model
+    card_model = selection.card_model
+    engine_key = selection.engine_key
+    config = selection.config
     engine_config = config.get(engine_key, {})
     if scenario.deepseek_sglang_nvidia:
         dedicated_h20 = h20_model in ("H20-96G", "H20-141G")
@@ -3478,12 +3490,14 @@ def _match_model_engine_config(
         if not _model_config_key_matches_lookup_names(model.lower(), lookup_names):
             continue
         special_config = _resolve_special_nvidia_engine_config(
-            model,
-            config,
-            engine_key,
-            scenario,
-            h20_model,
-            card_model,
+            _SpecialNvidiaConfigSelection(
+                model=model,
+                config=config,
+                engine_key=engine_key,
+                scenario=scenario,
+                h20_model=h20_model,
+                card_model=card_model,
+            )
         )
         if special_config is not None:
             return special_config

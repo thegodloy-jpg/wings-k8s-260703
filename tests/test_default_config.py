@@ -75,23 +75,33 @@ def test_special_nvidia_config_selector_preserves_all_card_branches():
         minimax_m27_vllm_nvidia=True,
     )
 
+    def selection(engine_key, scenario, h20_model="", card_model=""):
+        return config_loader._SpecialNvidiaConfigSelection(
+            model="model",
+            config=config,
+            engine_key=engine_key,
+            scenario=scenario,
+            h20_model=h20_model,
+            card_model=card_model,
+        )
+
     assert config_loader._resolve_special_nvidia_engine_config(
-        "model", config, "sglang", sglang_scenario, "H20-96G", ""
+        selection("sglang", sglang_scenario, h20_model="H20-96G")
     ) == {"selected": "h20"}
     assert config_loader._resolve_special_nvidia_engine_config(
-        "model", config, "sglang", sglang_scenario, "", ""
+        selection("sglang", sglang_scenario)
     ) == config["sglang"]
     assert config_loader._resolve_special_nvidia_engine_config(
-        "model", config, "vllm", flash_scenario, "", "rtx_pro_5000_72G"
+        selection("vllm", flash_scenario, card_model="rtx_pro_5000_72G")
     ) == {"selected": "pro5000"}
     assert config_loader._resolve_special_nvidia_engine_config(
-        "model", config, "vllm", flash_scenario, "", "other"
+        selection("vllm", flash_scenario, card_model="other")
     ) == {"selected": "default"}
     assert config_loader._resolve_special_nvidia_engine_config(
-        "model", config, "vllm", minimax_scenario, "", "rtx_pro_5000_72G"
+        selection("vllm", minimax_scenario, card_model="rtx_pro_5000_72G")
     ) == {"selected": "pro5000"}
     assert config_loader._resolve_special_nvidia_engine_config(
-        "model", config, "vllm", minimax_scenario, "", "other"
+        selection("vllm", minimax_scenario, card_model="other")
     ) == {"selected": "default"}
 
 
