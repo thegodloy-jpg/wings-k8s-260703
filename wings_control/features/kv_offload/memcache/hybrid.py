@@ -8,15 +8,23 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 try:
-    from wings_control.utils.device_utils import resolve_card_token
-    from wings_control.utils.model_utils import (
+    from utils.env_utils import (
+        OFFLOAD_MIN_GB,
+        resolve_offload_cpu_capacity_gb,
+    )
+    from utils.device_utils import resolve_card_token
+    from utils.model_utils import (
         feature_allowed,
         resolve_feature_whitelist_row_from_params,
         resolve_offload_whitelist_backend,
     )
 except ImportError:
-    from utils.device_utils import resolve_card_token  # type: ignore
-    from utils.model_utils import (  # type: ignore
+    from wings_control.utils.env_utils import (  # type: ignore
+        OFFLOAD_MIN_GB,
+        resolve_offload_cpu_capacity_gb,
+    )
+    from wings_control.utils.device_utils import resolve_card_token  # type: ignore
+    from wings_control.utils.model_utils import (  # type: ignore
         feature_allowed,
         resolve_feature_whitelist_row_from_params,
         resolve_offload_whitelist_backend,
@@ -26,10 +34,6 @@ logger = logging.getLogger(__name__)
 
 MEMCACHE_OFFLOAD_VARIANT = "memcache"
 
-_OFFLOAD_ENGINE_SELF_PER_WORKER_GB = 7
-_OFFLOAD_ENGINE_SELF_BASE_GB = 3
-_OFFLOAD_MARGIN_RATIO = 0.10
-_OFFLOAD_MIN_GB = 100
 _TEMPLATE_DIR = Path(__file__).resolve().parent
 _DEFAULT_META_SERVICE_URL = "tcp://127.0.0.1:5000"
 _DEFAULT_CONFIG_STORE_URL = "tcp://127.0.0.1:6000"
@@ -112,18 +116,6 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
-def _offload_parallel_size(params: Dict[str, Any], key: str) -> int:
-    val = _safe_int(params.get(key))
-    if val:
-        return val
-    engine_config = params.get("engine_config")
-    if isinstance(engine_config, dict):
-        val = _safe_int(engine_config.get(key))
-        if val:
-            return val
-    return 1
-
-
 def _resolve_memcache_per_card_gb(params: Dict[str, Any], total_gb: int) -> int:
     """将页面下发或自动计算的节点总容量均分为 MemCache 每卡容量。
 
@@ -142,52 +134,22 @@ def _resolve_memcache_per_card_gb(params: Dict[str, Any], total_gb: int) -> int:
     return per_card_gb
 
 
-def _resolve_offload_cpu_capacity_gb(
-    params: Dict[str, Any],
-    size_env_name: str = "KV_MEM_OFFLOAD_SIZE",
-) -> Optional[int]:
-    max_cpu = os.getenv(size_env_name, "").strip()
-    pod_mem = os.getenv("AVAILABLE_POD_MEM_SIZE", "").strip()
-    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
-        return None
-    if max_cpu.lower() != "auto":
-        return None
-    if not pod_mem:
-        return None
-    try:
-        m_container = float(pod_mem) / 1024.0
-    except (TypeError, ValueError):
-        logger.warning("[MemCache] Invalid AVAILABLE_POD_MEM_SIZE=%r; auto capacity skipped.", pod_mem)
-        return None
-    tp = _offload_parallel_size(params, "tensor_parallel_size")
-    dp = _offload_parallel_size(params, "data_parallel_size")
-    m_engine_self = _OFFLOAD_ENGINE_SELF_PER_WORKER_GB * (tp * dp) + _OFFLOAD_ENGINE_SELF_BASE_GB
-    m_margin = m_container * _OFFLOAD_MARGIN_RATIO
-    m_offload = m_container - m_engine_self - m_margin
-    if m_offload < _OFFLOAD_MIN_GB:
-        return 0
-    return int(m_offload)
-
-
 def resolve_memcache_dram_gb(params: Optional[Dict[str, Any]]) -> Optional[int]:
     """从节点 offload memory 解析 MemCache 单卡本地 DRAM 容量。"""
     params = params or {}
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     size_env_name = "KV_MEM_OFFLOAD_SIZE"
     if not raw_size:
-        raw_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
-        size_env_name = "LMCACHE_MAX_LOCAL_CPU_SIZE"
-    if not raw_size:
         return None
     if raw_size.lower() == "auto":
-        auto_total = _resolve_offload_cpu_capacity_gb(params, size_env_name=size_env_name)
+        auto_total = resolve_offload_cpu_capacity_gb(params, size_env_name=size_env_name)
         if auto_total and auto_total > 0:
             return _resolve_memcache_per_card_gb(params, int(auto_total))
         if auto_total == 0:
             logger.info(
                 "[MemCache] Page offload memory auto capacity is below %dG floor; "
                 "disabling MemCache.",
-                _OFFLOAD_MIN_GB,
+                OFFLOAD_MIN_GB,
             )
         return None
     try:

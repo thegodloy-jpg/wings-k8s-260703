@@ -39,7 +39,8 @@ from utils.device_utils import resolve_card_token
 
 from utils.env_utils import get_local_ip, get_lmcache_env, \
     get_pd_role_env, get_qat_env, get_cold_start_env, \
-    get_sparse_level_env
+    get_sparse_level_env, OFFLOAD_MIN_GB as _OFFLOAD_MIN_GB, \
+    resolve_offload_cpu_capacity_gb as _resolve_offload_cpu_capacity_gb
 from utils.shell_env_utils import dedupe_env_exports
 from utils.file_utils import safe_write_file, WriteOptions
 try:
@@ -704,32 +705,6 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
 
 
 _NATIVE_OFFLOAD_SIZE_ENV_NAMES = ("KV_MEM_OFFLOAD_SIZE",)
-# Qwen3.5 NVFP4 是 23.6.0 既有 native KV offload 场景，历史上允许
-# LMCACHE_MAX_LOCAL_CPU_SIZE 接管 native size。这个兼容策略属于代码侧
-# 场景逻辑，不写入 smart_feature_whitelist.json；白名单只保留
-# backend=native，避免把会随页面/env 变化的容量来源放进规则表。
-_QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES = (
-    "KV_MEM_OFFLOAD_SIZE",
-    "LMCACHE_MAX_LOCAL_CPU_SIZE",
-)
-
-
-def _native_backend_size_env_names(params: Dict[str, Any], engine: str) -> Tuple[str, ...]:
-    """返回 native offload size 可读取的 env 名称。
-
-    设计约束：
-      1. 白名单只决定当前场景是否允许 native backend；
-      2. size 来源必须由页面/env 或代码侧场景兼容逻辑决定；
-      3. 新增模型适配时不能再往白名单塞 ``size_*`` 字段。
-
-    因此这里按模型场景选择 env 列表，而不是读取白名单行里的动态配置。
-    """
-    if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
-        # 兼容 23.6.0 Qwen3.5 NVFP4 既有管理口径：优先页面 KV_MEM_OFFLOAD_SIZE，
-        # 旧 LMCACHE_MAX_LOCAL_CPU_SIZE 仍可接管，但该策略归代码场景逻辑所有，
-        # 不放进 smart_feature_whitelist.json。
-        return _QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES
-    return _NATIVE_OFFLOAD_SIZE_ENV_NAMES
 
 
 def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> int:
@@ -737,19 +712,12 @@ def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> i
 
     这里复用已有 ``_resolve_native_offload_gb``，保持页面输入、auto 公式、
     floor 熔断和日志口径一致。白名单行只提供 ``backend=native``，不提供
-    fallback、env 名称或是否要求页面开关；这些属于运行时策略。
+    fallback、env 名称或动态容量来源；这些属于运行时策略。
 
-    当前两类口径：
-      - Qwen3.5 NVFP4：兼容旧 LMCACHE_MAX_LOCAL_CPU_SIZE，未填时保留 200G fallback；
-      - Day0 H20/L20 native：必须由页面/env 给出 KV_MEM_OFFLOAD_SIZE，缺失/非法即丢弃。
+    所有 native backend 统一只读取页面/上层下发的 ``KV_MEM_OFFLOAD_SIZE``：
+    未填、非法或内存卸载开关未开时直接丢弃，不再保留模型级容量缺省或
+    ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 兼容入口。
     """
-    if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
-        return _resolve_native_offload_gb(
-            params,
-            fallback_gb=200,
-            size_env_names=_QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES,
-            log_context="KVCache Offload",
-        )
     return _resolve_native_offload_gb(
         params,
         fallback_gb=None,
@@ -762,13 +730,10 @@ def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> i
 def _native_backend_auto_requested(params: Dict[str, Any], engine: str) -> bool:
     """判断 native backend 是否请求 auto 容量。
 
-    auto 判定必须跟当前场景实际读取的 env 列表一致，这样 CLI、variant 和
-    `/v1/startup/accel` 中的 floor_disabled 状态才能保持同源。
+    native backend 的用户容量入口统一为 ``KV_MEM_OFFLOAD_SIZE``，这样 CLI、
+    variant 和 `/v1/startup/accel` 中的 floor_disabled 状态保持同源。
     """
-    return any(
-        os.getenv(env_name, "").strip().lower() == "auto"
-        for env_name in _native_backend_size_env_names(params, engine)
-    )
+    return os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() == "auto"
 
 
 def _mtp_whitelist_override_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
@@ -835,7 +800,9 @@ def _resolve_lmcache_cpu_env(params: Optional[Dict[str, Any]]) -> Tuple[str, str
     """解析 LMCache CPU 池两 env 值 ``(ENABLE_KV_MEM_OFFLOAD, KV_MEM_OFFLOAD_SIZE)``。
 
     auto 模式（``resolve_offload_cpu_capacity_gb`` 非 None）反向预算并写回「均卡」容量；
-    熔断(<=0)清空 CPU 池；非 auto 透传现有 env。需求一 §3.0。
+    熔断(<=0)清空 CPU 池；非 auto 仅接受页面/上层下发的正整数
+    ``KV_MEM_OFFLOAD_SIZE``。未填、非法或非正值直接丢弃，不再使用
+    ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 或模型级默认容量作为输入。需求一 §3.0。
     """
     mem_enabled = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
     if not mem_enabled:
@@ -843,22 +810,36 @@ def _resolve_lmcache_cpu_env(params: Optional[Dict[str, Any]]) -> Tuple[str, str
     local_cpu_value = os.getenv("ENABLE_KV_MEM_OFFLOAD", "").strip()
     max_cpu_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
 
+    if not max_cpu_size:
+        logger.warning("[KVCache Offload] KV_MEM_OFFLOAD_SIZE is empty; skip CPU offload pool.")
+        return "", ""
+
+    if max_cpu_size.lower() != "auto":
+        try:
+            total_gb = int(max_cpu_size)
+        except ValueError:
+            logger.warning("[KVCache Offload] Invalid KV_MEM_OFFLOAD_SIZE=%r; skip CPU offload pool.", max_cpu_size)
+            return "", ""
+        if total_gb <= 0:
+            logger.warning("[KVCache Offload] non-positive KV_MEM_OFFLOAD_SIZE=%s; skip CPU offload pool.", total_gb)
+            return "", ""
+        n_card = _safe_int(params.get("device_count")) if params else 1
+        n_card = n_card or 1
+        per_card = max(1, total_gb // n_card)
+        logger.info(
+            "[KVCache Offload] custom CPU per-card = M_offload(%sG) / N_card(%d) = %dG "
+            "(KV_MEM_OFFLOAD_SIZE).",
+            max_cpu_size, n_card, per_card,
+        )
+        return local_cpu_value, str(per_card)
+
     auto_total = resolve_offload_cpu_capacity_gb(params)
     if auto_total is None:
-        if max_cpu_size and max_cpu_size.lower() != "auto":
-            try:
-                n_card = _safe_int(params.get("device_count")) if params else 1
-                n_card = n_card or 1
-                per_card = max(1, int(max_cpu_size) // n_card)
-                logger.info(
-                    "[KVCache Offload] custom CPU per-card = M_offload(%sG) / N_card(%d) = %dG "
-                    "(KV_MEM_OFFLOAD_SIZE).",
-                    max_cpu_size, n_card, per_card,
-                )
-                return local_cpu_value, str(per_card)
-            except ValueError:
-                logger.warning("[KVCache Offload] Invalid KV_MEM_OFFLOAD_SIZE=%r; using raw value.", max_cpu_size)
-        return local_cpu_value, max_cpu_size
+        logger.warning(
+            "[KVCache Offload] KV_MEM_OFFLOAD_SIZE=auto but auto capacity is unavailable; "
+            "skip CPU offload pool."
+        )
+        return "", ""
     if auto_total <= 0:
         # 熔断：容量低于下限 → 不建 CPU 卸载池（offload 退化为无 CPU 池）。
         logger.warning(
@@ -932,13 +913,24 @@ def _resolve_offload_backend(params: Optional[Dict[str, Any]], engine: str = "")
     """
     if resolve_offload_whitelist_backend(params, engine) == "native":
         return _OFFLOAD_NATIVE_BACKEND_VARIANT, "native"
+    raw_mem_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     auto_total = resolve_offload_cpu_capacity_gb(params)
     if auto_total is not None:
         has_cpu = auto_total > 0          # 熔断(0) → 无 CPU 池
         cpu_mode = "auto"
     else:
-        has_cpu = os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
-        cpu_mode = "custom" if has_cpu else ""
+        has_cpu = False
+        cpu_mode = ""
+        if (
+            os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
+            and raw_mem_size
+            and raw_mem_size.lower() != "auto"
+        ):
+            try:
+                has_cpu = int(raw_mem_size) > 0
+            except ValueError:
+                has_cpu = False
+            cpu_mode = "custom" if has_cpu else ""
     has_disk = os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true"
     if has_cpu and has_disk:
         backend = "lmcache_cpu_disk"
@@ -954,17 +946,6 @@ def _resolve_offload_backend(params: Optional[Dict[str, Any]], engine: str = "")
 def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any]]) -> List[str]:
     """Build vLLM-Ascend 0.21 LMCache dynamic offload env for DeepSeek-V4-Flash."""
     env_commands = ["export PYTHONHASHSEED=0"]
-    offload_enabled = os.getenv("ENABLE_KV_OFFLOAD", "false").strip().lower() == "true"
-    mem_offload_raw = os.getenv("ENABLE_KV_MEM_OFFLOAD")
-    mem_enabled = (mem_offload_raw or "").strip().lower() == "true"
-    mem_explicitly_disabled = (
-        mem_offload_raw is not None
-        and mem_offload_raw.strip().lower() in {"false", "0", "no", "off"}
-    )
-    auto_requested = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() == "auto"
-    kv_mem_size_set = bool(os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip())
-    kv_mem_size_authoritative = mem_enabled and kv_mem_size_set
-    default_cpu_pool = offload_enabled and not mem_explicitly_disabled and not auto_requested
     resolved_local_cpu, resolved_max_cpu_size = _resolve_lmcache_cpu_env(params)
     auto_cpu_floor_disabled = _is_lmcache_auto_cpu_floor_disabled(
         params,
@@ -978,17 +959,8 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
     elif not local_cpu:
         if resolved_local_cpu:
             local_cpu = "True" if resolved_local_cpu.lower() == "true" else resolved_local_cpu
-        elif mem_enabled or default_cpu_pool:
-            local_cpu = "True"
 
-    if kv_mem_size_authoritative:
-        max_cpu_size = resolved_max_cpu_size
-    else:
-        max_cpu_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
-        if not max_cpu_size:
-            max_cpu_size = resolved_max_cpu_size
-    if not max_cpu_size and (mem_enabled or default_cpu_pool) and not kv_mem_size_authoritative:
-        max_cpu_size = "40"
+    max_cpu_size = resolved_max_cpu_size
 
     _append_lmcache_env_export(env_commands, "LMCACHE_TRACK_USAGE", os.getenv("LMCACHE_TRACK_USAGE", "false"))
     if auto_cpu_floor_disabled:
@@ -1070,6 +1042,17 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         logger.info(
             "[KVCache Offload] native KV offload backend selected; "
             "skipping LMCache engine-side env exports."
+        )
+        return env_commands
+    if (
+        backend == "disabled"
+        and not is_kv_mem_offload_auto_floor_disabled(params)
+        and not get_qat_env()
+        and not get_cold_start_env()
+    ):
+        logger.info(
+            "[KVCache Offload] memory offload requested but KV_MEM_OFFLOAD_SIZE is "
+            "empty/invalid/unavailable; skipping LMCache engine-side env exports."
         )
         return env_commands
 
@@ -2721,100 +2704,12 @@ def _force_deepseek_v4_flash_nv_block_size(
     engine_config["block_size"] = _DEEPSEEK_V4_FLASH_NV_BLOCK_SIZE
 
 
-def _read_lmcache_max_local_cpu_gb() -> Optional[int]:
-    """读取页面传入的 ``LMCACHE_MAX_LOCAL_CPU_SIZE``（GB）。
-
-    仅负责 env 解析，不掺入缺省值策略。native offload 会直接复用该 GB 值；
-    只有 LMCache env 渲染路径需要把整节点容量折算成每卡容量。
-
-    Returns:
-        int: env 已设且合法时的页面容量；``None``: 未设或非法（caller 按各自缺省处理）。
-    """
-    raw_size = os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
-    if not raw_size:
-        return None
-    try:
-        return int(raw_size)
-    except ValueError:
-        logger.warning(
-            "[KV Offload] Invalid LMCACHE_MAX_LOCAL_CPU_SIZE=%r; "
-            "falling back to per-model default.", raw_size,
-        )
-        return None
-
-
-# ── C4: KV 卸载 auto 容量反向预算（需求一 §3.0）────────────────────────────────
-# 两路卸载（LMCache / native CPUOffloading）复用同一 M_offload，仅落地单位不同：
-#   LMCache  KV_MEM_OFFLOAD_SIZE = M_offload ÷ N_card（均卡/per-card）
-#   native   cpu_swap_space_gb / --kv-offloading-size = M_offload（整节点，不除卡数）
-_OFFLOAD_ENGINE_SELF_PER_WORKER_GB = 7   # 每 worker 常驻（CANN/torch_npu/.so/激活）线性系数
-_OFFLOAD_ENGINE_SELF_BASE_GB = 3         # 固定开销
-_OFFLOAD_MARGIN_RATIO = 0.10             # 安全垫
-_OFFLOAD_MIN_GB = 100                    # 熔断下限：低于此不建卸载池
-
-
-def _offload_parallel_size(params: Dict[str, Any], key: str) -> int:
-    """从 params 或 engine_config 读取并行度（TP/DP），缺省 1。"""
-    val = _safe_int(params.get(key))
-    if val:
-        return val
-    ec = params.get("engine_config")
-    if isinstance(ec, dict):
-        val = _safe_int(ec.get(key))
-        if val:
-            return val
-    return 1
-
-
 def resolve_offload_cpu_capacity_gb(
     params: Dict[str, Any],
     size_env_name: str = "KV_MEM_OFFLOAD_SIZE",
 ) -> Optional[int]:
-    """C4：auto 模式反向预算「本节点总」CPU 卸载容量 M_offload (GiB)。需求一 §3.0。
-
-    判定（靠 size_env_name 对应 env 的字面值 =auto；默认 KV_MEM_OFFLOAD_SIZE）：
-        <size_env_name> == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto；
-        否则（custom 带 GB 值 / 无 POD_MEM_SIZE）→ 返回 None，调用方走原透传逻辑。
-
-    公式（M_swap=0 由 swap_space=0 原子绑定保证）：
-        M_offload = M_container − (7G×TP×DP + 3G) − M_container×10%
-
-    本函数只算「本节点总额」M_offload；两路卸载共用，仅落地单位不同：
-        LMCache 落地需再 ÷ N_card（均卡）；native/CPUOffloading 直接用整节点 M_offload。
-
-    Returns:
-        None: 非 auto（custom 透传或无 AVAILABLE_POD_MEM_SIZE）→ 调用方按原逻辑处理。
-        0:    auto 命中但 M_offload < 熔断下限 → 调用方不建卸载池。
-        >0:   auto「本节点总」容量 M_offload。
-    """
-    max_cpu = os.getenv(size_env_name, "").strip()
-    pod_mem = os.getenv("AVAILABLE_POD_MEM_SIZE", "").strip()
-
-    # 判定: ENABLE_KV_MEM_OFFLOAD=true 且 size_env_name 对应 env == "auto" 且 AVAILABLE_POD_MEM_SIZE 非空 → auto 自算
-    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
-        return None
-    if max_cpu.lower() != "auto":
-        return None  # custom 带 GB 值或未设置 → 透传
-    if not pod_mem:
-        return None
-    try:
-        # AVAILABLE_POD_MEM_SIZE is supplied by the upper layer in MiB.
-        m_container = float(pod_mem) / 1024.0
-    except (TypeError, ValueError):
-        logger.warning("[KVCache Offload] Invalid AVAILABLE_POD_MEM_SIZE=%r; auto capacity skipped.", pod_mem)
-        return None
-    tp = _offload_parallel_size(params, "tensor_parallel_size")
-    dp = _offload_parallel_size(params, "data_parallel_size")
-    m_engine_self = _OFFLOAD_ENGINE_SELF_PER_WORKER_GB * (tp * dp) + _OFFLOAD_ENGINE_SELF_BASE_GB
-    m_margin = m_container * _OFFLOAD_MARGIN_RATIO
-    m_offload = m_container - m_engine_self - m_margin  # M_swap=0（auto 强制 swap_space=0）
-    logger.info(
-        "[KVCache Offload] AVAILABLE_POD_MEM_SIZE=%sMB -> %.2fG container memory.",
-        pod_mem, m_container,
-    )
-    if m_offload < _OFFLOAD_MIN_GB:
-        return 0
-    return int(m_offload)
+    """兼容旧调用名：auto 容量公式统一复用 ``utils.env_utils`` 实现。"""
+    return _resolve_offload_cpu_capacity_gb(params, size_env_name=size_env_name)
 
 
 def _resolve_native_offload_gb(
@@ -2902,12 +2797,13 @@ def _resolve_v4_flash_offload_gb(params: Dict[str, Any]) -> int:
     取值规则（整节点口径，两路径同源同值）：
       * **auto**（KV_MEM_OFFLOAD_SIZE=auto + AVAILABLE_POD_MEM_SIZE 非空）：
         直接用反向预算「本节点总」M_offload，native **不除卡数**（需求一 §3.0）；
-      * ``KV_MEM_OFFLOAD_SIZE`` 未设/非法 → 200（默认平铺，不乘）；
+      * ``KV_MEM_OFFLOAD_SIZE`` 未设/非法 → 直接丢弃，不再使用场景默认值；
       * 自定义值来自页面，单位 GB，native **直接复用**，不按卡数放大。
     """
     return _resolve_native_offload_gb(
         params,
-        fallback_gb=200,
+        fallback_gb=None,
+        require_mem_switch=True,
         log_context="DeepSeek-V4 KV Offload",
     )
 
@@ -4036,6 +3932,9 @@ def _resolve_minimax_m27_lmcache_max_cpu_size(params: Dict[str, Any]) -> Optiona
     """
     n_card = _safe_int(params.get("device_count")) or 1
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+    if not raw_size:
+        logger.warning("[MiniMax-M2.7] KV_MEM_OFFLOAD_SIZE is empty; skip LMCACHE_MAX_LOCAL_CPU_SIZE.")
+        return None
 
     if raw_size.lower() == "auto":
         auto_total = resolve_offload_cpu_capacity_gb(params)
@@ -4059,6 +3958,12 @@ def _resolve_minimax_m27_lmcache_max_cpu_size(params: Dict[str, Any]) -> Optiona
         logger.warning(
             "[MiniMax-M2.7] Invalid KV_MEM_OFFLOAD_SIZE=%r; skip LMCACHE_MAX_LOCAL_CPU_SIZE.",
             raw_size,
+        )
+        return None
+    if total <= 0:
+        logger.warning(
+            "[MiniMax-M2.7] non-positive KV_MEM_OFFLOAD_SIZE=%s; skip LMCACHE_MAX_LOCAL_CPU_SIZE.",
+            total,
         )
         return None
     per_card = max(1, total // n_card)
@@ -4094,7 +3999,7 @@ def _build_minimax_m27_rtx_pro_5000_env_commands(params: Dict[str, Any]) -> List
         max_cpu_size = _resolve_minimax_m27_lmcache_max_cpu_size(params)
         if max_cpu_size is not None:
             cmds.append(f'export LMCACHE_MAX_LOCAL_CPU_SIZE="{max_cpu_size}"')
-        cmds.append('export LMCACHE_LOCAL_CPU="True"')
+            cmds.append('export LMCACHE_LOCAL_CPU="True"')
 
     # LMCache 通用配置（chunk size / ODirect / pre-caching hash）：仅在启用任一卸载时生效
     cmds.append("export LMCACHE_CHUNK_SIZE=256")

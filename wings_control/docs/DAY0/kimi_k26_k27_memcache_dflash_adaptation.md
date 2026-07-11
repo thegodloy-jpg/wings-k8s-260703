@@ -115,7 +115,7 @@ When Kimi offload is not valid, remove the whole offload feature:
 Capacity source:
 
 1. authoritative page/env source: `KV_MEM_OFFLOAD_SIZE`
-2. compatibility fallback: `LMCACHE_MAX_LOCAL_CPU_SIZE`, only if the page still passes the value through that legacy field
+2. no compatibility capacity fallback: `LMCACHE_MAX_LOCAL_CPU_SIZE` is not read as user input
 3. auto mode: `KV_MEM_OFFLOAD_SIZE=auto` with `AVAILABLE_POD_MEM_SIZE`, using the existing auto-capacity calculation
 
 After validation, the resolved page value must render directly into `mmc_local.conf`:

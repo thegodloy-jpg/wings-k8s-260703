@@ -315,7 +315,7 @@ Qwen MemCache 应复用当前项目 `wings_control/features/kv_offload/memcache/
 - engine 重试或 fallback 到非 offload 路径时，必须清理 `MMC_LOCAL_CONFIG_PATH`，并移除 `AscendStoreConnector` / `kv_transfer_config`；
 - Qwen MemCache 不走 LMCache install/env/YAML 路径，也不复用 `CPUOffloadingConnector`。
 
-MemCache 容量仍由页面或环境变量下发的 offload memory 决定，优先读取 `KV_MEM_OFFLOAD_SIZE`，缺失时兼容读取 `LMCACHE_MAX_LOCAL_CPU_SIZE`。两个字段都表示节点总容量；最终 `WINGS_MEMCACHE_DRAM_GB` 表示单卡容量。规则如下：
+MemCache 容量仍由页面或环境变量下发的 offload memory 决定，唯一用户入口为 `KV_MEM_OFFLOAD_SIZE`。`LMCACHE_MAX_LOCAL_CPU_SIZE` 只作为 LMCache 进程侧的结果变量，不再作为页面/用户输入兜底读取；最终 `WINGS_MEMCACHE_DRAM_GB` 表示单卡容量。规则如下：
 
 - 正整数：先按 `device_count` 向下均分，再作为 `WINGS_MEMCACHE_DRAM_GB` 渲染到 `mmc_local.conf`；
 - `auto`：必须同时存在 `ENABLE_KV_MEM_OFFLOAD=true` 和 `AVAILABLE_POD_MEM_SIZE`；

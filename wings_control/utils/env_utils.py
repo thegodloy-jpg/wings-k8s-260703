@@ -18,8 +18,14 @@ Sidecar 架构契约:
 import os
 import socket
 import logging
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+OFFLOAD_ENGINE_SELF_PER_WORKER_GB = 7   # 每 worker 常驻（CANN/torch_npu/.so/激活）线性系数
+OFFLOAD_ENGINE_SELF_BASE_GB = 3         # 固定开销
+OFFLOAD_MARGIN_RATIO = 0.10             # 安全垫
+OFFLOAD_MIN_GB = 100                    # 熔断下限：低于此不建卸载池
 
 
 def validate_ip(ip_str):
@@ -52,6 +58,73 @@ def get_master_ip():
     """
     master_ip = os.getenv('MASTER_IP', None)
     return master_ip
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _offload_parallel_size(params: Dict[str, Any], key: str) -> int:
+    """从 params 或 engine_config 读取 KV offload 反向预算所需并行度，缺省 1。"""
+    val = _safe_int(params.get(key))
+    if val:
+        return val
+    engine_config = params.get("engine_config")
+    if isinstance(engine_config, dict):
+        val = _safe_int(engine_config.get(key))
+        if val:
+            return val
+    return 1
+
+
+def resolve_offload_cpu_capacity_gb(
+    params: Dict[str, Any],
+    size_env_name: str = "KV_MEM_OFFLOAD_SIZE",
+) -> Optional[int]:
+    """C4：auto 模式反向预算「本节点总」CPU 卸载容量 M_offload (GiB)。
+
+    这是 LMCache、native KV offload、MemCache 共用的唯一 auto 容量公式。
+    函数只返回节点总预算，不做每卡均分；各后端按自身落地单位转换：
+      * native: 直接使用节点总容量；
+      * LMCache / MemCache: 调用方按 device_count 均分为每卡容量。
+
+    判定：
+      * ``ENABLE_KV_MEM_OFFLOAD=true``；
+      * ``<size_env_name>=auto``；
+      * ``AVAILABLE_POD_MEM_SIZE`` 非空，单位 MiB。
+    返回：
+      * ``None``：非 auto、开关未开或输入不足；
+      * ``0``：auto 计算结果低于熔断下限；
+      * 正整数：节点总 offload 容量 GiB。
+    """
+    max_cpu = os.getenv(size_env_name, "").strip()
+    pod_mem = os.getenv("AVAILABLE_POD_MEM_SIZE", "").strip()
+    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
+        return None
+    if max_cpu.lower() != "auto":
+        return None
+    if not pod_mem:
+        return None
+    try:
+        m_container = float(pod_mem) / 1024.0
+    except (TypeError, ValueError):
+        logger.warning("[KVCache Offload] Invalid AVAILABLE_POD_MEM_SIZE=%r; auto capacity skipped.", pod_mem)
+        return None
+    tp = _offload_parallel_size(params, "tensor_parallel_size")
+    dp = _offload_parallel_size(params, "data_parallel_size")
+    m_engine_self = OFFLOAD_ENGINE_SELF_PER_WORKER_GB * (tp * dp) + OFFLOAD_ENGINE_SELF_BASE_GB
+    m_margin = m_container * OFFLOAD_MARGIN_RATIO
+    m_offload = m_container - m_engine_self - m_margin  # M_swap=0（auto 强制 swap_space=0）
+    logger.info(
+        "[KVCache Offload] AVAILABLE_POD_MEM_SIZE=%sMB -> %.2fG container memory.",
+        pod_mem, m_container,
+    )
+    if m_offload < OFFLOAD_MIN_GB:
+        return 0
+    return int(m_offload)
 
 
 def get_local_ip():

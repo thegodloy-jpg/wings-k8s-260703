@@ -132,7 +132,7 @@ export WINGS_MEMCACHE_DRAM_GB="<resolved_memcache_memory>"
 
 `WINGS_MEMCACHE_DRAM_GB` has no default. It must come from the page-owned memory offload value after validation.
 
-In the current env plumbing, the page-owned source is `KV_MEM_OFFLOAD_SIZE`. `LMCACHE_MAX_LOCAL_CPU_SIZE` is only a compatibility fallback if the page still passes the value through that legacy field. The resolved page value is rendered 1:1 into `ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB`; do not introduce a separate MemCache capacity input and do not default to `20GB`.
+In the current env plumbing, the page-owned source is `KV_MEM_OFFLOAD_SIZE`. `LMCACHE_MAX_LOCAL_CPU_SIZE` is an engine-facing LMCache output variable only; it must not be treated as an additional user/page capacity input. The resolved page value is rendered 1:1 into `ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB`; do not introduce a separate MemCache capacity input and do not default to `20GB`.
 
 The generated engine prelude must export:
 
@@ -254,7 +254,7 @@ When fallback removes `kv_transfer_config`, it should also prepend this cleanup.
 Capacity resolution must follow the page-owned offload input. This is the same value the user configures on the page for memory offload; MemCache should not have a separate hidden capacity.
 
 1. authoritative page/env source: `KV_MEM_OFFLOAD_SIZE`
-2. compatibility fallback: `LMCACHE_MAX_LOCAL_CPU_SIZE`, only if page plumbing still uses that field
+2. no compatibility capacity fallback: `LMCACHE_MAX_LOCAL_CPU_SIZE` is not read as user input
 3. auto mode: `KV_MEM_OFFLOAD_SIZE=auto` plus `AVAILABLE_POD_MEM_SIZE`
 
 Validation:

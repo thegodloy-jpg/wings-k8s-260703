@@ -139,7 +139,7 @@ class _FakeQwen35Nvfp4Identifier:
         self.model_type = model_type
 
 
-def test_lmcache_env_exports_do_not_leak_l2_child_values_when_l2_switches_are_off(monkeypatch):
+def test_lmcache_env_exports_are_dropped_when_l2_child_switches_are_off(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "false")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
@@ -160,7 +160,7 @@ def test_lmcache_env_exports_do_not_leak_l2_child_values_when_l2_switches_are_of
     )
 
     rendered = "\n".join(commands)
-    assert "export ENABLE_KV_OFFLOAD=true" in rendered
+    assert rendered == ""
     assert "KV_MEM_OFFLOAD_SIZE" not in rendered
     assert "KV_DISK_OFFLOAD_PATH" not in rendered
     assert "KV_DISK_OFFLOAD_SIZE" not in rendered
@@ -274,7 +274,7 @@ def test_deepseek_v4_flash_ascend_lmcache_worker_ids_keep_explicit_env(monkeypat
     assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=0,1,2,3,4,5,6,7" not in rendered
 
 
-def test_deepseek_v4_flash_ascend_lmcache_defaults_cpu_pool_when_whitelist_forces_offload(monkeypatch):
+def test_deepseek_v4_flash_ascend_lmcache_drops_cpu_pool_without_page_size(monkeypatch):
     _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.delenv("ENABLE_KV_MEM_OFFLOAD", raising=False)
@@ -294,8 +294,8 @@ def test_deepseek_v4_flash_ascend_lmcache_defaults_cpu_pool_when_whitelist_force
     )
 
     rendered = "\n".join(commands)
-    assert "export LMCACHE_LOCAL_CPU=True" in rendered
-    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=40" in rendered
+    assert "export LMCACHE_LOCAL_CPU" not in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE" not in rendered
 
 
 def test_deepseek_v4_flash_ascend_lmcache_auto_size_is_computed_per_card(monkeypatch):
@@ -606,8 +606,8 @@ def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tm
 
 def test_qwen35_nvfp4_native_reports_effective_kv_mem_size(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
-    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "200")
     monkeypatch.setattr(
         wings_entry,
         "_ADVANCED_FEATURES_FILE",
@@ -1047,7 +1047,7 @@ def test_kimi_k27_code_memcache_without_page_memory_is_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
-    monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
+    monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "40")
 
     fragment = memcache_hybrid.build_memcache_hybrid_fragment(
         "vllm_ascend",
@@ -1144,7 +1144,7 @@ def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatc
     assert special == ""
 
 
-def test_qwen35_nvfp4_uses_native_kv_offload_cli(monkeypatch):
+def test_qwen35_nvfp4_native_offload_drops_when_page_size_missing(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
 
@@ -1160,10 +1160,10 @@ def test_qwen35_nvfp4_uses_native_kv_offload_cli(monkeypatch):
         "vllm",
     )
 
-    assert command == " --kv-offloading-backend native --kv-offloading-size 200"
+    assert command == ""
 
 
-def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(monkeypatch):
+def test_qwen35_nvfp4_native_offload_ignores_legacy_lmcache_size_input(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "200")
 
@@ -1179,11 +1179,12 @@ def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(m
         "vllm",
     )
 
-    assert command == " --kv-offloading-backend native --kv-offloading-size 200"
+    assert command == ""
 
 
-def test_qwen35_nvfp4_native_offload_prefers_kv_mem_size_without_per_card_scaling(monkeypatch):
+def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
     monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "200")
 
@@ -1250,7 +1251,7 @@ def test_qwen35_nvfp4_native_offload_auto_reuses_kv_mem_formula_floor(monkeypatc
     assert command == ""
 
 
-def test_qwen35_nvfp4_native_offload_auto_uses_formula_without_per_card_scaling(monkeypatch):
+def test_qwen35_nvfp4_native_offload_legacy_auto_input_is_ignored(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "auto")
@@ -1270,10 +1271,10 @@ def test_qwen35_nvfp4_native_offload_auto_uses_formula_without_per_card_scaling(
         "vllm",
     )
 
-    assert command == " --kv-offloading-backend native --kv-offloading-size 121"
+    assert command == ""
 
 
-def test_qwen35_nvfp4_native_offload_legacy_auto_floor_variant_matches_cli(monkeypatch):
+def test_qwen35_nvfp4_native_offload_legacy_auto_input_variant_is_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
@@ -1295,11 +1296,12 @@ def test_qwen35_nvfp4_native_offload_legacy_auto_floor_variant_matches_cli(monke
     variant = vllm_adapter.resolve_offload_variant(params, "vllm")
 
     assert command == ""
-    assert variant == "native_kv_offloading_backend+auto+floor_disabled"
+    assert variant == "disabled"
 
 
 def test_deepseek_v4_flash_native_offload_reuses_page_size_without_per_card_scaling(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
     monkeypatch.delenv("AVAILABLE_POD_MEM_SIZE", raising=False)
 
