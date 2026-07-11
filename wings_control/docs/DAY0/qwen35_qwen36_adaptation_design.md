@@ -85,6 +85,8 @@
 
 当前项目的 `smart_feature_whitelist.json` 使用小写子串匹配：`engine` 精确匹配，`name_tokens` 匹配 `model_name + model_path`，`card_tokens` 匹配标准化后的芯片 token。Ascend 910B / 910B3 统一收敛为 `910b`，Ascend 910C / A3 统一收敛为 `910c`。
 
+白名单 `name_tokens` 更新必须严格遵守固定格式：对于同时具有组织路径和模型名的开源模型，只写两项 `[组织/开源路径名, 准确模型名]`，例如 `Qwen3.5-397B-A17B` 使用 `["qwen/qwen3.5-397b-a17b", "qwen3.5-397b-a17b"]`。禁止增加第三种宽松拼写、分隔符变体或从精度列派生的名称。精度/量化后缀只有在开源模型名本身包含时才进入这两项，例如 `Eco-Tech/Qwen3.6-27B-w8a8`；独立的 `BF16` / `FP8` 场景字段不参与模型名构造。后续更新本设计、基准表或 `smart_feature_whitelist.json` 时必须沿用此规则。
+
 | 场景 | name_tokens | card_tokens | 芯片信息 | architecture |
 | --- | --- | --- | --- | --- |
 | Qwen3.5-27B-910C | `qwen/qwen3.5-27b`, `qwen3.5-27b` | `910c` | Ascend 910C / A3 | `Qwen3_5ForConditionalGeneration` |

@@ -323,8 +323,8 @@ def test_nvidia_day0_glm47_mtp_uses_whitelist_method_and_ignores_draft(monkeypat
 
     params = {
         "engine": "vllm",
-        "model_name": "GLM-4.7",
-        "model_path": "/models/GLM-4.7",
+        "model_name": "zai-org/GLM-4.7",
+        "model_path": "/models/zai-org/GLM-4.7",
         "model_type": "llm",
         "enable_speculative_decode": True,
         "speculative_decode_model_path": "/models/old-draft",

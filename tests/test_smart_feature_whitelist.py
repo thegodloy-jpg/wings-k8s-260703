@@ -149,22 +149,37 @@ def test_default_smart_feature_whitelist_file_is_loaded():
             "memcache_protocol",
         ):
             assert field not in entry
-    nv023_precision_rows = [
+    for feature in ("spec", "sparse", "offload"):
+        for entry in whitelist[feature]:
+            assert "precision_tokens" not in entry
+            assert not {
+                "bfloat16",
+                "fp16",
+                "float16",
+                "fp4",
+                "w4a8",
+                "int8",
+            }.intersection(entry.get("exclude_name_tokens", []))
+    nv023_glm_rows = [
         entry
         for feature in ("spec", "sparse", "offload")
         for entry in whitelist[feature]
-        if entry.get("source") == "vllm-0.23" and entry.get("precision_tokens")
+        if entry.get("source") == "vllm-0.23"
+        and any("glm" in token for token in entry.get("name_tokens", []))
     ]
-    assert nv023_precision_rows
-    for entry in nv023_precision_rows:
-        assert entry.get("precision_tokens") in (["fp8"], ["bf16"])
-        assert not {
-            "fp8",
-            "bf16",
-            "w4a8",
-            "w8a8",
-            "nvfp4",
-        }.intersection(set(entry.get("exclude_name_tokens", [])))
+    assert nv023_glm_rows
+    assert all(
+        len(entry["name_tokens"]) == 2
+        and entry["name_tokens"][0].startswith("zai-org/")
+        and entry["name_tokens"][1] == entry["name_tokens"][0].split("/", 1)[1]
+        and "fp8" not in entry["name_tokens"][0]
+        for entry in nv023_glm_rows
+    )
+    assert all(
+        "glm5.1" not in entry["name_tokens"]
+        and "glm4.7" not in entry["name_tokens"]
+        for entry in nv023_glm_rows
+    )
     deepseek_h20_row = model_utils.resolve_feature_whitelist_row(
         "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
@@ -237,23 +252,17 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "ZhipuAI/GLM-5.1-FP8",
         "/models/ZhipuAI/GLM-5.1-FP8",
         "h20-141",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset({"sparse"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
-        "GLM5.1",
-        "/models/GLM5.1",
+        "zai-org/GLM-5.1",
+        "/models/zai-org/GLM-5.1",
         "h20-141",
-    ) == frozenset()
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3-Embedding-0.6B",
         "/models/Qwen3-Embedding-0.6B",
-        "l20",
-    ) == frozenset()
-    assert model_utils.resolve_feature_whitelist(
-        "vllm",
-        "Qwen3-Embedding-0.6B-BF16",
-        "/models/Qwen3-Embedding-0.6B-BF16",
         "l20",
     ) == frozenset({"offload"})
     assert model_utils.resolve_feature_whitelist(
@@ -261,29 +270,11 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Qwen3.6-27B",
         "/models/Qwen3.6-27B",
         "l20",
-    ) == frozenset()
-    assert model_utils.resolve_feature_whitelist(
-        "vllm",
-        "Qwen3.6-27B-BF16",
-        "/models/Qwen3.6-27B-BF16",
-        "l20",
     ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
-        "Qwen3.6-27B-FP8",
-        "/models/Qwen3.6-27B-FP8",
-        "l20",
-    ) == frozenset()
-    assert model_utils.resolve_feature_whitelist(
-        "vllm",
         "Qwen3.6-35B-A3B",
-        "/models/Qwen3.6-35B-A3B",
-        "l20",
-    ) == frozenset()
-    assert model_utils.resolve_feature_whitelist(
-        "vllm",
-        "Qwen3.6-35B-A3B-BF16",
-        "/models/Qwen3.6-35B-A3B-BF16",
+        "/usr/local/serving/models/",
         "l20",
     ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
@@ -326,6 +317,165 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset({"offload"})
 
 
+@pytest.mark.parametrize("card_token", ["l20", "h20-96", "h20-141"])
+@pytest.mark.parametrize(
+    ("model_name", "expected_features", "mtp_tokens", "mtp_moe_backend"),
+    [
+        ("Qwen/Qwen3-Embedding-0.6B", frozenset({"offload"}), None, None),
+        ("Qwen/Qwen3.6-27B", frozenset({"spec", "offload"}), 1, None),
+        (
+            "Qwen/Qwen3.6-35B-A3B",
+            frozenset({"spec", "offload"}),
+            3,
+            "triton",
+        ),
+    ],
+)
+def test_nvidia_day0_l20_smart_features_inherit_to_h20(
+    card_token,
+    model_name,
+    expected_features,
+    mtp_tokens,
+    mtp_moe_backend,
+):
+    model_path = f"/models/{model_name}"
+
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        model_name,
+        model_path,
+        card_token,
+    ) == expected_features
+
+    offload_row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        model_path,
+        card_token,
+        "offload",
+    )
+    assert offload_row["source"] == "vllm-0.23"
+    assert offload_row["backend"] == "native"
+
+    spec_row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        model_path,
+        card_token,
+        "spec",
+    )
+    if mtp_tokens is None:
+        assert spec_row is None
+    else:
+        assert spec_row["source"] == "vllm-0.23"
+        assert spec_row["mtp_num_speculative_tokens"] == mtp_tokens
+        assert spec_row.get("mtp_moe_backend") == mtp_moe_backend
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["zai-org/GLM-5", "zai-org/GLM-4.7", "zai-org/GLM-5.1"],
+)
+def test_nvidia_day0_h20_only_smart_features_do_not_inherit_to_l20(model_name):
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        model_name,
+        f"/models/{model_name}",
+        "l20",
+    ) == frozenset()
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["bge-large-zh-v1.5", "bge-reranker-large"],
+)
+@pytest.mark.parametrize("card_token", ["l20", "h20-96", "h20-141"])
+def test_nvidia_day0_bge_scenarios_stay_out_of_smart_feature_whitelist(
+    model_name,
+    card_token,
+):
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        model_name,
+        f"/models/{model_name}",
+        card_token,
+    ) == frozenset()
+
+
+@pytest.mark.parametrize(
+    "feature,model_name,card_token",
+    [
+        ("spec", "Eco-Tech/Qwen3.6-27B-w8a8", "910c"),
+        ("spec", "Eco-Tech/Qwen3.6-27B-w8a8", "910b"),
+        ("spec", "Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c"),
+        ("spec", "Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910b"),
+        ("offload", "Eco-Tech/Qwen3.6-27B-w8a8", "910c"),
+        ("offload", "Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c"),
+    ],
+)
+def test_qwen36_w8a8_scenarios_use_explicit_rows(
+    feature,
+    model_name,
+    card_token,
+):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        model_name,
+        f"/models/{model_name}",
+        card_token,
+        feature,
+    )
+
+    assert row is not None
+    assert any("w8a8" in token for token in row["name_tokens"])
+
+
+@pytest.mark.parametrize(
+    "feature,model_name,card_token",
+    [
+        ("spec", "Qwen/Qwen3.6-27B", "910c"),
+        ("spec", "Qwen/Qwen3.6-27B", "910b"),
+        ("spec", "Qwen/Qwen3.6-35B-A3B", "910c"),
+        ("spec", "Qwen/Qwen3.6-35B-A3B", "910b"),
+        ("offload", "Qwen/Qwen3.6-27B", "910c"),
+        ("offload", "Qwen/Qwen3.6-35B-A3B", "910c"),
+    ],
+)
+def test_qwen36_plain_scenarios_exclude_only_confirmed_w8a8_variant(
+    feature,
+    model_name,
+    card_token,
+):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        model_name,
+        f"/models/{model_name}",
+        card_token,
+        feature,
+    )
+
+    assert row is not None
+    assert row.get("exclude_name_tokens") == ("w8a8",)
+
+
+def test_qwen36_35b_l20_open_source_name_enables_spec(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.6-35B-A3B",
+        "model_path": "/usr/local/serving/models/",
+        "enable_sparse": False,
+        "enable_speculative_decode": True,
+    }
+    hardware = {"device": "nvidia", "details": [{"name": "L20_45G"}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware)
+
+    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_smart_feats"] == ["spec"]
+    assert params["enable_speculative_decode"] is True
+
+
 def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
     hardware = {"device": "nvidia", "details": [{"name": "NVIDIA L20"}]}
@@ -354,8 +504,8 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
 def test_offload_backend_lookup_respects_effective_smart_feats(monkeypatch):
     monkeypatch.delenv("CONFIG_FORCE", raising=False)
     params = {
-        "model_name": "Qwen3.6-27B-BF16",
-        "model_path": "/models/Qwen3.6-27B-BF16",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
         "_smart_card_token": "l20",
         "_smart_feats": [],
     }
@@ -805,7 +955,8 @@ def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
     [
         ("vllm", "Qwen3.5-397B-A17B-NVFP4", "/models/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", 3),
         ("vllm", "Qwen3.5-397B-A17B", "/models/Qwen/Qwen3.5-397B-A17B", "rtxpro5000-72", 3),
-        ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 1),
+        ("vllm", "zai-org/GLM-4.7", "/models/zai-org/GLM-4.7", "h20-141", 1),
+        ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 3),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
