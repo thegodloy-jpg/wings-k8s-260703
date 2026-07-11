@@ -383,6 +383,8 @@ def _clear_removed_param_env(monkeypatch):
         "ENABLE_CHUNKED_PREFILL",
         "ENABLE_PREFIX_CACHING",
         "ENABLE_EXPERT_PARALLEL",
+        "MAX_NUM_SEQS",
+        "MAX_NUM_BATCHED_TOKENS",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -421,23 +423,95 @@ def test_removed_page_tuning_defaults_are_not_backfilled_when_not_explicit(monke
         "seed",
         "enable_expert_parallel",
         "enable_prefix_caching",
+        "max_num_seqs",
+        "max_num_batched_tokens",
     ):
         assert key not in params
-    assert params["max_num_seqs"] == 32
-    assert params["max_num_batched_tokens"] == 4096
     assert params["trust_remote_code"] is True
 
 
 def test_removed_page_tuning_defaults_still_allow_explicit_overrides(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["pytest", "--gpu-memory-utilization", "0.8"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "pytest",
+            "--gpu-memory-utilization",
+            "0.8",
+            "--max-num-seqs",
+            "48",
+            "--max-num-batched-tokens",
+            "8192",
+        ],
+    )
     _clear_removed_param_env(monkeypatch)
 
-    params = {"gpu_memory_utilization": 0.92}
-    engine_cmd_parameter = {"gpu_memory_utilization": 0.8}
+    params = {
+        "gpu_memory_utilization": 0.92,
+        "max_num_seqs": 64,
+        "max_num_batched_tokens": 16384,
+    }
+    engine_cmd_parameter = {
+        "gpu_memory_utilization": 0.8,
+        "max_num_seqs": 48,
+        "max_num_batched_tokens": 8192,
+    }
 
     config_loader._set_common_params(params, engine_cmd_parameter, _mapping_path())
 
     assert params["gpu_memory_utilization"] == 0.8
+    assert params["max_num_seqs"] == 48
+    assert params["max_num_batched_tokens"] == 8192
+
+
+def test_vllm_capacity_defaults_do_not_reach_vllm_commands(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    _clear_removed_param_env(monkeypatch)
+    engine_cmd_parameter = {
+        "max_num_seqs": 32,
+        "max_num_batched_tokens": 4096,
+    }
+
+    for engine in ("vllm", "vllm_ascend"):
+        engine_config = {}
+        config_loader._set_common_params(
+            engine_config,
+            engine_cmd_parameter,
+            _mapping_path(),
+        )
+        command = vllm_adapter.build_start_command(
+            {
+                "engine": engine,
+                "model_name": "Demo",
+                "model_path": "/models/demo",
+                "model_type": "llm",
+                "engine_config": engine_config,
+            }
+        )
+
+        assert "--max-num-seqs" not in command
+        assert "--max-num-batched-tokens" not in command
+
+
+def test_vllm_capacity_model_defaults_are_preserved(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    _clear_removed_param_env(monkeypatch)
+    engine_config = {
+        "max_num_seqs": 64,
+        "max_num_batched_tokens": 8192,
+    }
+
+    config_loader._set_common_params(
+        engine_config,
+        {
+            "max_num_seqs": 32,
+            "max_num_batched_tokens": 4096,
+        },
+        _mapping_path(),
+    )
+
+    assert engine_config["max_num_seqs"] == 64
+    assert engine_config["max_num_batched_tokens"] == 8192
 
 
 def _model_deploy_config(device: str) -> dict:

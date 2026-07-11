@@ -777,8 +777,8 @@ def _set_common_params(params, engine_cmd_parameter, config_path):
 
     优先级保护：仅当用户通过 CLI 参数、环境变量或 config-file **显式** 指定了某个参数时，
     才覆盖模型默认配置（nvidia_default.json / model_deploy_config）中的已有值。
-    对于页面已删除的调优参数，用户未显式指定且模型配置没有值时不再用 argparse
-    默认值补充；其他参数仍按旧逻辑补充。
+    对于页面已删除的调优参数，以及“未下发即使用引擎 auto”的容量参数，用户未显式
+    指定且模型配置没有值时不再用 argparse 默认值补充；其他参数仍按旧逻辑补充。
     """
     vllm_param_map_config = _load_mapping(config_path, 'default_to_vllm_parameter_mapping')
     explicit_keys = _detect_explicit_cli_keys()
@@ -793,6 +793,10 @@ def _set_common_params(params, engine_cmd_parameter, config_path):
         "seed",
         "enable_expert_parallel",
         "enable_prefix_caching",
+        # 页面未下发时必须交给 defaults / 专项 resolver / 引擎自身默认值，
+        # 禁止 launcher 的历史兼容默认值 32 / 4096 泄漏到最终命令。
+        "max_num_seqs",
+        "max_num_batched_tokens",
     }
     # 同时纳入 config-file 注入的 CLI key，使 config-file 参数也能触发翻译
     config_file_keys = engine_cmd_parameter.get("_config_file_cli_keys", set())
