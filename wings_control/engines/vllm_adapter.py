@@ -2260,13 +2260,32 @@ def _writeback_dp_topology_to_params(params: Dict[str, Any], engine_config: Dict
             params_engine_config[key] = engine_config[key]
 
 
+def _force_vllm_ascend_error_stack_logging(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+) -> None:
+    """Force vLLM-Ascend API errors to include their stack in engine logs.
+
+    Newer vLLM frontends still return validation details in the HTTP 4xx body,
+    but error-stack logging is disabled by default.  Wings currently relays
+    those responses without logging the upstream body, so enable the native
+    frontend diagnostic flag for every vLLM-Ascend launch.  Remove the inverse
+    flag as well to avoid rendering contradictory CLI options.
+    """
+    if params.get("engine") != "vllm_ascend":
+        return
+
+    engine_config.pop("no_log_error_stack", None)
+    engine_config["log_error_stack"] = True
+
+
 def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     """准备最终传给 ``_build_vllm_cmd_parts`` 的 engine_config。
 
     执行顺序不能随意调整：
     1. 先删除内部字段，避免它们被格式化成 vLLM CLI；
     2. 再注入 V4/GLM/DeepSeek DP 等模型专属默认；
-    3. 最后处理旧版 ``task`` 字段和 DP 拓扑回写。
+    3. 最后处理旧版 ``task`` 字段、强制错误栈日志和 DP 拓扑回写。
     DP 回写必须在返回前完成，因为分布式脚本拓扑计算后续读取的是
     ``params["engine_config"]``，而不是本函数局部变量。
     """
@@ -2338,6 +2357,7 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[vLLM] Mapping deprecated task=%s to --runner pooling", removed_task)
         engine_config.setdefault("runner", "pooling")
 
+    _force_vllm_ascend_error_stack_logging(params, engine_config)
     _writeback_dp_topology_to_params(params, engine_config)
     # 同步 speculative_config 回 params，阻止 _should_append_auto_speculative_config 重复合成
     if "speculative_config" in engine_config:
