@@ -149,6 +149,39 @@ def test_default_smart_feature_whitelist_file_is_loaded():
             "memcache_protocol",
         ):
             assert field not in entry
+    nv023_precision_rows = [
+        entry
+        for feature in ("spec", "sparse", "offload")
+        for entry in whitelist[feature]
+        if entry.get("source") == "vllm-0.23" and entry.get("precision_tokens")
+    ]
+    assert nv023_precision_rows
+    for entry in nv023_precision_rows:
+        assert entry.get("precision_tokens") in (["fp8"], ["bf16"])
+        assert not {
+            "fp8",
+            "bf16",
+            "w4a8",
+            "w8a8",
+            "nvfp4",
+        }.intersection(set(entry.get("exclude_name_tokens", [])))
+    deepseek_h20_row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "h20-141",
+        "spec",
+    )
+    assert deepseek_h20_row["source"] == "vllm-0.23"
+    qwen_ascend_sources = {
+        entry.get("source")
+        for feature in ("spec", "offload")
+        for entry in whitelist[feature]
+        if entry.get("engine") == "vllm_ascend"
+        and any("qwen3.5" in token or "qwen3.6" in token for token in entry.get("name_tokens", []))
+        and entry.get("source") != "23.6.0"
+    }
+    assert qwen_ascend_sources == {"vllm-ascend-0.21"}
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -204,17 +237,23 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "ZhipuAI/GLM-5.1-FP8",
         "/models/ZhipuAI/GLM-5.1-FP8",
         "h20-141",
-    ) == frozenset({"sparse"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "GLM5.1",
         "/models/GLM5.1",
         "h20-141",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3-Embedding-0.6B",
         "/models/Qwen3-Embedding-0.6B",
+        "l20",
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3-Embedding-0.6B-BF16",
+        "/models/Qwen3-Embedding-0.6B-BF16",
         "l20",
     ) == frozenset({"offload"})
     assert model_utils.resolve_feature_whitelist(
@@ -222,11 +261,29 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Qwen3.6-27B",
         "/models/Qwen3.6-27B",
         "l20",
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.6-27B-BF16",
+        "/models/Qwen3.6-27B-BF16",
+        "l20",
     ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.6-27B-FP8",
+        "/models/Qwen3.6-27B-FP8",
+        "l20",
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.6-35B-A3B",
         "/models/Qwen3.6-35B-A3B",
+        "l20",
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.6-35B-A3B-BF16",
+        "/models/Qwen3.6-35B-A3B-BF16",
         "l20",
     ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
@@ -274,8 +331,8 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
     hardware = {"device": "nvidia", "details": [{"name": "NVIDIA L20"}]}
     params = {
         "engine": "vllm",
-        "model_name": "bge-large-zh-v1.5",
-        "model_path": "/models/bge-large-zh-v1.5",
+        "model_name": "bge-large-zh-v1.5-BF16",
+        "model_path": "/models/bge-large-zh-v1.5-BF16",
         "enable_sparse": True,
         "enable_speculative_decode": True,
     }
@@ -297,8 +354,8 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
 def test_offload_backend_lookup_respects_effective_smart_feats(monkeypatch):
     monkeypatch.delenv("CONFIG_FORCE", raising=False)
     params = {
-        "model_name": "Qwen3.6-27B",
-        "model_path": "/models/Qwen3.6-27B",
+        "model_name": "Qwen3.6-27B-BF16",
+        "model_path": "/models/Qwen3.6-27B-BF16",
         "_smart_card_token": "l20",
         "_smart_feats": [],
     }
@@ -748,7 +805,7 @@ def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
     [
         ("vllm", "Qwen3.5-397B-A17B-NVFP4", "/models/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", 3),
         ("vllm", "Qwen3.5-397B-A17B", "/models/Qwen/Qwen3.5-397B-A17B", "rtxpro5000-72", 3),
-        ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 3),
+        ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),

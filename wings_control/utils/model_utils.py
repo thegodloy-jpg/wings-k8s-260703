@@ -27,6 +27,7 @@ Sidecar 架构契约:
 # -*- coding: utf-8 -*-
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +56,53 @@ _SMART_WHITELIST_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "smart_feature_whitelist.json"
 )
 
+# 白名单精度只服务 smart feature 命中收口，不参与 ModelIdentifier 的量化识别。
+# 目的：Day0 行用正向精度约束限定 Excel 组合，避免再用 exclude_name_tokens
+# 扩展一批 FP8/BF16/NVFP4 负向规则，误伤其它版本/卡型的既有路径。
+_PRECISION_TOKEN_ALIASES = {
+    "bf16": "bf16",
+    "bfloat16": "bf16",
+    "fp16": "fp16",
+    "float16": "fp16",
+    "fp8": "fp8",
+    "fp4": "fp4",
+    "nvfp4": "nvfp4",
+    "w4a8": "w4a8",
+    "w8a8": "w8a8",
+}
+
+
+def _as_lower_tuple(value) -> tuple[str, ...]:
+    """将白名单中的字符串/列表字段统一规整为小写 tuple。"""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value.lower(),)
+    return tuple(str(item).lower() for item in value)
+
+
+def _normalize_precision_tokens(value) -> tuple[str, ...]:
+    """规整白名单行声明的静态精度 token。"""
+    tokens = []
+    for item in _as_lower_tuple(value):
+        token = _PRECISION_TOKEN_ALIASES.get(item, item)
+        if token:
+            tokens.append(token)
+    return tuple(tokens)
+
+
+def _extract_precision_tokens(*values) -> frozenset[str]:
+    """从 model_name/model_path 提取精度标识，仅用于白名单匹配。"""
+    text = " ".join(str(value).lower() for value in values if value)
+    if not text:
+        return frozenset()
+    pieces = re.split(r"[^a-z0-9]+", text)
+    return frozenset(
+        _PRECISION_TOKEN_ALIASES[piece]
+        for piece in pieces
+        if piece in _PRECISION_TOKEN_ALIASES
+    )
+
 
 def _normalize_match_rows(rows) -> tuple[dict, ...]:
     """Normalize model/card matching fields while retaining row metadata."""
@@ -65,11 +113,10 @@ def _normalize_match_rows(rows) -> tuple[dict, ...]:
         normalized.append({
             **row,
             "engine": str(row.get("engine", "")),
-            "name_tokens": tuple(str(tok).lower() for tok in row.get("name_tokens", ())),
-            "exclude_name_tokens": tuple(
-                str(tok).lower() for tok in row.get("exclude_name_tokens", ())
-            ),
-            "card_tokens": tuple(str(tok).lower() for tok in row.get("card_tokens", ())),
+            "name_tokens": _as_lower_tuple(row.get("name_tokens", ())),
+            "exclude_name_tokens": _as_lower_tuple(row.get("exclude_name_tokens", ())),
+            "precision_tokens": _normalize_precision_tokens(row.get("precision_tokens", ())),
+            "card_tokens": _as_lower_tuple(row.get("card_tokens", ())),
         })
     return tuple(normalized)
 
@@ -96,14 +143,35 @@ def _load_smart_feature_whitelists(path: Path = _SMART_WHITELIST_PATH) -> dict:
 _SMART_WHITELISTS: dict = _load_smart_feature_whitelists()
 
 
-def _whitelist_table_match(table, engine: str, hay: str, ct: str) -> Optional[dict]:
-    """三维（engine 精确 → 名子串 → 卡型 "*"/子串）与匹配，首命中返回行。"""
+def _build_whitelist_match_context(
+    model_name,
+    model_path,
+    card_token,
+) -> tuple[str, str, frozenset[str]]:
+    """构造 smart-whitelist 各入口共用的模型/卡型/精度匹配上下文。"""
+    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
+    ct = (card_token or "").lower()
+    precision_tokens = _extract_precision_tokens(model_name, model_path)
+    return hay, ct, precision_tokens
+
+
+def _whitelist_table_match(
+    table,
+    engine: str,
+    hay: str,
+    ct: str,
+    precision_tokens: frozenset[str],
+) -> Optional[dict]:
+    """三维（engine 精确 → 名子串/精度 → 卡型 "*"/子串）与匹配，首命中返回行。"""
     for row in table:
         if row["engine"] != engine:
             continue
         if not any(tok in hay for tok in row["name_tokens"]):
             continue
         if any(tok in hay for tok in row.get("exclude_name_tokens", ())):
+            continue
+        required_precision = row.get("precision_tokens", ())
+        if required_precision and not set(required_precision).issubset(precision_tokens):
             continue
         card_tokens = row["card_tokens"]
         if not (("*" in card_tokens) or any(c in ct for c in card_tokens)):
@@ -112,8 +180,14 @@ def _whitelist_table_match(table, engine: str, hay: str, ct: str) -> Optional[di
     return None
 
 
-def _whitelist_table_hit(table, engine: str, hay: str, ct: str) -> bool:
-    return _whitelist_table_match(table, engine, hay, ct) is not None
+def _whitelist_table_hit(
+    table,
+    engine: str,
+    hay: str,
+    ct: str,
+    precision_tokens: frozenset[str],
+) -> bool:
+    return _whitelist_table_match(table, engine, hay, ct, precision_tokens) is not None
 
 
 def feature_allowed(engine, model_name, model_path, card_token, feature) -> bool:
@@ -124,9 +198,12 @@ def feature_allowed(engine, model_name, model_path, card_token, feature) -> bool
     table = _SMART_WHITELISTS.get(feature)
     if not table:
         return False
-    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
-    ct = (card_token or "").lower()
-    return _whitelist_table_hit(table, engine, hay, ct)
+    hay, ct, precision_tokens = _build_whitelist_match_context(
+        model_name,
+        model_path,
+        card_token,
+    )
+    return _whitelist_table_hit(table, engine, hay, ct, precision_tokens)
 
 
 def resolve_feature_whitelist_row(engine, model_name, model_path, card_token, feature) -> Optional[dict]:
@@ -134,9 +211,12 @@ def resolve_feature_whitelist_row(engine, model_name, model_path, card_token, fe
     table = _SMART_WHITELISTS.get(feature)
     if not table:
         return None
-    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
-    ct = (card_token or "").lower()
-    return _whitelist_table_match(table, engine, hay, ct)
+    hay, ct, precision_tokens = _build_whitelist_match_context(
+        model_name,
+        model_path,
+        card_token,
+    )
+    return _whitelist_table_match(table, engine, hay, ct, precision_tokens)
 
 
 def resolve_feature_whitelist_row_from_params(
@@ -196,21 +276,27 @@ def resolve_offload_whitelist_backend(
 
 def resolve_feature_whitelist(engine, model_name, model_path, card_token):
     """返回 (engine, model, card) 命中的允许特性 frozenset（聚合三独立表，保持原返回契约）。"""
-    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
-    ct = (card_token or "").lower()
+    hay, ct, precision_tokens = _build_whitelist_match_context(
+        model_name,
+        model_path,
+        card_token,
+    )
     return frozenset(
         feat for feat in SMART_FEATURES
-        if _whitelist_table_hit(_SMART_WHITELISTS[feat], engine, hay, ct)
+        if _whitelist_table_hit(_SMART_WHITELISTS[feat], engine, hay, ct, precision_tokens)
     )
 
 
 def resolve_forced_feature_whitelist(engine, model_name, model_path, card_token):
     """Return whitelisted smart features whose matching row explicitly forces enablement."""
-    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
-    ct = (card_token or "").lower()
+    hay, ct, precision_tokens = _build_whitelist_match_context(
+        model_name,
+        model_path,
+        card_token,
+    )
     forced = []
     for feat in SMART_FEATURES:
-        row = _whitelist_table_match(_SMART_WHITELISTS[feat], engine, hay, ct)
+        row = _whitelist_table_match(_SMART_WHITELISTS[feat], engine, hay, ct, precision_tokens)
         if row and row.get("forced") is True:
             forced.append(feat)
     return frozenset(forced)
@@ -221,9 +307,18 @@ def resolve_sparse_topk(engine, model_name, model_path, card_token, sparse_level
 
     未命中 sparse 表、未声明 topk、或该档位缺失时回退 accuracy_first，再回退 default。
     """
-    hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
-    ct = (card_token or "").lower()
-    row = _whitelist_table_match(_SMART_WHITELISTS.get("sparse", ()), engine, hay, ct)
+    hay, ct, precision_tokens = _build_whitelist_match_context(
+        model_name,
+        model_path,
+        card_token,
+    )
+    row = _whitelist_table_match(
+        _SMART_WHITELISTS.get("sparse", ()),
+        engine,
+        hay,
+        ct,
+        precision_tokens,
+    )
     topk = row.get("topk", {}) if row else {}
     if not isinstance(topk, dict):
         return int(default)
