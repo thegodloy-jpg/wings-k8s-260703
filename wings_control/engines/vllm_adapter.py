@@ -704,6 +704,10 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
 
 
 _NATIVE_OFFLOAD_SIZE_ENV_NAMES = ("KV_MEM_OFFLOAD_SIZE",)
+# Qwen3.5 NVFP4 是 23.6.0 既有 native KV offload 场景，历史上允许
+# LMCACHE_MAX_LOCAL_CPU_SIZE 接管 native size。这个兼容策略属于代码侧
+# 场景逻辑，不写入 smart_feature_whitelist.json；白名单只保留
+# backend=native，避免把会随页面/env 变化的容量来源放进规则表。
 _QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES = (
     "KV_MEM_OFFLOAD_SIZE",
     "LMCACHE_MAX_LOCAL_CPU_SIZE",
@@ -711,7 +715,15 @@ _QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES = (
 
 
 def _native_backend_size_env_names(params: Dict[str, Any], engine: str) -> Tuple[str, ...]:
-    """Return native offload size env names without reading size policy from whitelist."""
+    """返回 native offload size 可读取的 env 名称。
+
+    设计约束：
+      1. 白名单只决定当前场景是否允许 native backend；
+      2. size 来源必须由页面/env 或代码侧场景兼容逻辑决定；
+      3. 新增模型适配时不能再往白名单塞 ``size_*`` 字段。
+
+    因此这里按模型场景选择 env 列表，而不是读取白名单行里的动态配置。
+    """
     if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
         # 兼容 23.6.0 Qwen3.5 NVFP4 既有管理口径：优先页面 KV_MEM_OFFLOAD_SIZE，
         # 旧 LMCACHE_MAX_LOCAL_CPU_SIZE 仍可接管，但该策略归代码场景逻辑所有，
@@ -721,7 +733,16 @@ def _native_backend_size_env_names(params: Dict[str, Any], engine: str) -> Tuple
 
 
 def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> int:
-    """Resolve native backend size via existing page/env/auto logic, not whitelist fields."""
+    """解析 native backend 的节点级 offload 容量。
+
+    这里复用已有 ``_resolve_native_offload_gb``，保持页面输入、auto 公式、
+    floor 熔断和日志口径一致。白名单行只提供 ``backend=native``，不提供
+    fallback、env 名称或是否要求页面开关；这些属于运行时策略。
+
+    当前两类口径：
+      - Qwen3.5 NVFP4：兼容旧 LMCACHE_MAX_LOCAL_CPU_SIZE，未填时保留 200G fallback；
+      - Day0 H20/L20 native：必须由页面/env 给出 KV_MEM_OFFLOAD_SIZE，缺失/非法即丢弃。
+    """
     if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
         return _resolve_native_offload_gb(
             params,
@@ -739,7 +760,11 @@ def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> i
 
 
 def _native_backend_auto_requested(params: Dict[str, Any], engine: str) -> bool:
-    """Return whether native backend size is requested in auto mode."""
+    """判断 native backend 是否请求 auto 容量。
+
+    auto 判定必须跟当前场景实际读取的 env 列表一致，这样 CLI、variant 和
+    `/v1/startup/accel` 中的 floor_disabled 状态才能保持同源。
+    """
     return any(
         os.getenv(env_name, "").strip().lower() == "auto"
         for env_name in _native_backend_size_env_names(params, engine)

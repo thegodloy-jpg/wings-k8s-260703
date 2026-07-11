@@ -146,13 +146,20 @@ def resolve_feature_whitelist_row_from_params(
     *,
     require_enabled: bool = False,
 ) -> Optional[dict]:
-    """Return the matched smart-feature row for launcher/adapter params.
+    """按启动参数返回命中的 smart-feature 白名单行。
 
-    The smart whitelist module owns model/card row lookup.  Launcher, config
-    loader, feature helpers and engine adapters should call this instead of
-    rebuilding ``model_name``/``model_path``/``_smart_card_token`` lookup rules.
-    ``CONFIG_FORCE=true`` bypasses smart whitelist ownership so explicit config
-    can fully take over.
+    这里是「白名单行查询」的统一入口：launcher、config_loader、feature helper
+    和 engine adapter 都应复用这一处，不要在各自模块里重新拼
+    ``model_name`` / ``model_path`` / ``_smart_card_token`` 规则。
+
+    注意边界：白名单只回答「当前模型+卡型是否允许某个特性、属于哪个静态后端」。
+    页面开关、内存大小、端口、协议、auto 计算结果等动态启动参数不属于白名单；
+    它们必须继续由各特性的 resolver/env 解析逻辑负责，避免 JSON 表越来越像
+    运行时配置文件。
+
+    ``require_enabled=True`` 时会同时尊重上游已经收口后的 ``_smart_feats``，
+    即：命中白名单但页面/上层开关没启用，也不能返回该行。``CONFIG_FORCE=true``
+    则直接绕过白名单所有权，让显式 config 完全接管。
     """
     if not params or get_config_force_env():
         return None
@@ -172,7 +179,12 @@ def resolve_offload_whitelist_backend(
     params: Optional[dict],
     engine: str,
 ) -> str:
-    """Return the explicit offload backend declared by the matched whitelist row."""
+    """返回 offload 白名单声明的静态后端类型。
+
+    返回值只用于区分 ``native`` / ``lmcache`` / ``memcache`` 这类互斥后端。
+    不要在这里扩展内存、端口、协议等动态字段；这些值应由对应后端自己的
+    resolver 读取页面/env 或代码侧场景默认。
+    """
     row = resolve_feature_whitelist_row_from_params(
         params,
         engine,

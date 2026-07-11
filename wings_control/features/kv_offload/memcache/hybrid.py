@@ -35,6 +35,9 @@ _DEFAULT_META_SERVICE_URL = "tcp://127.0.0.1:5000"
 _DEFAULT_CONFIG_STORE_URL = "tcp://127.0.0.1:6000"
 _DEFAULT_PROTOCOL = "device_rdma"
 
+# Qwen Day0 的 MemCache 端口/协议是启动脚本契约，不是白名单规则。
+# 白名单只声明 backend=memcache；具体 endpoint/protocol 放在这里，仍允许
+# 部署层通过 WINGS_MEMCACHE_* env 覆盖最终值。
 _QWEN35_DAY0_PROFILE = (
     "tcp://127.0.0.1:50051",
     "tcp://127.0.0.1:50061",
@@ -223,7 +226,13 @@ def _resolve_qwen_day0_memcache_profile(
     params: Dict[str, Any],
     engine: str,
 ) -> Optional[tuple[str, str, str]]:
-    """Return Qwen Day0 MemCache profile after whitelist/backend gating matched."""
+    """在白名单确认允许 MemCache 后，返回 Qwen Day0 静态启动 profile。
+
+    这里故意先调用 ``is_qwen_day0_memcache_params``：端口/协议默认值只能在
+    offload 已经通过页面开关和白名单 gating 后生效，不能反过来靠模型名绕过
+    smart-feature 有效状态。这样既保留 Qwen3.5/Qwen3.6 标准脚本差异，又不把
+    端口、协议这类部署参数塞回白名单。
+    """
     if not is_qwen_day0_memcache_params(params, engine):
         return None
     text = " ".join(
