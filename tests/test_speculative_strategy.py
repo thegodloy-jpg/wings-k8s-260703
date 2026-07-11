@@ -709,6 +709,57 @@ def test_glm51_ascend_indexcache_uses_model_name_when_config_missing(monkeypatch
     assert variant == "indexcache_use_index_cache_topk8"
 
 
+def test_sparse_whitelist_command_and_variant_share_plan(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen2Identifier)
+    monkeypatch.setattr(
+        vllm_adapter,
+        "resolve_feature_whitelist_row_from_params",
+        lambda *_args: {"strategy": "indexcache"},
+    )
+    monkeypatch.setattr(vllm_adapter, "_resolve_sparse_topk", lambda *_args, **_kwargs: 7)
+    params = {
+        "model_name": "Qwen2",
+        "model_path": "/models/Qwen2",
+        "model_type": "llm",
+    }
+
+    command = vllm_adapter._build_kv_sparse_cmd(params, "vllm")
+    variant = vllm_adapter.resolve_sparse_variant(params, "vllm")
+
+    assert command == ' --hf-overrides \'{"use_index_cache":true,"index_topk_freq":7}\''
+    assert variant == "indexcache_use_index_cache_topk7"
+
+
+def test_sparse_fp8_variant_is_pure_while_command_applies_shared_plan(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen2Identifier)
+    monkeypatch.setattr(vllm_adapter, "INDEXCACHE_ARCHS", set())
+    monkeypatch.setattr(
+        vllm_adapter,
+        "resolve_feature_whitelist_row_from_params",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(vllm_adapter, "_is_deepseek_v4_flash_params", lambda *_args: False)
+    monkeypatch.setattr(
+        vllm_adapter,
+        "is_minimax_m27_rtx_pro_5000_vllm",
+        lambda *_args: False,
+    )
+    params = {
+        "model_name": "Qwen2",
+        "model_path": "/models/Qwen2",
+        "model_type": "llm",
+        "engine_config": {},
+    }
+
+    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == "fp8"
+    assert params["engine_config"] == {}
+    assert vllm_adapter._build_kv_sparse_cmd(params, "vllm") == ""
+    assert params["engine_config"] == {
+        "kv_cache_dtype": "fp8",
+        "calculate_kv_scales": True,
+    }
+
+
 def test_glm51_ascend_preserves_explicit_expert_parallel_in_command(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
 

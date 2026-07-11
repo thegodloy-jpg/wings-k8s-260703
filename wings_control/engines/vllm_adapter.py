@@ -704,9 +704,6 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
     )
 
 
-_NATIVE_OFFLOAD_SIZE_ENV_NAMES = ("KV_MEM_OFFLOAD_SIZE",)
-
-
 def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> int:
     """解析 native backend 的节点级 offload 容量。
 
@@ -720,9 +717,6 @@ def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> i
     """
     return _resolve_native_offload_gb(
         params,
-        fallback_gb=None,
-        size_env_names=_NATIVE_OFFLOAD_SIZE_ENV_NAMES,
-        require_mem_switch=True,
         log_context="KVCache Offload",
     )
 
@@ -2735,29 +2729,17 @@ def resolve_offload_cpu_capacity_gb(
 def _resolve_native_offload_gb(
     params: Dict[str, Any],
     *,
-    fallback_gb: Optional[int],
-    size_env_names: Tuple[str, ...] = ("KV_MEM_OFFLOAD_SIZE",),
-    require_mem_switch: bool = False,
     log_context: str = "KVCache Offload",
 ) -> int:
-    """Resolve node-level native KV offload size while preserving caller fallback policy."""
-    if (
-        require_mem_switch
-        and os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true"
-    ):
+    """Resolve the node-level native KV offload size from the page-owned env."""
+    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
         logger.info("[%s] native memory offload switch is disabled.", log_context)
         return 0
 
-    selected_env = size_env_names[0] if size_env_names else "KV_MEM_OFFLOAD_SIZE"
-    raw_size = ""
-    for env_name in size_env_names or ("KV_MEM_OFFLOAD_SIZE",):
-        raw_size = os.getenv(env_name, "").strip()
-        selected_env = env_name
-        if raw_size:
-            break
-
+    size_env = "KV_MEM_OFFLOAD_SIZE"
+    raw_size = os.getenv(size_env, "").strip()
     if raw_size.lower() == "auto":
-        auto_total = resolve_offload_cpu_capacity_gb(params, size_env_name=selected_env)
+        auto_total = resolve_offload_cpu_capacity_gb(params, size_env_name=size_env)
         if auto_total is not None:
             logger.info(
                 "[%s] native auto size = M_offload(%dG) (整节点，不除卡数).",
@@ -2765,45 +2747,38 @@ def _resolve_native_offload_gb(
                 int(auto_total),
             )
             return int(auto_total)
-        if fallback_gb is not None:
-            return int(fallback_gb)
         logger.warning(
             "[%s] %s=auto but auto capacity is unavailable; native request discarded.",
             log_context,
-            selected_env,
+            size_env,
         )
         return 0
 
     if not raw_size:
-        if fallback_gb is not None:
-            return int(fallback_gb)
-        logger.warning("[%s] %s is empty; native request discarded.", log_context, selected_env)
+        logger.warning("[%s] %s is empty; native request discarded.", log_context, size_env)
         return 0
+
+    return _parse_native_offload_size(raw_size, size_env, log_context)
+
+
+def _parse_native_offload_size(raw_size: str, size_env: str, log_context: str) -> int:
+    """Parse a positive native offload size while preserving diagnostics."""
 
     try:
         size_gb = int(raw_size)
     except (TypeError, ValueError):
-        if fallback_gb is not None:
-            logger.warning(
-                "[%s] Invalid %s=%r; falling back to %d GB.",
-                log_context,
-                selected_env,
-                raw_size,
-                fallback_gb,
-            )
-            return int(fallback_gb)
         logger.warning(
             "[%s] invalid %s=%r; native request discarded.",
             log_context,
-            selected_env,
+            size_env,
             raw_size,
         )
         return 0
-    if size_gb <= 0 and fallback_gb is None:
+    if size_gb <= 0:
         logger.warning(
             "[%s] non-positive %s=%s; native request discarded.",
             log_context,
-            selected_env,
+            size_env,
             size_gb,
         )
         return 0
@@ -2822,8 +2797,6 @@ def _resolve_v4_flash_offload_gb(params: Dict[str, Any]) -> int:
     """
     return _resolve_native_offload_gb(
         params,
-        fallback_gb=None,
-        require_mem_switch=True,
         log_context="DeepSeek-V4 KV Offload",
     )
 
@@ -3368,45 +3341,70 @@ def _lmcache_requires_suffix_speculative_strategy(
     return True
 
 
-def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
-    """Return the speculative decoding strategy selected for vLLM."""
-    if engine not in ("vllm", "vllm_ascend"):
-        return ""
-
+def _resolve_whitelist_mtp_strategy(params: Dict[str, Any], engine: str) -> str:
+    """Return the explicit whitelist MTP method when its effective gate is on."""
     mtp_row = _mtp_whitelist_override_row(params, engine)
-    if mtp_row and params.get("enable_speculative_decode"):
-        smart_feats = params.get("_smart_feats")
-        if smart_feats is None or "spec" in smart_feats:
-            return str(mtp_row.get("mtp_method") or "mtp")
+    if not mtp_row or not params.get("enable_speculative_decode"):
+        return ""
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is not None and "spec" not in smart_feats:
+        return ""
+    return str(mtp_row.get("mtp_method") or "mtp")
 
+
+def _resolve_draft_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
+    """Resolve a real draft path to eagle3/draft_model; sentinels fall through."""
     draft_path = params.get("speculative_decode_model_path")
-    normalized_draft_path = _normalize_speculative_draft_path(draft_path)
-    _draft_raw = str(draft_path).strip().lower() if draft_path else ""
+    normalized_path = _normalize_speculative_draft_path(draft_path)
+    raw_lower = str(draft_path).strip().lower() if draft_path else ""
     logger.info(
         "[SpecDecode-DIAG] resolve_speculative_strategy entry: "
         "raw_draft_path=%r stripped_lower=%r engine=%s",
-        draft_path, _draft_raw, engine,
+        draft_path, raw_lower, engine,
     )
-    # "none" / 空串 / None 均视为「无草稿模型」，回落 MTP/suffix 路径。
-    # K8s ConfigMap 常以 SPECULATIVE_DECODE_MODEL_PATH=none 表示未指定，
-    # 但字符串 "none" 为 truthy，会被误判为有效草稿模型路径导致生成 draft_model 配置。
-    if normalized_draft_path:
+    if normalized_path:
         logger.info(
             "[SpecDecode-DIAG] draft_path is real (not none/empty) → entering draft_model branch"
         )
-        draft_model_info = ModelIdentifierDraft(normalized_draft_path)
-        if 'eagle3' in draft_model_info.draft_model_architecture.lower():
-            return "eagle3"
-        return "draft_model"
+        draft_info = ModelIdentifierDraft(normalized_path)
+        is_eagle3 = "eagle3" in draft_info.draft_model_architecture.lower()
+        return "eagle3" if is_eagle3 else "draft_model"
     if draft_path:
         logger.info(
             "[SpecDecode-DIAG] draft_path=%r filtered as 'none' → falling through to MTP/suffix",
             draft_path,
         )
     else:
-        logger.info(
-            "[SpecDecode-DIAG] draft_path is None/empty → falling through to MTP/suffix"
-        )
+        logger.info("[SpecDecode-DIAG] draft_path is None/empty → falling through to MTP/suffix")
+    return ""
+
+
+def _spec_feature_is_allowed(params: Dict[str, Any], engine: str) -> bool:
+    """Reuse the effective smart-feature result, or resolve it when absent."""
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is not None:
+        return "spec" in smart_feats
+    return feature_allowed(
+        engine,
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("_smart_card_token") or resolve_card_token(),
+        "spec",
+    )
+
+
+def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
+    """Return the speculative decoding strategy selected for vLLM."""
+    if engine not in ("vllm", "vllm_ascend"):
+        return ""
+
+    strategy = _resolve_whitelist_mtp_strategy(params, engine)
+    if strategy:
+        return strategy
+    strategy = _resolve_draft_speculative_strategy(params, engine)
+    if strategy:
+        return strategy
+
     model_info = ModelIdentifier(
         params.get("model_name"),
         params.get("model_path"),
@@ -3417,25 +3415,10 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
 
     mtp_method = _resolve_mtp_method(model_info.model_architecture, engine)
     if mtp_method:
-        # §2.3 白名单 gate：spec 不在白名单 → suffix 地板（恒产 suffix，不返回空）。
-        #   GLM-5.1·Ascend 命中 spec 白名单后使用自身 MTP 方法 deepseek_mtp；
-        #   未命中时仍回落 suffix，避免非白名单模型误产 MTP。
-        #   优先复用 C14 收口（hardware_env 解析卡型最准）stash 的白名单结论；adapter 内拿不到
-        #   hardware_env 时才回退 resolve_card_token() 读取 hardware_info.json。
-        smart_feats = params.get("_smart_feats")
-        if smart_feats is not None:
-            spec_ok = "spec" in smart_feats
-        else:
-            spec_ok = feature_allowed(
-                engine, params.get("model_name"), params.get("model_path"),
-                params.get("_smart_card_token") or resolve_card_token(), "spec",
-            )
-        if not spec_ok:
+        if not _spec_feature_is_allowed(params, engine):
             logger.info("[SpecDecode] spec not in whitelist -> suffix floor (arch=%s)",
                         model_info.model_architecture)
             return "suffix"
-        
-        # Only an actually blocking LMCache backend should downgrade MTP to suffix.
         return "suffix" if _lmcache_requires_suffix_speculative_strategy(
             params, engine, model_info,
         ) else mtp_method
@@ -3615,10 +3598,8 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     """推测解码方案的自动选取。
 
     根据模型架构自动选择最优的推测解码策略：
-    1. 如有草稿模型 → eagle3 / draft_model
-    2. Qwen3NextForCausalLM + vllm_ascend → suffix
-    3. DeepSeek/GLM-5/Qwen3Next/Glm4Moe → MTP
-    4. 其他 → suffix
+    1. MTP 白名单逐场景覆盖；2. 草稿模型 → eagle3 / draft_model；
+    3. 架构 MTP（受 spec/offload gate 约束）；4. 其他 → suffix。
 
     Args:
         params: 参数字典
@@ -3746,33 +3727,13 @@ def _resolve_sparse_topk(params: Dict[str, Any], engine: str, sparse_level: str,
 
 
 
-def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
-    """构建 KV 稀疏特性的启动命令参数。
-
-    vllm (NVIDIA) 完整支持；vllm_ascend 仅 GLM-5.1 走 IndexCache（临时白名单）。
-    根据模型架构决定策略：
-      - vllm + IndexCache 架构（GlmMoeDsa/DeepseekV32）：返回 --hf-overrides CLI 参数
-      - vllm + 其他架构：直接修改 engine_config 注入 kv_cache_dtype=fp8，返回空字符串
-      - vllm_ascend + GLM-5.1（单机/双机）：返回 --hf-overrides；其他 ascend 场景返回空串
-        参见 [GLM5.1-Ascend-Tmp]，等 vllm-ascend 支持 indexcache 补丁后合并入 vllm 主分支。
-
-    **必须在 _build_vllm_cmd_parts 之前调用**，以便 FP8 参数正确合入基础命令，
-    避免与 engine_config 中已有的 kv_cache_dtype 产生重复。
-
-    Args:
-        params: 参数字典（FP8 路径会就地修改 engine_config）
-        engine: 引擎类型
-
-    Returns:
-        str: 额外的 CLI 参数字符串（IndexCache 返回 --hf-overrides，FP8 返回空串）
-    """
+def _resolve_kv_sparse_plan(
+    params: Dict[str, Any], engine: str,
+) -> Tuple[str, Optional[int], str, str]:
+    """Return ``(kind, topk, architecture, sparse_level)`` without mutations."""
     if engine not in ("vllm", "vllm_ascend"):
-        return ""
-
-    # 需求一 §2.4/P5：档位由 SPARSE_LEVEL 决定，topk 来自 sparse 独立白名单行。
+        return "unsupported", None, "", ""
     sparse_level = _resolve_sparse_level()
-    logger.info("[KV Sparse] effective SPARSE_LEVEL=%s (engine=%s)", sparse_level, engine)
-
     model_info = ModelIdentifier(
         params.get("model_name"),
         params.get("model_path"),
@@ -3782,96 +3743,76 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
     sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
     if sparse_row and sparse_row.get("strategy") == "indexcache":
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
-        logger.info(
-            "[KV Sparse] sparse whitelist -> IndexCache topk=%s",
-            topk,
-        )
-        return (
-            " --hf-overrides "
-            f"'{{\"use_index_cache\":true,\"index_topk_freq\":{topk}}}'"
-        )
-
-    # [GLM5.1-Ascend-Tmp] vllm_ascend 路径：
-    # 仅 GLM-5.1 走 IndexCache，不写 engine_config，
-    # 不触发 indexcache 补丁安装（补丁仍由 _collect_indexcache_patch_features 的
-    # engine 门控屏蔽于 ascend 之外）。
+        return "whitelist_indexcache", topk, arch, sparse_level
     if engine == "vllm_ascend":
         if is_glm51_ascend_kvsparse_tmp_scope(
             model_info, engine,
             model_name=params.get("model_name"),
             model_path=params.get("model_path"),
         ):
-            logger.info(
-                "[GLM5.1-Ascend-Tmp] vllm_ascend + GLM-5.1 → "
-                "IndexCache via --hf-overrides (no patch install)"
-            )
             topk = _resolve_sparse_topk(params, engine, sparse_level, default=8)
-            return f" --hf-overrides '{{\"use_index_cache\": true, \"index_topk_freq\": {topk}}}'"
+            return "ascend_glm51_indexcache", topk, arch, sparse_level
+        return "ascend_noop", None, arch, sparse_level
+    if _is_deepseek_v4_flash_params(params, model_info):
+        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
+        return "v4_indexcache", topk, arch, sparse_level
+    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
+        return "minimax_noop", None, arch, sparse_level
+    if arch in INDEXCACHE_ARCHS:
+        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
+        return "architecture_indexcache", topk, arch, sparse_level
+    return "fp8", None, arch, sparse_level
+
+
+def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
+    """Render KV sparse CLI; the FP8 plan mutates engine_config before rendering."""
+    kind, topk, arch, sparse_level = _resolve_kv_sparse_plan(params, engine)
+    if kind == "unsupported":
+        return ""
+    logger.info("[KV Sparse] effective SPARSE_LEVEL=%s (engine=%s)", sparse_level, engine)
+    if kind == "whitelist_indexcache":
+        logger.info("[KV Sparse] sparse whitelist -> IndexCache topk=%s", topk)
+        return f" --hf-overrides '{{\"use_index_cache\":true,\"index_topk_freq\":{topk}}}'"
+    if kind == "ascend_glm51_indexcache":
+        logger.info(
+            "[GLM5.1-Ascend-Tmp] vllm_ascend + GLM-5.1 → "
+            "IndexCache via --hf-overrides (no patch install)"
+        )
+        return f" --hf-overrides '{{\"use_index_cache\": true, \"index_topk_freq\": {topk}}}'"
+    if kind == "ascend_noop":
         logger.info(
             "[KV Sparse] engine=vllm_ascend arch=%s not GLM-5.1; "
-            "KV sparse is no-op on ascend", arch,
+            "KV sparse is no-op on ascend",
+            arch,
         )
         return ""
-
-    # [V4-Flash-NV-Day0] NV V4-Flash 走 IndexCache（use_index_cache），引擎内置、不装补丁。
-    # 刻意不把 DeepseekV4ForCausalLM 加入 INDEXCACHE_ARCHS，使 _collect_indexcache_patch_features
-    # 因架构不在白名单天然返回 []，从而跳过 indexcache 补丁安装。
-    if _is_deepseek_v4_flash_params(params, model_info):
+    if kind == "v4_indexcache":
         logger.info("[KV Sparse] DeepSeek-V4-Flash (NV) → IndexCache use_index_cache "
                     "(--hf-overrides, no patch install)")
-        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return f" --hf-overrides '{{\"use_index_cache\": true, \"index_topk_freq\": {topk}}}'"
-
-    # [MiniMax-M2.7-NVFP4-NV] kv_cache_dtype=fp8 已由 nvidia_default.json 提供，
-    # 跳过通用 FP8 路径注入的 calculate_kv_scales（与 minimax-2.7-zyy.txt 对齐，无此项）。
-    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
+    if kind == "minimax_noop":
         logger.info("[KV Sparse] MiniMax-M2.7 (NV) -> no-op (fp8 from json, no calculate_kv_scales)")
         return ""
-
-    if arch in INDEXCACHE_ARCHS:
+    if kind == "architecture_indexcache":
         logger.info("[KV Sparse] Architecture %s → IndexCache strategy (--hf-overrides)", arch)
-        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return f" --hf-overrides '{{\"index_topk_freq\": {topk}}}'"
-    else:
-        logger.info("[KV Sparse] Architecture %s → FP8 KV CACHE strategy (kv_cache_dtype=fp8)", arch)
-        engine_config = params.setdefault("engine_config", {})
-        engine_config["kv_cache_dtype"] = "fp8"
-        engine_config["calculate_kv_scales"] = True
-        return ""
+    logger.info("[KV Sparse] Architecture %s → FP8 KV CACHE strategy (kv_cache_dtype=fp8)", arch)
+    engine_config = params.setdefault("engine_config", {})
+    engine_config["kv_cache_dtype"] = "fp8"
+    engine_config["calculate_kv_scales"] = True
+    return ""
 
 
 def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
-    """纯函数：返回稀疏 variant 名（advanced_features.json 监控用，无副作用）。
-
-    镜像 ``_build_kv_sparse_cmd`` 的分支（需求一 §4.2）。⚠ 二者须同步修改。
-    与产出口的区别：本函数**不修改 engine_config**（fp8 分支仅报名，无副作用）。
-    """
-    if engine not in ("vllm", "vllm_ascend"):
-        return ""                        # none（engine 否决）
-    model_info = ModelIdentifier(params.get("model_name"), params.get("model_path"),
-                                 params.get("model_type"))
-    arch = model_info.model_architecture
-    sparse_level = get_sparse_level_env()
-    sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
-    if sparse_row and sparse_row.get("strategy") == "indexcache":
-        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
+    """Return the status variant from the shared sparse plan without mutations."""
+    kind, topk, _, _ = _resolve_kv_sparse_plan(params, engine)
+    if kind == "unsupported":
+        return ""
+    if kind in {"whitelist_indexcache", "ascend_glm51_indexcache", "v4_indexcache"}:
         return f"indexcache_use_index_cache_topk{topk}"
-    if engine == "vllm_ascend":
-        if is_glm51_ascend_kvsparse_tmp_scope(
-            model_info, engine,
-            model_name=params.get("model_name"), model_path=params.get("model_path"),
-        ):
-            topk = _resolve_sparse_topk(params, engine, sparse_level, default=8)
-            return f"indexcache_use_index_cache_topk{topk}"
-        return "noop"                    # Ascend 非 GLM-5.1
-    if _is_deepseek_v4_flash_params(params, model_info):
-        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
-        return f"indexcache_use_index_cache_topk{topk}"
-    # [MiniMax-M2.7-NVFP4-NV] 同步 _build_kv_sparse_cmd：no-op（fp8 来自 json，无 calculate_kv_scales）
-    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
+    if kind in {"ascend_noop", "minimax_noop"}:
         return "noop"
-    if arch in INDEXCACHE_ARCHS:
-        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
+    if kind == "architecture_indexcache":
         return f"indexcache_topk{topk}"
     return "fp8"
 
