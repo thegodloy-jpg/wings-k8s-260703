@@ -4303,11 +4303,12 @@ def _inject_env_echo(script: str) -> str:
     import re as _re
     lines = script.splitlines(keepends=True)
     result = []
-    # 命令前缀白名单：匹配到则在前面 echo 一行（截断超长以免日志爆炸）
+    # Echo matched command lines before execution; keep the preview complete.
     # exec \./... 涵盖 MindIE 等用 exec ./bin/daemon 形式启动的可执行文件；
     # \./[A-Za-z0-9_./-]+ 去除 .sh 限制，同时覆盖 ./bin/mindieservice_daemon & 等无扩展名程序。
     cmd_prefix_re = _re.compile(
         r'^(exec\s+(?:python3?|vllm\s+serve|\./\S+)|vllm\s+serve|python3?\s+-m\s+vllm|python3?\s+-m\s+sglang|'
+        r'python3?\s+\S*/install\.py|\(?cd\s+\S+\s+&&\s+python3?\s+install\.py|'
         r'ray\s+(start|stop|status)|source\s+/|nohup\s+|\./[A-Za-z0-9_./-]+)'
     )
     for idx, line in enumerate(lines):
@@ -4332,10 +4333,8 @@ def _inject_env_echo(script: str) -> str:
             continue
         if cmd_prefix_re.match(stripped):
             indent = line[: len(line) - len(stripped)]
-            # 截断到 800 字符，避免单行超长污染日志；shell 单引号转义
+            # Keep the command intact so the logged line can be replayed directly.
             preview = stripped.rstrip("\n").rstrip("&").rstrip()
-            if len(preview) > 800:
-                preview = preview[:800] + "...<truncated>"
             preview_safe = preview.replace("'", "'\"'\"'")
             already_echoed = bool(result and "[wings-cmd] >>>" in result[-1])
             if not already_echoed:
