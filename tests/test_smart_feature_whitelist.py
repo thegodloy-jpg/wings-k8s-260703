@@ -243,10 +243,16 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
+        "MiniMax/MiniMax-M2.7-NVFP4",
+        "/models/MiniMax/MiniMax-M2.7-NVFP4",
+        "rtxpro5000-72",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
         "MiniMax/MiniMax-M2.7",
         "/models/MiniMax/MiniMax-M2.7",
         "rtxpro5000-72",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "ZhipuAI/GLM-5.1-FP8",
