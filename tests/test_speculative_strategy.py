@@ -398,6 +398,28 @@ def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):
     assert '"num_speculative_tokens": 5' in command
 
 
+@pytest.mark.parametrize("draft_path", ["none", "None", " none ", '"none"', "'none'", "null"])
+def test_spec_draft_sentinel_values_do_not_generate_draft_model(monkeypatch, draft_path):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen2Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-R1-Distill-Qwen-1.5B",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": draft_path,
+        "_smart_feats": [],
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+
+    assert '"method" : "suffix"' in command
+    assert '"method" : "draft_model"' not in command
+    assert '"model"' not in command
+
+
 def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")

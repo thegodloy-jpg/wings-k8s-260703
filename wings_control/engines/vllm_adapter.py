@@ -3136,6 +3136,23 @@ def _build_vllm_cmd_parts(params: Dict[str, Any]) -> str:
 # ── 推测解码 (Speculative Decoding) ──────────────────────────────────────
 
 
+def _normalize_speculative_draft_path(value: Any) -> str:
+    """Return a real draft path, or empty string for no-draft sentinel values."""
+    if value is None:
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if lowered in ("none", "null"):
+        return ""
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        inner = raw[1:-1].strip()
+        if not inner or inner.lower() in ("none", "null"):
+            return ""
+    return raw
+
+
 def _is_mtp_or_suffix_strategy(params: Dict[str, Any], engine: str) -> bool:
     """判断当前投机推理策略是否为 MTP 或 suffix（即非草稿模型方案）。
 
@@ -3149,10 +3166,8 @@ def _is_mtp_or_suffix_strategy(params: Dict[str, Any], engine: str) -> bool:
         return False
     if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
         return False
-    if params.get("speculative_decode_model_path"):
-        _raw = str(params.get("speculative_decode_model_path", "")).strip().lower()
-        if _raw not in ("none", ""):
-            return False
+    if _normalize_speculative_draft_path(params.get("speculative_decode_model_path")):
+        return False
     return True
 
 
@@ -3329,6 +3344,7 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
         return ""
 
     draft_path = params.get("speculative_decode_model_path")
+    normalized_draft_path = _normalize_speculative_draft_path(draft_path)
     _draft_raw = str(draft_path).strip().lower() if draft_path else ""
     logger.info(
         "[SpecDecode-DIAG] resolve_speculative_strategy entry: "
@@ -3338,11 +3354,11 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     # "none" / 空串 / None 均视为「无草稿模型」，回落 MTP/suffix 路径。
     # K8s ConfigMap 常以 SPECULATIVE_DECODE_MODEL_PATH=none 表示未指定，
     # 但字符串 "none" 为 truthy，会被误判为有效草稿模型路径导致生成 draft_model 配置。
-    if draft_path and _draft_raw not in ("none", ""):
+    if normalized_draft_path:
         logger.info(
             "[SpecDecode-DIAG] draft_path is real (not none/empty) → entering draft_model branch"
         )
-        draft_model_info = ModelIdentifierDraft(draft_path)
+        draft_model_info = ModelIdentifierDraft(normalized_draft_path)
         if 'eagle3' in draft_model_info.draft_model_architecture.lower():
             return "eagle3"
         return "draft_model"
@@ -3406,12 +3422,12 @@ def _format_speculative_result(config_entries: List[str], compact: bool = False)
 
 def _handle_draft_model_case(params: Dict[str, Any], config: List[str]) -> None:
     """处理有草稿模型的推测解码配置"""
-    draft_path = params.get("speculative_decode_model_path", "")
+    draft_path = _normalize_speculative_draft_path(params.get("speculative_decode_model_path"))
     # 对路径中的双引号和反斜杠进行 JSON 转义，防止 JSON-in-shell 注入
     safe_path = draft_path.replace('\\', '\\\\').replace('"', '\\"')
     config.append(f'"model": "{safe_path}"')
     config.append('"draft_tensor_parallel_size": 1')
-    draft_model_info = ModelIdentifierDraft(params.get("speculative_decode_model_path"))
+    draft_model_info = ModelIdentifierDraft(draft_path)
 
     if 'eagle3' in draft_model_info.draft_model_architecture.lower():
         logger.info('--- Using the Eagle3 speculative decoding approach ---')
@@ -3569,6 +3585,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         return ""
 
     spec_draft_raw = params.get("speculative_decode_model_path")
+    normalized_draft_path = _normalize_speculative_draft_path(spec_draft_raw)
     logger.info(
         "[SpecDecode-DIAG] _build_speculative_cmd entry: "
         "enable_spec_decode=%s draft_path=%r engine=%s strategy=%s engine_has_spec_config=%s",
@@ -3577,10 +3594,9 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     )
 
     if spec_draft_raw:
-        _raw_draft = str(spec_draft_raw).strip().lower()
-        if _raw_draft not in ("none", ""):
+        if normalized_draft_path:
             logger.info("[AdvFeature-SpecDecode] Draft model path detected: %s, using draft_model strategy",
-                        spec_draft_raw)
+                        normalized_draft_path)
             speculative_config_temp = []
             _handle_draft_model_case(params, speculative_config_temp)
             return _format_speculative_result(speculative_config_temp)
