@@ -903,20 +903,13 @@ def _set_pd_parallelism_params(params, ctx) -> bool:
     if not pd_role:
         return False
 
-    role_prefix = "PREFILL" if pd_role == "P" else "DECODE"
+    parallel_env = read_pd_parallel_env(pd_role)
+    role_prefix = parallel_env.role_prefix if parallel_env else ("PREFILL" if pd_role == "P" else "DECODE")
 
     # TP: 逐级回退但 **不** 使用 device_count（PD 拓扑应显式下发）
-    raw_tp = (
-        os.getenv("TP_SIZE")
-        or os.getenv("PD_TP_SIZE")
-        or os.getenv(f"PD_{role_prefix}_TP_SIZE")
-    )
+    raw_tp = parallel_env.raw_tp if parallel_env else None
     # DP: 逐级回退，缺省 1
-    raw_dp = (
-        os.getenv("DP_SIZE")
-        or os.getenv("PD_DP_SIZE")
-        or os.getenv(f"PD_{role_prefix}_DP_SIZE")
-    )
+    raw_dp = parallel_env.raw_dp if parallel_env else None
 
     if raw_tp is None and raw_dp is None:
         logger.warning(
@@ -968,26 +961,8 @@ def _set_pd_parallelism_params(params, ctx) -> bool:
 
     if tp_set or dp_set:
         # 诊断：回推 TP/DP 值的来源 env var（用于排查是否意外走了 device_count）
-        _tp_src = "none"
-        _dp_src = "none"
-        if raw_tp:
-            if raw_tp == os.getenv(f"PD_{role_prefix}_TP_SIZE"):
-                _tp_src = f"PD_{role_prefix}_TP_SIZE"
-            elif raw_tp == os.getenv("TP_SIZE"):
-                _tp_src = "TP_SIZE"
-            elif raw_tp == os.getenv("PD_TP_SIZE"):
-                _tp_src = "PD_TP_SIZE"
-            else:
-                _tp_src = "unknown"
-        if raw_dp:
-            if raw_dp == os.getenv(f"PD_{role_prefix}_DP_SIZE"):
-                _dp_src = f"PD_{role_prefix}_DP_SIZE"
-            elif raw_dp == os.getenv("DP_SIZE"):
-                _dp_src = "DP_SIZE"
-            elif raw_dp == os.getenv("PD_DP_SIZE"):
-                _dp_src = "PD_DP_SIZE"
-            else:
-                _dp_src = "unknown"
+        _tp_src = parallel_env.tp_source or "none"
+        _dp_src = parallel_env.dp_source or "none"
         logger.info(
             "[PD] parallel topology from role env: tensor_parallel_size=%s, "
             "data_parallel_size=%s (role=%s, tp_source=%s, dp_source=%s)",
@@ -1148,248 +1123,35 @@ def _get_pd_config(ctx, pd_role):
 
 
 def _get_pd_external_lb_params():
-    """读取上层下发的 external-lb DP 参数；PD_ROLE 未设置时返回 None。
+    """兼容旧调用方的 thin wrapper。
 
-    触发 external-lb（模式 A，pod 内 fork 多 service）需 PD_ROLE∈{P,D}。
-    DP_SIZE≥1 均进入 external-lb 路径（含 1P1D），由 pd_config.json 注册表统一管理
-    connector/引擎参数/环境变量，消除 standalone PD 绕过注册表的配置双轨。
-
-    上层契约（角色域，P/D 各自独立）：
-      DP_SIZE / TP_SIZE / DP_SIZE_LOCAL：本角色全局 DP / 单实例 TP / 本节点 fork 数；
-      Master_IP：本角色 DP 域 head（= --data-parallel-address）；
-      NODE_IPS：本角色全部节点 IP（逗号分隔）；HOST_IP：本节点 IP。
-    dp_rank_start 不由上层下发，而是 ``HOST_IP 在 NODE_IPS 中的位置 × DP_SIZE_LOCAL``。
-    旧名 PD_* 作为兜底（PD_DP_SIZE / PD_TP_SIZE / ... / PD_DP_RANK_START）。
-
-    rpc_port（--data-parallel-rpc-port）按角色【硬编码】：P=12890 / D=12777，
-    刻意不读 VLLM_LLMDD_RPC_PORT / PD_DP_RPC_PORT。同角色每个 pod 各自算出同一常量
-    → DP 域 rpc-port 天然一致，无需平台协调。注意：网络策略须放行这两个固定端口
-    （而非平台动态分配的 ephemeral 口）。P/D 端口不同，同机部署也不会 bind 冲突。
+    PD external-lb 的真实解析逻辑已经迁移到 ``core.pd_external_lb``。这里保留旧函数名，
+    是为了兼容历史测试、临时排障脚本或其它模块直接 import 私有函数的场景。后续新增
+    PD env 规则时不要在这里补第二份逻辑，应改 ``resolve_pd_external_lb_params()``。
     """
-    role = get_pd_role_env()
-    if not role:
-        return None
 
-    def _first_env(*names):
-        for n in names:
-            v = os.getenv(n)
-            if v not in (None, ""):
-                return v
-        return None
-
-    def _int(default, *names):
-        v = _first_env(*names)
-        try:
-            return int(v) if v is not None else int(default)
-        except (ValueError, TypeError):
-            return int(default)
-
-    # DP_SIZE/TP_SIZE 优先显式；缺省时从本角色全局拓扑 PD_{ROLE}_* 派生（P→PREFILL / D→DECODE）。
-    # 全局拓扑 PD_PREFILL_*/PD_DECODE_* 已含本角色 dp/tp（P/D 互相感知对方），故上层可只下发这 4 个，
-    # 不必再单独给 DP_SIZE/TP_SIZE（二者等于本角色在全局拓扑中的那一项）。
-    # DP_SIZE 未设置时默认 1（1P1D），允许通过 pd_config.json 注册表统一管理配置。
-    role_prefix = "PREFILL" if role == "P" else "DECODE"
-    raw = _first_env("DP_SIZE", "PD_DP_SIZE", f"PD_{role_prefix}_DP_SIZE")
-    if raw is None:
-        dp_size = 1  # 1P1D：未显式设 DP_SIZE 时默认 1，仍走 external-lb 读注册表
-    else:
-        try:
-            dp_size = int(raw)
-        except (ValueError, TypeError):
-            dp_size = 1
-    if dp_size < 1:
-        return None  # 非法值
-
-    # tp_size 仅由 PD_* 环境契约决定（独立于标准推理 device_count 路径）：
-    #   TP_SIZE > PD_TP_SIZE > PD_{PREFILL|DECODE}_TP_SIZE > 缺省 1
-    # 与 _set_pd_parallelism_params / _get_pd_config 保持一致。
-    tp_size = _int("1", "TP_SIZE", "PD_TP_SIZE", f"PD_{role_prefix}_TP_SIZE")
-    # dp_size_local：优先 env 显式下发；否则由 tp_size 推导（单 pod 最多塞几个 service）。
-    # 注意：不再依赖 DEVICE_COUNT，直接用 tp_size 和硬件探测数推导。
-    _dp_local_raw = _first_env("DP_SIZE_LOCAL", "PD_DP_SIZE_LOCAL")
-    if _dp_local_raw is not None:
-        try:
-            dp_size_local = int(_dp_local_raw)
-        except (ValueError, TypeError):
-            dp_size_local = 1
-    else:
-        # 无 DP_SIZE_LOCAL 时默认 1（PD 拓扑应显式下发，不应靠 device_count 推导）
-        dp_size_local = 1
-        logger.warning(
-            "[PD external-lb] DP_SIZE_LOCAL/PD_DP_SIZE_LOCAL not set (role=%s); "
-            "defaulting dp_size_local=1. Set DP_SIZE_LOCAL to match the number "
-            "of engine instances forked in this pod.", role,
-        )
-    # dp_size_local 不能超过全局 dp_size（1P1D 单 pod 场景下两者应相等）
-    dp_size_local = min(dp_size_local, dp_size)
-    dp_address = (_first_env("Master_IP", "MASTER_IP", "PD_DP_ADDRESS")
-                  or get_master_ip()
-                  or _first_env("RANK_IP", "HOST_IP")
-                  or get_local_ip()
-                  or "")
-    # rpc-port 按角色硬编码，刻意不读 env：同角色每 pod 各算同一常量 → DP 域天然一致。
-    rpc_port = "12890" if role == "P" else "12777"
-
-    # NODE_IPS（角色域全部 pod IP，顺序即 rank）—— rank 派生与多 pod 一致性兜底共用。
-    node_ips = [ip.strip() for ip in (get_node_ips() or "").split(",") if ip.strip()]
-
-    # dp_rank_start：优先显式 PD_DP_RANK_START，否则由本 pod 唯一 IP 在角色域 NODE_IPS 的位置派生。
-    explicit_start = _first_env("PD_DP_RANK_START")
-    if explicit_start is not None:
-        dp_rank_start = _int("0", "PD_DP_RANK_START")
-    else:
-        # 必须用 RANK_IP（本 pod 唯一 IP，get_local_ip 亦读它），不能用 HOST_IP：
-        # 同宿主机多 pod 共享同一 HOST_IP（K8s status.hostIP=节点物理 IP），用它派生会让
-        # 多个 pod 算出同一 dp_rank_start → 多节点 rank 撞车（rank0 去 bind 别人 IP 的 rpc 端口报
-        # "Cannot assign requested address"）。NODE_IPS 本就是按 RANK_IP 那套 IP 排的。
-        host_ip = (_first_env("RANK_IP", "HOST_IP") or get_local_ip() or "").strip()
-        if host_ip in node_ips:
-            node_rank = node_ips.index(host_ip)
-        else:
-            node_rank = 0
-            if len(node_ips) > 1:
-                logger.error(
-                    "[PD external-lb] 本机 IP %r 不在 NODE_IPS %r 内 → dp_rank_start 回退 0；"
-                    "多节点将 rank 撞车，DP 域无法组建。请确保 RANK_IP 与 NODE_IPS 中某项逐字一致。",
-                    host_ip, node_ips)
-        dp_rank_start = node_rank * dp_size_local
-
-    # 注：--data-parallel-rpc-port 现按角色硬编码（见上），不再读 env，故无需 ephemeral 一致性告警：
-    # 同角色每 pod 各自算出同一常量，跨 pod 天然一致。--data-parallel-address 仍信任平台 Master_IP 透传。
-
-    # PD_INDEX：跨 P/D 全局实例序号，由上层下发（env PD_INDEX）。
-    # 1P1D 默认：P=0, D=1；多实例场景上层直接传递，wings 不计算。
-    try:
-        pd_index_base = int(os.getenv("PD_INDEX", ""))
-    except (ValueError, TypeError):
-        pd_index_base = 0 if role == "P" else 1
-
-    result = {
-        "role": role,
-        "dp_size": dp_size,
-        "tp_size": tp_size,
-        "dp_size_local": dp_size_local,
-        "dp_rank_start": dp_rank_start,
-        "dp_address": dp_address,
-        "rpc_port": str(rpc_port),
-        "pd_index_base": pd_index_base,
-    }
-    logger.info(
-        "[PD external-lb params] role=%s tp_size=%d dp_size=%d dp_size_local=%d "
-        "dp_rank_start=%d dp_address=%s rpc_port=%s pd_index_base=%d "
-        "(PD_DECODE_TP_SIZE=%s, PD_PREFILL_TP_SIZE=%s, PD_DECODE_DP_SIZE=%s, "
-        "PD_PREFILL_DP_SIZE=%s)",
-        result["role"], result["tp_size"], result["dp_size"], result["dp_size_local"],
-        result["dp_rank_start"], result["dp_address"], result["rpc_port"],
-        result["pd_index_base"],
-        os.getenv("PD_DECODE_TP_SIZE", "<unset>"),
-        os.getenv("PD_PREFILL_TP_SIZE", "<unset>"),
-        os.getenv("PD_DECODE_DP_SIZE", "<unset>"),
-        os.getenv("PD_PREFILL_DP_SIZE", "<unset>"),
-    )
-    return result
+    return resolve_pd_external_lb_params()
 
 
 def _build_pd_external_lb_kv(entry, ext):
-    """用注册表条目构建 external-lb 的 kv_transfer_config。
+    """兼容旧调用方的 KV config wrapper。
 
-    连接器/kv_port/extra_config 取自注册表。``kv_connector_extra_config`` 的
-    prefill/decode 全局拓扑：本角色取上层下发的 DP_SIZE/TP_SIZE（权威），对端角色
-    取 PD_PREFILL_*/PD_DECODE_*（缺失则回退本角色并告警，KV 映射可能不准）。
-    engine_id 按连接器策略区分：官方 kv_p2p ``MooncakeConnector`` 用 **role 级常量**
-    （producer=0 / consumer=1；节点物理唯一性来自 IP:kv_port，连接器仅校验 local≠remote）。
-    ``MooncakeConnectorV1`` / ``MooncakeHybridConnector`` 要求**每节点唯一** engine_id，放
-    占位符 ``__PD_RANK__`` 由 fork 脚本（vllm_adapter）按实际 dp_rank 替换。
+    ``entry`` 来自 pd_config registry，``ext`` 来自 PD topology resolver。真正的合并规则
+    只维护在 ``core.pd_external_lb.build_pd_external_lb_kv``，避免 connector extra_config
+    在多个文件里出现不同解释。
     """
-    role = ext["role"]
-    kv_role = "kv_producer" if role == "P" else "kv_consumer"
-    me = {"dp_size": ext["dp_size"], "tp_size": ext["tp_size"]}
 
-    def _peer(prefix):
-        dp = os.getenv(f"PD_{prefix}_DP_SIZE")
-        tp = os.getenv(f"PD_{prefix}_TP_SIZE")
-        if dp and tp:
-            try:
-                return {"dp_size": int(dp), "tp_size": int(tp)}
-            except (ValueError, TypeError):
-                pass
-        return None
-
-    if role == "P":
-        prefill, decode = me, _peer("DECODE")
-        if decode is None:
-            logger.warning("[PD external-lb] peer(decode) topology unknown "
-                           "(set PD_DECODE_DP_SIZE/PD_DECODE_TP_SIZE); KV mapping may be wrong")
-            decode = me
-    else:
-        decode, prefill = me, _peer("PREFILL")
-        if prefill is None:
-            logger.warning("[PD external-lb] peer(prefill) topology unknown "
-                           "(set PD_PREFILL_DP_SIZE/PD_PREFILL_TP_SIZE); KV mapping may be wrong")
-            prefill = me
-
-    extra = {"prefill": prefill, "decode": decode}
-    model_extra = entry.get("extra_config") or {}
-    if model_extra:
-        extra.update(model_extra)
-    # L2：角色级 extra_config（如 Qwen3.5 consumer 专属 kv_buffer_device），覆盖/追加于全局 extra_config。
-    role_key = "prefill" if role == "P" else "decode"
-    role_extra = (entry.get(role_key) or {}).get("extra_config") or {}
-    if role_extra:
-        extra.update(role_extra)
-    # 部署级可选规避（不改官方注册表）：仅当本部署显式设 PD_DISABLE_ASCEND_DIRECT 时，从 kv extra 移除
-    # use_ascend_direct，绕开 mooncake ADXL 直传（ascend_direct_transport 连 P 超时 / status 103902，
-    # 见 vllm-ascend#2970）。默认不设 → 官方 ADXL 行为不变；只有设了此 env 的 pod（如你的 1P1D 测试）受影响。
-    if os.getenv("PD_DISABLE_ASCEND_DIRECT", "").strip().lower() in ("1", "true", "yes", "on") \
-            and "use_ascend_direct" in extra:
-        extra.pop("use_ascend_direct", None)
-        logger.warning(
-            "[PD external-lb] PD_DISABLE_ASCEND_DIRECT 生效：已从 kv_connector_extra_config 移除 "
-            "use_ascend_direct（绕开 mooncake ADXL 直传，vllm-ascend#2970）。仅本部署受影响，注册表不变。")
-    cfg = {
-        "kv_connector": entry["connector"],
-        "kv_role": kv_role,
-        # kv_port 占位符由 fork 脚本按 30000 + PD_INDEX 替换（跨 P/D 全局连续唯一）。
-        "kv_port": "__PD_KVPORT__",
-        "kv_connector_extra_config": extra,
-    }
-    # 连接器实现模块路径：注册表声明 connector_module_path 则透传（如官方 GLM5.2 PD 用
-    # MooncakeConnector + vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector 显式加载）。
-    module_path = entry.get("connector_module_path")
-    if module_path:
-        cfg["kv_connector_module_path"] = module_path
-    # kv_buffer_device：Layerwise 等连接器需指定 buffer 所在设备（npu）
-    kv_buf_dev = entry.get("kv_buffer_device")
-    if kv_buf_dev:
-        cfg["kv_buffer_device"] = kv_buf_dev
-    # engine_id 由 PD_INDEX 派生（跨 P/D 全局连续），统一适用于所有连接器。
-    # PD_INDEX 跨角色共用编号：P 实例在前、D 实例在后，天然避免 P/D engine_id 撞号。
-    # 占位符 __PD_INDEX__ 由 fork 脚本按 shell 变量 $PD_INDEX 展开。
-    cfg["engine_id"] = "__PD_INDEX__"
-    return cfg
+    return _shared_build_pd_external_lb_kv(entry, ext)
 
 
 def _resolve_ascend_platform() -> str:
-    """返回当前 Ascend 平台标识 'a2' / 'a3' / ''（供 PD 注册表 platform_overrides 用）。
+    """兼容旧调用方的平台解析 wrapper。
 
-    与 ``vllm_adapter._get_engine_config_platform`` 的 env 信号保持一致：
-      1. 显式声明：WINGS_ASCEND_PLATFORM / ASCEND_PLATFORM / ENGINE_IMAGE_FLAVOR
-         （归一 a2/a3/atlas-*/910b/910c）；
-      2. 次级信号（无显式声明时）：ENGINE_VERSION 镜像后缀 ``-a3``（如 "0.13.0rc3-a3"）
-         或 ASCEND_A3_ENABLE 真值 → a3。
-    解析不到返回空串 —— 不应用平台 overlay（退化为基条目，对 V4-Flash 即 a3 默认值）。
+    该函数除 PD registry overlay 外，也被少量非 PD 默认配置路径调用，因此保留函数名；
+    但平台信号优先级仍统一由 ``core.pd_external_lb`` 维护。
     """
-    val = (os.getenv("WINGS_ASCEND_PLATFORM") or os.getenv("ASCEND_PLATFORM")
-           or os.getenv("ENGINE_IMAGE_FLAVOR") or "").strip().lower()
-    if val in {"a3", "atlas-a3", "atlas_a3", "910c"}:
-        return "a3"
-    if val in {"a2", "atlas-a2", "atlas_a2", "910b"}:
-        return "a2"
-    # 无显式声明时的次级信号（与 vllm_adapter 对齐）：ENGINE_VERSION 的 -a3 后缀 / ASCEND_A3_ENABLE
-    if os.getenv("ENGINE_VERSION", "").strip().lower().endswith("-a3") or \
-            os.getenv("ASCEND_A3_ENABLE", "").strip().lower() in {"1", "true", "yes"}:
-        return "a3"
-    return ""
+
+    return _shared_resolve_ascend_platform()
 
 
 def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) -> None:
@@ -1403,18 +1165,9 @@ def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) 
     本函数不设置 _pd_external_lb（不进入 fork 脚本路径），不覆盖
     kv_transfer_config，仅保证 TP/DP 不被 device_count 回退覆盖。
     """
-    role_prefix = "PREFILL" if pd_role == "P" else "DECODE"
-    raw_tp = (
-        os.getenv("TP_SIZE")
-        or os.getenv("PD_TP_SIZE")
-        or os.getenv(f"PD_{role_prefix}_TP_SIZE")
-    )
-    raw_dp = (
-        os.getenv("DP_SIZE")
-        or os.getenv("PD_DP_SIZE")
-        or os.getenv(f"PD_{role_prefix}_DP_SIZE")
-    )
-    if raw_tp is None and raw_dp is None:
+    parallel_env, overrides, invalid = resolve_pd_parallel_overrides(pd_role)
+    role_prefix = parallel_env.role_prefix if parallel_env else ("PREFILL" if pd_role == "P" else "DECODE")
+    if parallel_env is None or (parallel_env.raw_tp is None and parallel_env.raw_dp is None):
         logger.warning(
             "[PD fallback] PD_ROLE=%s but no PD_%s_TP_SIZE / PD_%s_DP_SIZE set; "
             "TP/DP will fall back to defaults (may be device_count)",
@@ -1424,22 +1177,11 @@ def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) 
 
     ec = cmd_known_params.setdefault("engine_config", {})
     explicit_keys = set(cmd_known_params.get("_explicit_cli_keys") or [])
-    pd_topology_keys = {"tensor_parallel_size", "data_parallel_size"}
-
-    overrides: Dict[str, Any] = {}
-    if raw_tp is not None:
-        try:
-            overrides["tensor_parallel_size"] = int(raw_tp)
-        except (ValueError, TypeError):
-            logger.warning("[PD fallback] invalid TP value %r, skipped", raw_tp)
-    if raw_dp is not None:
-        try:
-            overrides["data_parallel_size"] = int(raw_dp)
-        except (ValueError, TypeError):
-            logger.warning("[PD fallback] invalid DP value %r, skipped", raw_dp)
+    for env_name, raw_value in invalid.items():
+        logger.warning("[PD fallback] invalid %s value %r, skipped", env_name, raw_value)
 
     for k, v in overrides.items():
-        if k not in explicit_keys or k in pd_topology_keys:
+        if k not in explicit_keys or k in PD_TOPOLOGY_KEYS:
             ec[k] = v
 
     # 存储为 _pd_engine_overrides，以使 vllm_adapter._prepare_engine_config
@@ -1447,7 +1189,7 @@ def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) 
     cmd_known_params["_pd_engine_overrides"] = {
         k: v
         for k, v in overrides.items()
-        if k not in explicit_keys or k in pd_topology_keys
+        if k not in explicit_keys or k in PD_TOPOLOGY_KEYS
     }
 
     logger.info(
@@ -1457,119 +1199,67 @@ def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) 
 
 
 def _apply_pd_external_lb(cmd_known_params, model_info):
-    """检测 external-lb PD 并应用模型配置注册表（config/defaults/pd_config.json）。
+    """把共享 PD external-lb plan 写回现有 launcher params。
 
-    命中条件：PD_ROLE∈{P,D}（DP_SIZE≥1，含 1P1D）。命中后（专属架构优先、回退 default）：
-      1. 合并 common + 角色 engine 参数到 engine_config（不覆盖用户显式键）；
-      2. 用注册表连接器/kv_port/extra 构建 kv_transfer_config（覆盖 standalone 版）；
-      3. 外层标记 _pd_external_lb / _pd_env，并置 distributed=False（不进 Ray/headless）。
-    未命中或注册表无可用条目时原样返回（走原 standalone PD）。
+    本函数是新旧边界的适配层：上游 ``pd_external_lb.py`` 只生成结构化 plan，不直接修改
+    ``cmd_known_params``；下游 ``vllm_adapter`` 仍消费历史字段：
+    ``_pd_external_lb`` / ``_pd_env`` / ``_pd_strip_env`` / ``_pd_engine_overrides``。
+
+    保留这些字段是第一阶段低风险迁移的关键。不要在未同步 adapter shell 渲染之前删除或
+    改名，否则 PD isolated path 会丢失 fork 拓扑、角色 env 或模型默认注入后的重申逻辑。
     """
+
     pd_role = get_pd_role_env()
     logger.info("[PD external-lb] entry check: PD_ROLE=%s", pd_role)
-    ext = _get_pd_external_lb_params()
-    if not ext:
-        # _get_pd_external_lb_params 返回 None 时，若 PD_ROLE 已设但缺少 DP_SIZE/TP_SIZE
-        # 等 env var，仍应确保 PD 拓扑参数（tensor_parallel_size / data_parallel_size）
-        # 从 PD_* 环境变量写入 engine_config，而不是静默退回到 device_count 兜底。
-        # 否则 PD 容器内 wings 生成的 start_command.sh 会走单机路径，TP=device_count。
-        if pd_role:
-            _apply_pd_topology_fallback(cmd_known_params, pd_role)
-        return
-    registry = _load_pd_config()
-    arch = getattr(model_info, "model_architecture", None) or ""
-    entry = registry.get(arch) or registry.get("default")
-    if not entry:
-        logger.warning("[PD external-lb] no registry entry for arch=%s and no default; "
-                       "fall back to standalone PD", arch)
-        # 即使没有注册表条目，PD 拓扑参数仍应从 env 生效
+
+    # plan 为 None 有两类含义：
+    # 1. 当前不是 external-lb 场景；
+    # 2. PD_ROLE 存在但 registry 不可用或 DP env 非法。
+    # 第二种仍需走 topology fallback，至少保证 TP/DP 不被普通 device_count 兜底覆盖。
+    plan = build_pd_external_lb_plan(cmd_known_params, model_info, _load_pd_config())
+    if plan is None:
         if pd_role:
             _apply_pd_topology_fallback(cmd_known_params, pd_role)
         return
 
-    # 注册表来自模块级缓存(_load_pd_config)；下面会对 entry 做 overlay/pop —— 先 deepcopy 防污染缓存。
-    entry = copy.deepcopy(entry)
-    # L4 平台 overlay：基条目放平台无关值，platform_overrides[<plat>] 深合并覆盖（A2/A3 等）。
-    # 无 platform_overrides 的条目或平台解析为空 → 不动，退化为基条目（向后兼容）。
-    # default_platform（条目级，opt-in）：声明「无显式平台信号时按哪个平台」。仅本条目生效，
-    # 不动全局 _resolve_ascend_platform —— 其「空串→不 overlay→基条目」语义对 DeepseekV4(空→基=a3)
-    # 等条目必须保持。GlmMoeDsa 设 default_platform=a2：A2 部署即使漏设 WINGS_ASCEND_PLATFORM，
-    # 也按 a2 overlay 而非静默退成基条目(A3)；显式 a3 信号(-a3/ASCEND_A3_ENABLE/WINGS_ASCEND_PLATFORM=a3)
-    # 仍解析为 'a3' → 不命中 a2 overlay → 走基条目(A3 口径)。无 default_platform 的条目行为不变。
-    plat = _resolve_ascend_platform()
-    overrides = entry.pop("platform_overrides", None)
-    default_plat = entry.pop("default_platform", None)
-    if not plat and default_plat:
-        plat = default_plat
-        logger.info("[PD external-lb] 无显式平台信号 → 用条目默认平台 '%s' (arch=%s)", plat, arch)
-    if overrides and plat and plat in overrides:
-        entry = _merge_configs(entry, overrides[plat])
-        logger.info("[PD external-lb] applied platform_overrides[%s] for arch=%s", plat, arch)
-
-    role = ext["role"]
-    role_key = "prefill" if role == "P" else "decode"
     ec = cmd_known_params.setdefault("engine_config", {})
+
+    # registry engine 参数直接写入 engine_config。plan 里已经处理了 explicit key：
+    # 普通参数尊重用户显式值，TP/DP 作为 PD 拓扑权威值始终写入。
+    for key, value in plan.engine_overrides.items():
+        ec[key] = copy.deepcopy(value)
+
     explicit = set(cmd_known_params.get("_explicit_cli_keys") or [])
-
-    # 注册表值优先级：用户 CLI/ENV > 注册表 > 基础默认。
-    # 故对非用户显式键直接覆盖（setdefault 会被 model_deploy_config 默认挡住）。
-    # 注册表来自模块级缓存(_load_pd_config)，且 dict 值（如 additional_config）会被下游模型
-    # 默认注入器就地深合并 —— 必须 deepcopy 后再写入，否则会污染缓存并跨次调用泄漏。
-    # ec 与 _pd_engine_overrides 各持一份独立 deepcopy：注入器只会改动 ec 那份，重申用的这份保持原值。
-    merged_engine = {**entry.get("common", {}), **entry.get(role_key, {}).get("engine", {})}
-    # PD 拓扑是本场景权威来源：即使上游把标准推理的 TENSOR/DATA_PARALLEL_SIZE
-    # 设成 device-count，也必须被当前 PD 角色的 TP/DP 覆盖。
-    pd_topology_keys = {"tensor_parallel_size", "data_parallel_size"}
-    merged_engine["tensor_parallel_size"] = ext["tp_size"]
-    merged_engine["data_parallel_size"] = ext["dp_size"]
-    for k, v in merged_engine.items():
-        if k not in explicit or k in pd_topology_keys:
-            ec[k] = copy.deepcopy(v)
-
-    # 暂存注册表已应用的 engine 覆盖：模型默认注入器（vllm_adapter._prepare_engine_config
-    # 内的 _apply_*_engine_defaults，运行在本函数之后）会用 _force_set_* / _merge_dict_default_*
-    # 回填部分键（如 enable_prefix_caching、compilation_config、max_model_len），覆盖掉这里写入的
-    # 注册表值。故把注册表覆盖透传给 vllm_adapter，在所有注入器之后重申，使 pd_config 成为 PD
-    # external-lb 引擎参数的唯一真相源。None 值表示「该角色应删除该 base 键」。
-    cmd_known_params["_pd_engine_overrides"] = {
-        k: copy.deepcopy(v)
-        for k, v in merged_engine.items()
-        if k not in explicit or k in pd_topology_keys
-    }
-
     if "kv_transfer_config" not in explicit:
-        ec["kv_transfer_config"] = json.dumps(_build_pd_external_lb_kv(entry, ext))
+        ec["kv_transfer_config"] = json.dumps(plan.kv_transfer_config)
 
-    # kv_port_base：MooncakeConnector(kv_p2p) 用 role 字面值（保持注册表值）。
-    # V1 / Hybrid 的 kv_port 不再从这里派生——fork 脚本直接算 30000 + PD_INDEX（全局连续唯一）。
-    try:
-        ext["kv_port_base"] = int(entry["kv_port"][role])
-    except (KeyError, ValueError, TypeError):
-        ext["kv_port_base"] = 30000 if role == "P" else 30100
-    ext["bootstrap_base"] = int(
-        os.getenv("VLLM_MOONCAKE_BOOTSTRAP_PORT", "23000" if role == "P" else "23100")
-    )
-    ext["connector"] = entry["connector"]  # fork 脚本按连接器分叉 kv_port 行为
-
-    cmd_known_params["_pd_external_lb"] = ext
-    # L3：common_env（P/D 共用）+ 角色 env（角色覆盖共用）。PD 脚本侧会对合并后的整段 env 去重。
-    cmd_known_params["_pd_env"] = {
-        **entry.get("common_env", {}),
-        **entry.get(role_key, {}).get("env", {}),
+    # _pd_engine_overrides 会被 vllm_adapter._prepare_engine_config 在模型默认注入之后再次重申。
+    # 这是为了防止下游模型专属默认值覆盖 pd_config registry 中的 PD recipe。
+    cmd_known_params["_pd_engine_overrides"] = {
+        key: copy.deepcopy(value) for key, value in plan.engine_overrides.items()
     }
-    # strip_env：注册表声明应从最终 env 段剔除的多余变量（common + 角色级；平台 overlay 经
-    # _merge_configs 注入）。仅声明 strip_env 的条目生效（如 GLM5 A2 对齐官方"不设这些 env"）；
-    # 其它模型为空集 → vllm_adapter 的 PD fork 构建器不过滤，行为不变。
-    cmd_known_params["_pd_strip_env"] = list(entry.get("strip_env", [])) + list(
-        (entry.get(role_key) or {}).get("strip_env", []))
+
+    # 以下四个 _pd_* 字段是 adapter 的兼容契约：
+    # - _pd_external_lb：fork 数、rank、端口、connector 等脚本拓扑；
+    # - _pd_env：PD isolated env builder 只使用这份 env，不走 generic/model env builders；
+    # - _pd_strip_env：registry 声明需要从最终 env 中剔除的变量；
+    # - _pd_engine_overrides：模型默认注入后的二次重申值。
+    cmd_known_params["_pd_external_lb"] = copy.deepcopy(plan.ext)
+    cmd_known_params["_pd_env"] = dict(plan.env)
+    cmd_known_params["_pd_strip_env"] = list(plan.strip_env)
+
+    # external-lb 命中后，每个 pod 都是对等 standalone 单元；跨 pod 的 DP rendezvous
+    # 由 vLLM 的 data-parallel-external-lb 参数处理，不进入 wings 的 Ray master/worker 编排。
     cmd_known_params["distributed"] = False
+
+    ext = plan.ext
     logger.info(
         "[PD external-lb trigger] enabled=True role=%s arch=%s platform=%s "
         "connector=%s topology=%s env_keys=%s strip_env=%s engine_override_keys=%s",
-        role,
-        arch,
-        plat or "<none>",
-        entry["connector"],
+        plan.role,
+        plan.arch,
+        plan.platform or "<none>",
+        plan.connector,
         {
             "tp_size": ext["tp_size"],
             "dp_size": ext["dp_size"],
@@ -1582,9 +1272,17 @@ def _apply_pd_external_lb(cmd_known_params, model_info):
         sorted(cmd_known_params["_pd_strip_env"]),
         sorted(cmd_known_params["_pd_engine_overrides"].keys()),
     )
-    logger.info("[PD external-lb] arch=%s role=%s connector=%s dp_size=%d local=%d rank_start=%d addr=%s",
-                arch, role, entry["connector"], ext["dp_size"], ext["dp_size_local"],
-                ext["dp_rank_start"], ext["dp_address"])
+    logger.info(
+        "[PD external-lb] arch=%s role=%s connector=%s dp_size=%d local=%d "
+        "rank_start=%d addr=%s",
+        plan.arch,
+        plan.role,
+        plan.connector,
+        ext["dp_size"],
+        ext["dp_size_local"],
+        ext["dp_rank_start"],
+        ext["dp_address"],
+    )
 
 
 def _is_glm51_nvidia_vllm(ctx, model_info) -> bool:
@@ -3821,21 +3519,13 @@ def _apply_pd_final_guard(engine_config: Dict[str, Any],
     if not pd_role:
         return
 
-    role_prefix = "PREFILL" if pd_role == "P" else "DECODE"
-    raw_tp = (
-        os.getenv("TP_SIZE")
-        or os.getenv("PD_TP_SIZE")
-        or os.getenv(f"PD_{role_prefix}_TP_SIZE")
-    )
-    raw_dp = (
-        os.getenv("DP_SIZE")
-        or os.getenv("PD_DP_SIZE")
-        or os.getenv(f"PD_{role_prefix}_DP_SIZE")
-    )
+    parallel_env = read_pd_parallel_env(pd_role)
+    if parallel_env is None:
+        return
 
     overrides: Dict[str, Any] = {}
 
-    def _check_and_override(env_name: str, raw_val: str, config_key: str) -> None:
+    def _check_and_override(env_name: str, raw_val: Optional[str], config_key: str) -> None:
         if raw_val is None:
             return
         try:
@@ -3852,8 +3542,16 @@ def _apply_pd_final_guard(engine_config: Dict[str, Any],
             )
             overrides[config_key] = val
 
-    _check_and_override(f"PD_{role_prefix}_TP_SIZE", raw_tp, "tensor_parallel_size")
-    _check_and_override(f"PD_{role_prefix}_DP_SIZE", raw_dp, "data_parallel_size")
+    _check_and_override(
+        parallel_env.tp_source or f"PD_{parallel_env.role_prefix}_TP_SIZE",
+        parallel_env.raw_tp,
+        "tensor_parallel_size",
+    )
+    _check_and_override(
+        parallel_env.dp_source or f"PD_{parallel_env.role_prefix}_DP_SIZE",
+        parallel_env.raw_dp,
+        "data_parallel_size",
+    )
 
     for k, v in overrides.items():
         engine_config[k] = v

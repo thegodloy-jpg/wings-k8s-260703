@@ -625,11 +625,13 @@ def _determine_role() -> str:
     # Ray master/worker 编排（head 起 API、worker 仅 headless、health 端口偏移、BACKEND_URL 指
     # master、worker 不监控本地引擎）是为「单引擎跨节点」设计的，套在 external-lb 上会范式错位
     # （见设计文档 §13.7）。故 external-lb 命中时强制按 standalone 处理，绕开 master/worker。
-    # 门控信号 = 引擎脚本分发同源的 _get_pd_external_lb_params()（非空 ⇔ PD_ROLE 且 DP_SIZE≥1），
-    # 含 1P1D（DP_SIZE=1 默认），两层判定一致。非 PD 的 Ray 分布式无 PD_ROLE → 此处不命中，行为字节级不变。
+    # 门控信号 = core.pd_external_lb.is_pd_external_lb_active()。它与引擎脚本生成使用同一套
+    # PD env 解析逻辑，但不会 import config_loader，避免角色判定阶段提前触发配置合并、
+    # 模型识别或 registry overlay 等副作用。含 1P1D（DP_SIZE 未设置时默认 1）；
+    # 非 PD 的 Ray 分布式无 PD_ROLE，不命中此分支，原 master/worker 行为保持不变。
     try:
-        from core.config_loader import _get_pd_external_lb_params
-        if _get_pd_external_lb_params() is not None:
+        from core.pd_external_lb import is_pd_external_lb_active
+        if is_pd_external_lb_active():
             logger.info(
                 "[role] PD external-lb active (PD_ROLE + DP_SIZE≥1) → standalone peer pod; "
                 "skipping Ray master/worker orchestration (see design §13.7)"

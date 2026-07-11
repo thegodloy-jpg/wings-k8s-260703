@@ -120,22 +120,38 @@ def _assert_no_duplicate_export_names(script: str) -> None:
     assert duplicates == []
 
 
-def _render_pd_deepseek_v4_script(tmp_path, monkeypatch, role: str, local_ip: str, pd_index: int) -> str:
+def _render_pd_deepseek_v4_script(
+    tmp_path,
+    monkeypatch,
+    role: str,
+    local_ip: str,
+    pd_index: int,
+    *,
+    prefill_dp: str = "2",
+    prefill_tp: str = "4",
+    decode_dp: str = "8",
+    decode_tp: str = "1",
+    dp_size_local: str | None = None,
+    node_ips: str | None = None,
+) -> str:
     for name in _CLEAR_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(sys, "argv", ["pytest"])
     monkeypatch.setenv("PD_ROLE", role)
     monkeypatch.setenv("PD_INDEX", str(pd_index))
-    monkeypatch.setenv("PD_PREFILL_DP_SIZE", "2")
-    monkeypatch.setenv("PD_PREFILL_TP_SIZE", "4")
-    monkeypatch.setenv("PD_DECODE_DP_SIZE", "8")
-    monkeypatch.setenv("PD_DECODE_TP_SIZE", "1")
-    monkeypatch.setenv("DP_SIZE_LOCAL", "1" if role == "P" else "8")
+    monkeypatch.setenv("PD_PREFILL_DP_SIZE", prefill_dp)
+    monkeypatch.setenv("PD_PREFILL_TP_SIZE", prefill_tp)
+    monkeypatch.setenv("PD_DECODE_DP_SIZE", decode_dp)
+    monkeypatch.setenv("PD_DECODE_TP_SIZE", decode_tp)
+    monkeypatch.setenv(
+        "DP_SIZE_LOCAL",
+        dp_size_local if dp_size_local is not None else ("1" if role == "P" else "8"),
+    )
     monkeypatch.setenv("MASTER_IP", local_ip)
     monkeypatch.setenv("RANK_IP", local_ip)
     monkeypatch.setenv("HOST_IP", local_ip)
     monkeypatch.setenv("POD_IP", local_ip)
-    monkeypatch.setenv("NODE_IPS", local_ip)
+    monkeypatch.setenv("NODE_IPS", node_ips or local_ip)
     monkeypatch.setenv("NETWORK_INTERFACE", "xxxx")
     monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
 
@@ -284,6 +300,73 @@ def test_deepseek_v4_pd_env_does_not_use_generic_env_builders(tmp_path, monkeypa
     assert "SHOULD_NOT_LEAK_FROM_MODEL_ENV" not in script
     assert "export HCCL_IF_IP=10.254.124.131" in script
     assert "export VLLM_RPC_TIMEOUT=3600000" in script
+
+
+def test_deepseek_v4_pd_dry_run_dp1_uses_single_foreground_command(tmp_path, monkeypatch):
+    script = _render_pd_deepseek_v4_script(
+        tmp_path,
+        monkeypatch,
+        "P",
+        _PREFILL_IP,
+        0,
+        prefill_dp="1",
+        prefill_tp="8",
+        decode_dp="1",
+        decode_tp="8",
+        dp_size_local="1",
+    )
+
+    assert "for i in $(seq" not in script
+    assert "wait -n" not in script
+    assert 'kill "${pids[@]}"' not in script
+    assert "--data-parallel-external-lb" not in script
+    assert "--data-parallel-size" not in script
+    assert "--tensor-parallel-size 8" in script
+    assert "ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 $((8 - 1)))" in script
+    assert "__PD_INDEX__" not in script
+    assert "__PD_KVPORT__" not in script
+    assert '"engine_id":"0"' in re.sub(r"\s+", "", script)
+    assert '"kv_port":"30000"' in re.sub(r"\s+", "", script)
+
+
+def test_deepseek_v4_pd_dry_run_multi_dp_uses_fork_body_and_replaces_placeholders(
+    tmp_path,
+    monkeypatch,
+):
+    script = _render_pd_deepseek_v4_script(tmp_path, monkeypatch, "D", _DECODE_IP, 1)
+
+    assert "for i in $(seq 0 7); do" in script
+    assert "wait -n || true" in script
+    assert 'kill "${pids[@]}" 2>/dev/null || true' in script
+    assert "--data-parallel-external-lb" in script
+    assert "--data-parallel-rank $RANK" in script
+    assert "KVPORT=$((30000 + PD_INDEX * 100)); BOOTSTRAP=$((23100 + i))" in script
+    assert "__PD_INDEX__" not in script
+    assert "__PD_KVPORT__" not in script
+    assert '"$PD_INDEX"' in script
+    assert '"$KVPORT"' in script
+
+
+def test_deepseek_v4_pd_dry_run_rank_start_from_rank_ip_and_node_ips(tmp_path, monkeypatch):
+    script = _render_pd_deepseek_v4_script(
+        tmp_path,
+        monkeypatch,
+        "P",
+        "10.254.124.132",
+        2,
+        prefill_dp="4",
+        prefill_tp="4",
+        decode_dp="8",
+        decode_tp="1",
+        dp_size_local="2",
+        node_ips="10.254.124.131,10.254.124.132",
+    )
+
+    assert "for i in $(seq 0 1); do" in script
+    assert "RANK=$((2 + i)); PORT=$((7100 + i))" in script
+    assert "--tensor-parallel-size 4 --data-parallel-size 4" in script
+    assert "--data-parallel-address 10.254.124.132" in script
+    assert "export PD_INDEX=2" in script
 
 
 def test_deepseek_v4_pd_logs_env_trigger_path(tmp_path, monkeypatch, caplog):
