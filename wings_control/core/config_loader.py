@@ -73,29 +73,6 @@ except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
         lmcache_auto_floor_disables_all_backends,
     )
-try:
-    from wings_control.core.pd_external_lb import (
-        PD_TOPOLOGY_KEYS,
-        build_pd_external_lb_kv as _shared_build_pd_external_lb_kv,
-        build_pd_external_lb_plan,
-        load_pd_config as _shared_load_pd_config,
-        read_pd_parallel_env,
-        resolve_ascend_platform as _shared_resolve_ascend_platform,
-        resolve_pd_external_lb_params,
-        resolve_pd_parallel_overrides,
-    )
-except ImportError:
-    from core.pd_external_lb import (  # noqa: F401
-        PD_TOPOLOGY_KEYS,
-        build_pd_external_lb_kv as _shared_build_pd_external_lb_kv,
-        build_pd_external_lb_plan,
-        load_pd_config as _shared_load_pd_config,
-        read_pd_parallel_env,
-        resolve_ascend_platform as _shared_resolve_ascend_platform,
-        resolve_pd_external_lb_params,
-        resolve_pd_parallel_overrides,
-    )
-
 logger = logging.getLogger(__name__)
 
 
@@ -147,7 +124,12 @@ def _load_pd_config() -> Dict[str, Any]:
     返回按模型架构 key 的字典（含 ``default`` 兜底条目）。文件缺失/解析失败时
     返回空字典（此时 external-lb 路径将无可用条目，回退到原 standalone）。
     """
-    return _shared_load_pd_config(DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILES["pd_config"])
+    global _PD_CONFIG_CACHE
+    if _PD_CONFIG_CACHE is None:
+        path = os.path.join(DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILES["pd_config"])
+        cfg = load_json_config(path)
+        _PD_CONFIG_CACHE = cfg.get("pd_config", {}) if isinstance(cfg, dict) else {}
+    return _PD_CONFIG_CACHE
 
 SUPPORTED_DEVICE_TYPES = {"nvidia", "ascend"}
 
