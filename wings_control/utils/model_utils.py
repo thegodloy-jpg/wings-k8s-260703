@@ -32,6 +32,8 @@ from typing import Any, Optional
 
 from utils.file_utils import load_json_config
 from core.version_util import engine_version_platform
+from utils.device_utils import resolve_card_token
+from utils.env_utils import get_config_force_env
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,24 @@ _SMART_WHITELIST_PATH = (
 )
 
 
+def _normalize_match_rows(rows) -> tuple[dict, ...]:
+    """Normalize model/card matching fields while retaining row metadata."""
+    normalized = []
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        normalized.append({
+            **row,
+            "engine": str(row.get("engine", "")),
+            "name_tokens": tuple(str(tok).lower() for tok in row.get("name_tokens", ())),
+            "exclude_name_tokens": tuple(
+                str(tok).lower() for tok in row.get("exclude_name_tokens", ())
+            ),
+            "card_tokens": tuple(str(tok).lower() for tok in row.get("card_tokens", ())),
+        })
+    return tuple(normalized)
+
+
 def _load_smart_feature_whitelists(path: Path = _SMART_WHITELIST_PATH) -> dict:
     """从 JSON 加载三独立白名单表，返回 {feature: tuple[row, ...]}。
 
@@ -64,18 +84,7 @@ def _load_smart_feature_whitelists(path: Path = _SMART_WHITELIST_PATH) -> dict:
     tables = {}
     for feat in SMART_FEATURES:
         rows = data.get(feat, []) if isinstance(data, dict) else []
-        normalized = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            normalized.append({
-                **row,
-                "engine": str(row.get("engine", "")),
-                "name_tokens": tuple(str(tok).lower() for tok in row.get("name_tokens", ())),
-                "exclude_name_tokens": tuple(str(tok).lower() for tok in row.get("exclude_name_tokens", ())),
-                "card_tokens": tuple(str(tok).lower() for tok in row.get("card_tokens", ())),
-            })
-        tables[feat] = tuple(normalized)
+        tables[feat] = _normalize_match_rows(rows)
     if not any(tables.values()):
         logger.error(
             "[SmartFeature] all whitelists empty after load from %s "
@@ -128,6 +137,49 @@ def resolve_feature_whitelist_row(engine, model_name, model_path, card_token, fe
     hay = " ".join(str(x).lower() for x in (model_name, model_path) if x)
     ct = (card_token or "").lower()
     return _whitelist_table_match(table, engine, hay, ct)
+
+
+def resolve_feature_whitelist_row_from_params(
+    params: Optional[dict],
+    engine: str,
+    feature: str,
+    *,
+    require_enabled: bool = False,
+) -> Optional[dict]:
+    """Return the matched smart-feature row for launcher/adapter params.
+
+    The smart whitelist module owns model/card row lookup.  Launcher, config
+    loader, feature helpers and engine adapters should call this instead of
+    rebuilding ``model_name``/``model_path``/``_smart_card_token`` lookup rules.
+    ``CONFIG_FORCE=true`` bypasses smart whitelist ownership so explicit config
+    can fully take over.
+    """
+    if not params or get_config_force_env():
+        return None
+    smart_feats = params.get("_smart_feats")
+    if require_enabled and smart_feats is not None and feature not in smart_feats:
+        return None
+    return resolve_feature_whitelist_row(
+        engine,
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("_smart_card_token") or resolve_card_token(),
+        feature,
+    )
+
+
+def resolve_offload_whitelist_backend(
+    params: Optional[dict],
+    engine: str,
+) -> str:
+    """Return the explicit offload backend declared by the matched whitelist row."""
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "offload",
+        require_enabled=True,
+    )
+    return str(row.get("backend") or "") if row else ""
 
 
 def resolve_feature_whitelist(engine, model_name, model_path, card_token):
@@ -491,6 +543,7 @@ _LLM_MODELS = {
         "GLM-5-FP8",
         "GLM-5-w4a8",
         "GLM-5.1",
+        "GLM5.1",
         "GLM-5.1-w8a8",
         "GLM-5.1-FP8",
         "GLM-5.2",
@@ -498,6 +551,7 @@ _LLM_MODELS = {
         ],
     "Glm4MoeForCausalLM": [
         "GLM-4.7",
+        "GLM4.7",
         "GLM-4.7-w8a8"
         ],
     "Qwen2ForCausalLM": [

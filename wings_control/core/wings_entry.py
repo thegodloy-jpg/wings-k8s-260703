@@ -32,6 +32,7 @@ from engines.vllm_adapter import (
     resolve_sparse_variant,
     resolve_offload_variant,
     resolve_effective_kv_mem_offload_size,
+    resolve_effective_speculative_details,
     prepare_params_for_startup_status,
     lmcache_auto_floor_disables_all_backends,
     _is_deepseek_v4_flash_params,
@@ -53,6 +54,7 @@ from utils.model_utils import (
     INDEXCACHE_ARCHS,
     is_glm_moe_dsa_glm51,
     feature_allowed,
+    resolve_offload_whitelist_backend,
     is_qwen3_5_397b_nvfp4_vllm,
 )
 
@@ -403,6 +405,12 @@ def _uses_non_lmcache_offload_backend(engine: str, merged: dict | None) -> bool:
         return True
     if not merged or engine != "vllm":
         return False
+    if resolve_offload_whitelist_backend(merged, engine) == "native":
+        logger.info(
+            "[KVCache Offload] offload whitelist uses native KV offload; "
+            "skipping LMCache patch install."
+        )
+        return True
     if _is_deepseek_v4_flash_params(merged):
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
@@ -1069,6 +1077,7 @@ def _write_advanced_features_json(engine: str, merged: dict) -> None:
             engine,
             kv_offload_variant,
         ),
+        "speculative_decode": resolve_effective_speculative_details(merged, engine),
     }
     data = {"engine": engine, "features": features, "variants": variants, "others": others}
     ok = safe_write_file(
@@ -1294,7 +1303,8 @@ else
         "kv_offload": null
     }},
     "others": {{
-        "kv_mem_offload_size": 0
+        "kv_mem_offload_size": 0,
+        "speculative_decode": null
     }}
 }}
 FEATURES_EOF

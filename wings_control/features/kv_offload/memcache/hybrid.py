@@ -9,10 +9,18 @@ from typing import Any, Dict, Optional
 
 try:
     from wings_control.utils.device_utils import resolve_card_token
-    from wings_control.utils.model_utils import feature_allowed, resolve_feature_whitelist_row
+    from wings_control.utils.model_utils import (
+        feature_allowed,
+        resolve_feature_whitelist_row_from_params,
+        resolve_offload_whitelist_backend,
+    )
 except ImportError:
     from utils.device_utils import resolve_card_token  # type: ignore
-    from utils.model_utils import feature_allowed, resolve_feature_whitelist_row  # type: ignore
+    from utils.model_utils import (  # type: ignore
+        feature_allowed,
+        resolve_feature_whitelist_row_from_params,
+        resolve_offload_whitelist_backend,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +33,18 @@ _OFFLOAD_MIN_GB = 100
 _TEMPLATE_DIR = Path(__file__).resolve().parent
 _DEFAULT_META_SERVICE_URL = "tcp://127.0.0.1:5000"
 _DEFAULT_CONFIG_STORE_URL = "tcp://127.0.0.1:6000"
+_DEFAULT_PROTOCOL = "device_rdma"
+
+_QWEN35_DAY0_PROFILE = (
+    "tcp://127.0.0.1:50051",
+    "tcp://127.0.0.1:50061",
+    "device_sdma",
+)
+_QWEN36_DAY0_PROFILE = (
+    "tcp://127.0.0.1:50071",
+    "tcp://127.0.0.1:50081",
+    "device_rdma",
+)
 
 
 def empty_memcache_hybrid_fragment() -> dict:
@@ -53,32 +73,33 @@ def is_qwen_day0_memcache_params(params: Optional[Dict[str, Any]], engine: str) 
     if not params or engine != "vllm_ascend":
         return False
 
-    smart_feats = params.get("_smart_feats")
-    if smart_feats is not None and "offload" not in smart_feats:
-        return False
-
     # 这里不要再维护第二份 Qwen 模型 token 表。Day0 矩阵对模型和芯片都敏感，
     # MemCache 能力必须跟随特性 gating 和 dry-run 命令生成已经使用的同一条
     # offload 白名单行。arch 检查用于把该 helper 限定在 Qwen 场景，即使后续
     # 其它 offload 模型也复用相同的 MemCache 传输。
-    row = resolve_feature_whitelist_row(
+    row = resolve_feature_whitelist_row_from_params(
+        params,
         engine,
-        params.get("model_name"),
-        params.get("model_path"),
-        params.get("_smart_card_token") or resolve_card_token(),
         "offload",
+        require_enabled=True,
     )
     if not row:
         return False
-    return str(row.get("arch", "")).startswith("Qwen3_5")
+    return (
+        row.get("backend") == MEMCACHE_OFFLOAD_VARIANT
+        and str(row.get("arch", "")).startswith("Qwen3_5")
+    )
 
 
 def is_memcache_hybrid_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
     """判断当前参数是否应使用 MemCache Hybrid offload 路径。"""
-    return (
-        is_kimi_k27_code_memcache_params(params, engine)
-        or is_qwen_day0_memcache_params(params, engine)
-    )
+    backend = resolve_offload_whitelist_backend(params, engine)
+    if backend:
+        return backend == MEMCACHE_OFFLOAD_VARIANT
+    smart_feats = (params or {}).get("_smart_feats")
+    if smart_feats is not None:
+        return "offload" in smart_feats and is_kimi_k27_code_memcache_params(params, engine)
+    return False
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -184,34 +205,36 @@ def _resolve_memcache_profile_defaults(
 
     shell 模板仍允许部署层通过 WINGS_MEMCACHE_META_SERVICE_URL 和
     WINGS_MEMCACHE_CONFIG_STORE_URL、WINGS_MEMCACHE_PROTOCOL 覆盖。这里的默认值
-    只决定部署层未显式下发时渲染什么。对 Qwen Day0 来说，端口和协议都是
-    模型+芯片 offload 场景契约的一部分，因此与能力判断共用同一条白名单行，
-    避免 Qwen3.5 的 device_sdma 被全局 device_rdma 默认值覆盖。
+    只决定部署层未显式下发时渲染什么。白名单只表达是否允许 memcache backend；
+    端口和协议属于启动参数默认值，不放入 smart_feature_whitelist.json。
     """
     params = params or {}
-    row = resolve_feature_whitelist_row(
-        engine,
-        params.get("model_name"),
-        params.get("model_path"),
-        params.get("_smart_card_token") or resolve_card_token(),
-        "offload",
+    qwen_profile = _resolve_qwen_day0_memcache_profile(params, engine)
+    if qwen_profile:
+        return qwen_profile
+    return (
+        _DEFAULT_META_SERVICE_URL,
+        _DEFAULT_CONFIG_STORE_URL,
+        _DEFAULT_PROTOCOL,
     )
-    meta_port = _safe_int((row or {}).get("memcache_meta_port"))
-    config_port = _safe_int((row or {}).get("memcache_config_port"))
-    protocol = str((row or {}).get("memcache_protocol") or "device_rdma").strip()
-    if protocol not in {"device_rdma", "device_sdma"}:
-        logger.warning(
-            "[MemCache] Invalid whitelist memcache_protocol=%r; using device_rdma.",
-            protocol,
-        )
-        protocol = "device_rdma"
-    if meta_port and config_port:
-        return (
-            f"tcp://127.0.0.1:{meta_port}",
-            f"tcp://127.0.0.1:{config_port}",
-            protocol,
-        )
-    return _DEFAULT_META_SERVICE_URL, _DEFAULT_CONFIG_STORE_URL, protocol
+
+
+def _resolve_qwen_day0_memcache_profile(
+    params: Dict[str, Any],
+    engine: str,
+) -> Optional[tuple[str, str, str]]:
+    """Return Qwen Day0 MemCache profile after whitelist/backend gating matched."""
+    if not is_qwen_day0_memcache_params(params, engine):
+        return None
+    text = " ".join(
+        str(params.get(key, "") or "").lower()
+        for key in ("model_name", "model_path")
+    )
+    if "qwen3.5-27b" in text:
+        return _QWEN35_DAY0_PROFILE
+    if "qwen3.6-" in text:
+        return _QWEN36_DAY0_PROFILE
+    return None
 
 
 def _memcache_offload_allowed(engine: str, merged: dict | None) -> bool:

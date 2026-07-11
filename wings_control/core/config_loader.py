@@ -43,6 +43,7 @@ from utils.model_utils import (ModelIdentifier,
                                is_glm_moe_dsa_glm51, is_glm52_single_node_even, resolve_thinking_off_policy,
                                resolve_feature_whitelist, resolve_feature_whitelist_row,
                                resolve_forced_feature_whitelist, feature_allowed,
+                               resolve_offload_whitelist_backend,
                                is_deepseek_v4_flash_rtx_pro_5000,
                                is_minimax_m27_rtx_pro_5000_vllm,
                                is_qwen3_5_397b_nvfp4_vllm,
@@ -71,6 +72,28 @@ try:
 except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
         lmcache_auto_floor_disables_all_backends,
+    )
+try:
+    from wings_control.core.pd_external_lb import (
+        PD_TOPOLOGY_KEYS,
+        build_pd_external_lb_kv as _shared_build_pd_external_lb_kv,
+        build_pd_external_lb_plan,
+        load_pd_config as _shared_load_pd_config,
+        read_pd_parallel_env,
+        resolve_ascend_platform as _shared_resolve_ascend_platform,
+        resolve_pd_external_lb_params,
+        resolve_pd_parallel_overrides,
+    )
+except ImportError:
+    from core.pd_external_lb import (  # noqa: F401
+        PD_TOPOLOGY_KEYS,
+        build_pd_external_lb_kv as _shared_build_pd_external_lb_kv,
+        build_pd_external_lb_plan,
+        load_pd_config as _shared_load_pd_config,
+        read_pd_parallel_env,
+        resolve_ascend_platform as _shared_resolve_ascend_platform,
+        resolve_pd_external_lb_params,
+        resolve_pd_parallel_overrides,
     )
 
 logger = logging.getLogger(__name__)
@@ -124,12 +147,7 @@ def _load_pd_config() -> Dict[str, Any]:
     返回按模型架构 key 的字典（含 ``default`` 兜底条目）。文件缺失/解析失败时
     返回空字典（此时 external-lb 路径将无可用条目，回退到原 standalone）。
     """
-    global _PD_CONFIG_CACHE
-    if _PD_CONFIG_CACHE is None:
-        path = os.path.join(DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILES["pd_config"])
-        cfg = load_json_config(path)
-        _PD_CONFIG_CACHE = cfg.get("pd_config", {}) if isinstance(cfg, dict) else {}
-    return _PD_CONFIG_CACHE
+    return _shared_load_pd_config(DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_FILES["pd_config"])
 
 SUPPORTED_DEVICE_TYPES = {"nvidia", "ascend"}
 
@@ -600,27 +618,23 @@ def _merge_vllm_params(params, ctx, engine_cmd_parameter, model_info):
 
 
 def _set_function_call(params, engine_cmd_parameter):
-    """根据用户传入或模型默认配置中的 enable_auto_tool_choice 统一启用 function call。
+    """根据用户传入的 enable_auto_tool_choice 统一启用 function call。
 
-    触发源：CLI 显式开关 **或** model_deploy_config 中明确写 ``enable_auto_tool_choice: true``
-    （后者在 V4-Pro/V4-Flash 等模型默认中已配置，避免用户重复指定）。
-    tool_call_parser 来自模型默认配置，不需要用户指定。
+    触发源：页面/CLI/env 显式开关。默认模板只承载模型对应的 tool_call_parser 能力，
+    不承载 enable_auto_tool_choice 开关状态。
 
     逻辑（仅管 tool_call_parser / enable_auto_tool_choice，不再触碰 reasoning_parser）：
-      - 触发源开启 + 模型配置了 tool_call_parser
+      - 显式开关开启 + 模型配置了 tool_call_parser
         → 保留 tool_call_parser，注入 enable_auto_tool_choice
-      - 触发源开启 但模型没有 tool_call_parser
+      - 显式开关开启 但模型没有 tool_call_parser
         → 移除 enable_auto_tool_choice，打印警告
-      - 触发源未开启
+      - 显式开关未开启
         → 移除 tool_call_parser 和 enable_auto_tool_choice，FC 不生效
 
     注意：reasoning_parser 已与 function call 解耦，改由 _set_reasoning_parser
     依据独立的 --enable-auto-think-choice 开关单独控制。
     """
-    user_wants_fc = (
-        engine_cmd_parameter.get("enable_auto_tool_choice")
-        or params.get("enable_auto_tool_choice")
-    )
+    user_wants_fc = engine_cmd_parameter.get("enable_auto_tool_choice")
     if user_wants_fc:
         if "tool_call_parser" in params:
             params["enable_auto_tool_choice"] = True
@@ -1685,6 +1699,14 @@ def _set_kv_cache_config(params, ctx, model_info=None):
     if ctx.get("_smart_feats") is not None:
         lmcache_offload = "offload" in ctx.get("_smart_feats")
 
+    if lmcache_offload and resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) == "native":
+        params.pop("kv_transfer_config", None)
+        logger.info(
+            "[KVCache Offload] offload whitelist uses native --kv-offloading-backend; "
+            "not injecting LMCacheConnectorV1."
+        )
+        return
+
     if lmcache_offload and is_memcache_hybrid_params(ctx, ctx.get("engine")):
         if resolve_memcache_dram_gb(ctx):
             # Qwen Day0 标准脚本的 AscendStoreConnector 不带 kv_load_failure_policy。
@@ -1808,6 +1830,23 @@ def _set_kv_cache_config(params, ctx, model_info=None):
     params['kv_transfer_config'] = json.dumps(config)
 
 
+def _enforce_native_offload_no_kv_transfer_config(
+    engine_config: Dict[str, Any], ctx: Dict[str, Any],
+) -> None:
+    """Keep exact native whitelist rows mutually exclusive with LMCache connectors."""
+    if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) != "native":
+        return
+    smart_feats = ctx.get("_smart_feats")
+    if smart_feats is not None and "offload" not in smart_feats:
+        return
+    removed = engine_config.pop("kv_transfer_config", None)
+    if removed is not None:
+        logger.info(
+            "[KVCache Offload] removed kv_transfer_config=%s from native offload scene.",
+            removed,
+        )
+
+
 def _enforce_glm51_nvidia_no_kv_offload(engine_config: Dict[str, Any],
                                         ctx: Dict[str, Any],
                                         model_info) -> None:
@@ -1817,6 +1856,12 @@ def _enforce_glm51_nvidia_no_kv_offload(engine_config: Dict[str, Any],
     merged, so even upper-layer injected ``kv_transfer_config`` is removed.
     """
     if not _is_glm51_nvidia_vllm(ctx, model_info):
+        return
+    if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) == "native":
+        logger.info(
+            "[KVCache Offload] native offload whitelist row replaces the legacy "
+            "NVIDIA offload-disable guard."
+        )
         return
 
     removed = engine_config.pop("kv_transfer_config", None)
@@ -3981,6 +4026,10 @@ def load_and_merge_configs(
     # 4.7 GLM-5.1 + NVIDIA/vLLM 硬约束：禁止 KVCache Offload。
     #     必须放在所有合并之后，确保 user_config、CLI 或 Master 下发的
     #     raw engine_config 中即使带 kv_transfer_config 也会被强制移除。
+    _enforce_native_offload_no_kv_transfer_config(
+        engine_config,
+        {**cmd_known_params, "device": hardware_env.get("device")},
+    )
     _enforce_glm51_nvidia_no_kv_offload(
         engine_config,
         {**cmd_known_params, "device": hardware_env.get("device")},

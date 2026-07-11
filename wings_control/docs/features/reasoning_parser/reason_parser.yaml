@@ -106,8 +106,10 @@ architectures:
       GLM-5-FP8:    {vllm: glm45, vllm_ascend: glm45}
       GLM-5-w4a8:   {vllm: glm45, vllm_ascend: glm45}
       GLM-5.1:      {vllm: glm45, vllm_ascend: glm45}
+      GLM5.1:       {vllm: glm45, vllm_ascend: glm45}
       GLM-5.1-w8a8: {vllm: glm45, vllm_ascend: glm45}
       GLM-5.1-FP8:  {vllm: glm45, vllm_ascend: glm45}
+      GLM5.1-FP8:   {vllm: glm45, vllm_ascend: glm45}
       GLM-5.2:      {vllm: glm45, vllm_ascend: glm45}
       GLM-5.2-w8a8: {vllm: glm45, vllm_ascend: glm45}
 
@@ -117,6 +119,9 @@ architectures:
       vllm_ascend: {default: glm45}
     models:
       GLM-4.7:      {vllm: glm45, vllm_ascend: glm45}
+      GLM-4.7-FP8: {vllm: glm45, vllm_ascend: glm45}
+      GLM4.7:       {vllm: glm45, vllm_ascend: glm45}
+      GLM4.7-FP8:   {vllm: glm45, vllm_ascend: glm45}
       GLM-4.7-w8a8: {vllm: glm45, vllm_ascend: glm45}
 
   - name: Qwen3ForCausalLM
@@ -124,7 +129,9 @@ architectures:
       vllm:        {default: qwen3}
       vllm_ascend: {default: qwen3}
     models:
-      Qwen3-32B: {vllm: qwen3, vllm_ascend: qwen3}
+      Qwen3-32B:                  {vllm: qwen3, vllm_ascend: qwen3}
+      Qwen3-Embedding-0.6B:      {vllm: null, vllm_ascend: null}
+      Qwen/Qwen3-Embedding-0.6B: {vllm: null, vllm_ascend: null}
 
   - name: Qwen3MoeForCausalLM
     config:
@@ -211,3 +218,13 @@ architectures:
       Meta-Llama-3.1-70B-Instruct:   {vllm: null, vllm_ascend: null}
       DeepSeek-R1-Distill-Llama-8B:  {vllm: null, vllm_ascend: null}
       DeepSeek-R1-Distill-Llama-70B: {vllm: null, vllm_ascend: null}
+
+  - name: BertModel
+    config: {}
+    models:
+      bge-large-zh-v1.5: {vllm: null, vllm_ascend: null}
+
+  - name: XLMRobertaForSequenceClassification
+    config: {}
+    models:
+      bge-reranker-large: {vllm: null, vllm_ascend: null}

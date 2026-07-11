@@ -205,15 +205,15 @@ Function call defaults:
 
 ```json
 {
-  "enable_auto_tool_choice": true,
   "tool_call_parser": "kimi_k2"
 }
 ```
 
 Function call behavior:
 
-- `ascend_default.json` should provide `enable_auto_tool_choice=true` and `tool_call_parser=kimi_k2`
-- `config_loader._set_function_call()` keeps these fields only when the function-call trigger is enabled by user input or model defaults
+- `ascend_default.json` should provide `tool_call_parser=kimi_k2` as model capability metadata
+- `enable_auto_tool_choice` is controlled by the page/CLI/env switch and must not be written into the default template
+- `config_loader._set_function_call()` keeps these fields only when the function-call trigger is explicitly enabled by user input
 - if `enable_auto_tool_choice` is not effective, `tool_call_parser` is removed from the final engine config
 
 Reasoning parser:
@@ -262,7 +262,6 @@ Defaults should preserve:
 - `quantization=ascend`
 - `gpu_memory_utilization=0.9`
 - `trust_remote_code=true` when represented in engine config
-- `enable_auto_tool_choice=true`
 - `tool_call_parser=kimi_k2`
 - `async_scheduling=true` where supported
 - `no_enable_prefix_caching=true` for the official Kimi offload/spec recipe

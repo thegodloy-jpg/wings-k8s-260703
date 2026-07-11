@@ -49,6 +49,16 @@ class _FakeGlm47Identifier:
         self.model_type = model_type
 
 
+class _FakeQwen36MoeIdentifier:
+    model_architecture = "Qwen3_5MoeForConditionalGeneration"
+    model_quantize = ""
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeUnknownGlm51Identifier:
     model_architecture = "unknown_architecture"
     model_quantize = "w8a8"
@@ -306,6 +316,112 @@ def test_qwen35_nvfp4_pro5000_speculative_config_matches_tokenbox(monkeypatch):
     )
 
     assert command == ' --speculative-config \'{"method":"mtp","num_speculative_tokens":3}\''
+
+
+def test_nvidia_day0_glm47_mtp_uses_whitelist_method_and_ignores_draft(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm47Identifier)
+
+    params = {
+        "engine": "vllm",
+        "model_name": "GLM-4.7",
+        "model_path": "/models/GLM-4.7",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "/models/old-draft",
+        "_smart_card_token": "h20-141",
+        "_smart_feats": ["spec"],
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm") == "mtp"
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+    assert command == " --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
+    assert "old-draft" not in command
+
+
+def test_nvidia_day0_qwen35_mtp_uses_whitelist_moe_backend(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen36MoeIdentifier)
+
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.6-35B-A3B",
+        "model_path": "/models/Qwen3.6-35B-A3B",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_card_token": "l20",
+        "_smart_feats": ["spec"],
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+
+    assert command == (
+        " --speculative-config "
+        "'{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"moe_backend\":\"triton\"}'"
+    )
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "mtp",
+        "num_speculative_tokens": 3,
+        "moe_backend": "triton",
+    }
+
+
+def test_nvidia_day0_native_offload_uses_whitelist_backend(monkeypatch):
+    monkeypatch.delenv("CONFIG_FORCE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "20")
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
+        "model_type": "llm",
+        "_smart_card_token": "l20",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm") == (
+        " --kv-offloading-backend native --kv-offloading-size 20"
+    )
+    assert vllm_adapter.resolve_offload_variant(params, "vllm") == (
+        "native_kv_offloading_backend"
+    )
+    assert vllm_adapter.resolve_effective_kv_mem_offload_size(params, "vllm") == 20
+
+
+@pytest.mark.parametrize("raw_size", ["", "invalid", "0", "-1"])
+def test_nvidia_day0_native_offload_discards_invalid_page_size(monkeypatch, raw_size):
+    monkeypatch.delenv("CONFIG_FORCE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", raw_size)
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
+        "model_type": "llm",
+        "_smart_card_token": "l20",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm") == ""
+    assert vllm_adapter.resolve_offload_variant(params, "vllm") == "disabled"
+    assert vllm_adapter.resolve_effective_kv_mem_offload_size(params, "vllm") is None
+
+
+def test_nvidia_day0_native_offload_config_force_bypasses_whitelist(monkeypatch):
+    monkeypatch.setenv("CONFIG_FORCE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "20")
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
+        "model_type": "llm",
+        "_smart_card_token": "l20",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm") == ""
 
 
 def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypatch):

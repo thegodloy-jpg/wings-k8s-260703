@@ -138,7 +138,6 @@
         "quantization": "ascend",
         "seed": 1024,
         "async_scheduling": true,
-        "enable_auto_tool_choice": true,
         "tool_call_parser": "glm47",
         "reasoning_parser": "glm45",
         "speculative_config": { "num_speculative_tokens": 3, "method": "deepseek_mtp" }
@@ -267,7 +266,6 @@
         "tokenizer_mode": "deepseek_v4",
         "tool_call_parser": "deepseek_v4",
         "reasoning_parser": "deepseek_v4",
-        "enable_auto_tool_choice": true,
         "no_disable_hybrid_kv_cache_manager": true,
         "model_loader_extra_config": { "enable_multithread_load": "true", "num_threads": 128 },
         "speculative_config": { "num_speculative_tokens": 1, "method": "mtp", "enforce_eager": true }

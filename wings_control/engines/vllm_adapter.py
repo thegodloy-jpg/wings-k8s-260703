@@ -32,7 +32,9 @@ from utils.model_utils import (ModelIdentifier, ModelIdentifierDraft,
                                is_minimax_m27_rtx_pro_5000_vllm,
                                is_glm51_ascend_kvsparse_tmp_scope, is_glm52_model,
                                is_glm52_single_node_even, feature_allowed,
-                               resolve_feature_whitelist_row, resolve_sparse_topk)
+                               resolve_feature_whitelist_row_from_params,
+                               resolve_offload_whitelist_backend,
+                               resolve_sparse_topk)
 from utils.device_utils import resolve_card_token
 
 from utils.env_utils import get_local_ip, get_lmcache_env, \
@@ -701,19 +703,69 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
     )
 
 
+_NATIVE_OFFLOAD_SIZE_ENV_NAMES = ("KV_MEM_OFFLOAD_SIZE",)
+_QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES = (
+    "KV_MEM_OFFLOAD_SIZE",
+    "LMCACHE_MAX_LOCAL_CPU_SIZE",
+)
+
+
+def _native_backend_size_env_names(params: Dict[str, Any], engine: str) -> Tuple[str, ...]:
+    """Return native offload size env names without reading size policy from whitelist."""
+    if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
+        # 兼容 23.6.0 Qwen3.5 NVFP4 既有管理口径：优先页面 KV_MEM_OFFLOAD_SIZE，
+        # 旧 LMCACHE_MAX_LOCAL_CPU_SIZE 仍可接管，但该策略归代码场景逻辑所有，
+        # 不放进 smart_feature_whitelist.json。
+        return _QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES
+    return _NATIVE_OFFLOAD_SIZE_ENV_NAMES
+
+
+def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> int:
+    """Resolve native backend size via existing page/env/auto logic, not whitelist fields."""
+    if engine == "vllm" and is_qwen3_5_397b_nvfp4_vllm(params, engine):
+        return _resolve_native_offload_gb(
+            params,
+            fallback_gb=200,
+            size_env_names=_QWEN35_NVFP4_NATIVE_SIZE_ENV_NAMES,
+            log_context="KVCache Offload",
+        )
+    return _resolve_native_offload_gb(
+        params,
+        fallback_gb=None,
+        size_env_names=_NATIVE_OFFLOAD_SIZE_ENV_NAMES,
+        require_mem_switch=True,
+        log_context="KVCache Offload",
+    )
+
+
+def _native_backend_auto_requested(params: Dict[str, Any], engine: str) -> bool:
+    """Return whether native backend size is requested in auto mode."""
+    return any(
+        os.getenv(env_name, "").strip().lower() == "auto"
+        for env_name in _native_backend_size_env_names(params, engine)
+    )
+
+
+def _mtp_whitelist_override_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
+    """Return a spec whitelist row that explicitly owns MTP method selection."""
+    row = resolve_feature_whitelist_row_from_params(params, engine, "spec")
+    if not row or not row.get("mtp_method"):
+        return None
+    return row
+
+
 # ── Offload 特例/后端判定（_build_cache_env_commands 与 resolve_offload_variant 共用，
 #    使「守卫条件」成为单一真相源、二者天然同源同序）──
 _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache 通用路径
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
 _OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv-offloading-backend
-_OFFLOAD_QWEN35_NVFP4_NATIVE = "qwen35_nvfp4_native" # Qwen3.5 NVFP4·NV native --kv-offloading-backend
+_OFFLOAD_NATIVE_BACKEND_VARIANT = "native_kv_offloading_backend"
 KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV = "KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED"
 _OFFLOAD_AUTO_FLOOR_VARIANT = "lmcache_cpu+auto+floor_disabled"
 _OFFLOAD_CPU_AUTO_FLOOR_MODIFIER = "cpu_auto_floor_disabled"
 _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offload_variant 的 variant 串
     _OFFLOAD_GLM51_NV_DISABLED: "disabled",
-    _OFFLOAD_V4_FLASH_NATIVE: "native_kv_offloading_backend",
-    _OFFLOAD_QWEN35_NVFP4_NATIVE: "native_kv_offloading_backend",
+    _OFFLOAD_V4_FLASH_NATIVE: _OFFLOAD_NATIVE_BACKEND_VARIANT,
 }
 
 
@@ -723,12 +775,12 @@ def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str
     返回 ``_OFFLOAD_*`` 之一；``_OFFLOAD_NATIVE_NONE`` 表示无特例、应走 LMCache 通用路径。
     三特例均与 LMCache 互斥（强制关 / V4 走 native 后端）。
     """
+    if resolve_offload_whitelist_backend(params, engine) == "native":
+        return _OFFLOAD_NATIVE_NONE
     if _is_glm51_nvidia_vllm_params(params, engine):
         return _OFFLOAD_GLM51_NV_DISABLED
     if params and engine == "vllm" and _is_deepseek_v4_flash_params(params):
         return _OFFLOAD_V4_FLASH_NATIVE
-    if params and is_qwen3_5_397b_nvfp4_vllm(params, engine):
-        return _OFFLOAD_QWEN35_NVFP4_NATIVE
     return _OFFLOAD_NATIVE_NONE
 
 
@@ -749,12 +801,6 @@ def _lmcache_engine_env_skip(special: str) -> bool:
         logger.info(
             "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native --kv-offloading-backend; "
             "skipping LMCache engine-side env exports."
-        )
-        return True
-    if special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
-        logger.info(
-            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 uses native "
-            "--kv-offloading-backend; skipping LMCache engine-side env exports."
         )
         return True
     return False
@@ -853,12 +899,14 @@ def _is_offload_feature_effective(params: Optional[Dict[str, Any]], engine: str)
     )
 
 
-def _resolve_offload_backend(params: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+def _resolve_offload_backend(params: Optional[Dict[str, Any]], engine: str = "") -> Tuple[str, str]:
     """LMCache 后端选择，返回 ``(backend, cpu_mode)``。
 
-    backend ∈ {lmcache_cpu_disk, lmcache_cpu, lmcache_disk, disabled}；
+    backend ∈ {native_kv_offloading_backend, lmcache_cpu_disk, lmcache_cpu, lmcache_disk, disabled}；
     cpu_mode ∈ {auto, custom, ""}（auto 即反向预算容量模式）。
     """
+    if resolve_offload_whitelist_backend(params, engine) == "native":
+        return _OFFLOAD_NATIVE_BACKEND_VARIANT, "native"
     auto_total = resolve_offload_cpu_capacity_gb(params)
     if auto_total is not None:
         has_cpu = auto_total > 0          # 熔断(0) → 无 CPU 池
@@ -992,6 +1040,13 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
 
     if _lmcache_engine_env_skip(special):
         return env_commands
+    backend, _ = _resolve_offload_backend(params, engine)
+    if backend == _OFFLOAD_NATIVE_BACKEND_VARIANT:
+        logger.info(
+            "[KVCache Offload] native KV offload backend selected; "
+            "skipping LMCache engine-side env exports."
+        )
+        return env_commands
 
     # 跨实例Hash一致
     if params and engine == "vllm_ascend" and _is_deepseek_v4_flash_params(params):
@@ -1064,14 +1119,18 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     special = _classify_offload_special_case(params, engine)
     if special:
         variant = _OFFLOAD_VARIANT_BY_SPECIAL[special]
-        if (
-            special in {_OFFLOAD_V4_FLASH_NATIVE, _OFFLOAD_QWEN35_NVFP4_NATIVE}
-            and _native_offload_auto_floor_disabled(params, special)
-        ):
+        if special == _OFFLOAD_V4_FLASH_NATIVE and _native_offload_auto_floor_disabled(params, special):
             return f"{variant}+auto+floor_disabled"
         return variant
     # LMCache 路径：CPU(auto/custom) / Disk / 分层（后端选择见 _resolve_offload_backend）
-    backend, cpu_mode = _resolve_offload_backend(params)
+    backend, cpu_mode = _resolve_offload_backend(params, engine)
+    if backend == _OFFLOAD_NATIVE_BACKEND_VARIANT:
+        size_gb = _resolve_native_backend_offload_gb(params or {}, engine)
+        if size_gb <= 0:
+            if _native_backend_auto_requested(params or {}, engine):
+                return f"{backend}+auto+floor_disabled"
+            return "disabled"
+        return backend
     auto_cpu_floor_disabled = is_kv_mem_offload_auto_floor_disabled(params)
     if backend == "disabled":            # offload on 但无任何容量段（含熔断）
         if auto_cpu_floor_disabled:
@@ -1131,8 +1190,8 @@ def resolve_effective_kv_mem_offload_size(
         special = _classify_offload_special_case(params, engine)
         if special == _OFFLOAD_V4_FLASH_NATIVE:
             size_gb = _resolve_v4_flash_offload_gb(params)
-        elif special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
-            size_gb = _resolve_qwen35_nvfp4_offload_gb(params)
+        elif _resolve_offload_backend(params, engine)[0] == _OFFLOAD_NATIVE_BACKEND_VARIANT:
+            size_gb = _resolve_native_backend_offload_gb(params, engine)
         else:
             return None
         return max(0, int(size_gb))
@@ -1149,12 +1208,6 @@ def _native_offload_auto_floor_disabled(
     """Return whether a native KV offload special case is disabled by auto floor."""
     if not params:
         params = {}
-    if special == _OFFLOAD_QWEN35_NVFP4_NATIVE:
-        raw_size = (
-            os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
-            or os.getenv("LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
-        )
-        return raw_size.lower() == "auto" and _resolve_qwen35_nvfp4_offload_gb(params) <= 0
     if special == _OFFLOAD_V4_FLASH_NATIVE:
         return is_kv_mem_offload_auto_floor_disabled(params)
     return False
@@ -2739,6 +2792,84 @@ def resolve_offload_cpu_capacity_gb(
     return int(m_offload)
 
 
+def _resolve_native_offload_gb(
+    params: Dict[str, Any],
+    *,
+    fallback_gb: Optional[int],
+    size_env_names: Tuple[str, ...] = ("KV_MEM_OFFLOAD_SIZE",),
+    require_mem_switch: bool = False,
+    log_context: str = "KVCache Offload",
+) -> int:
+    """Resolve node-level native KV offload size while preserving caller fallback policy."""
+    if (
+        require_mem_switch
+        and os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true"
+    ):
+        logger.info("[%s] native memory offload switch is disabled.", log_context)
+        return 0
+
+    selected_env = size_env_names[0] if size_env_names else "KV_MEM_OFFLOAD_SIZE"
+    raw_size = ""
+    for env_name in size_env_names or ("KV_MEM_OFFLOAD_SIZE",):
+        raw_size = os.getenv(env_name, "").strip()
+        selected_env = env_name
+        if raw_size:
+            break
+
+    if raw_size.lower() == "auto":
+        auto_total = resolve_offload_cpu_capacity_gb(params, size_env_name=selected_env)
+        if auto_total is not None:
+            logger.info(
+                "[%s] native auto size = M_offload(%dG) (整节点，不除卡数).",
+                log_context,
+                int(auto_total),
+            )
+            return int(auto_total)
+        if fallback_gb is not None:
+            return int(fallback_gb)
+        logger.warning(
+            "[%s] %s=auto but auto capacity is unavailable; native request discarded.",
+            log_context,
+            selected_env,
+        )
+        return 0
+
+    if not raw_size:
+        if fallback_gb is not None:
+            return int(fallback_gb)
+        logger.warning("[%s] %s is empty; native request discarded.", log_context, selected_env)
+        return 0
+
+    try:
+        size_gb = int(raw_size)
+    except (TypeError, ValueError):
+        if fallback_gb is not None:
+            logger.warning(
+                "[%s] Invalid %s=%r; falling back to %d GB.",
+                log_context,
+                selected_env,
+                raw_size,
+                fallback_gb,
+            )
+            return int(fallback_gb)
+        logger.warning(
+            "[%s] invalid %s=%r; native request discarded.",
+            log_context,
+            selected_env,
+            raw_size,
+        )
+        return 0
+    if size_gb <= 0 and fallback_gb is None:
+        logger.warning(
+            "[%s] non-positive %s=%s; native request discarded.",
+            log_context,
+            selected_env,
+            size_gb,
+        )
+        return 0
+    return size_gb
+
+
 def _resolve_v4_flash_offload_gb(params: Dict[str, Any]) -> int:
     """Resolve KV-offload CPU size (GB) shared by ascend ``cpu_swap_space_gb``
     and NV native ``--kv-offloading-size``.
@@ -2749,60 +2880,11 @@ def _resolve_v4_flash_offload_gb(params: Dict[str, Any]) -> int:
       * ``KV_MEM_OFFLOAD_SIZE`` 未设/非法 → 200（默认平铺，不乘）；
       * 自定义值来自页面，单位 GB，native **直接复用**，不按卡数放大。
     """
-    # auto 命中：native 复用整节点总额 M_offload，不除卡数；0 表示公式熔断结果。
-    auto_total = resolve_offload_cpu_capacity_gb(params)
-    if auto_total is not None:
-        logger.info("[KVCache Offload] native auto size = M_offload(%dG) (整节点，不除卡数).", auto_total)
-        return int(auto_total)
-    raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
-    if raw_size.lower() == "auto":
-        raw_size = ""  # auto 已由上面 auto_total 处理，此处兜底回退缺省
-    try:
-        size_gb = int(raw_size) if raw_size else None
-    except ValueError:
-        logger.warning(
-            "[DeepSeek-V4 KV Offload] Invalid KV_MEM_OFFLOAD_SIZE=%r; "
-            "falling back to 200 GB.", raw_size,
-        )
-        size_gb = None
-    if size_gb is None:
-        return 200
-    return int(size_gb)
-
-
-def _resolve_qwen35_nvfp4_offload_gb(params: Dict[str, Any]) -> int:
-    """Qwen3.5-397B-A17B-NVFP4 native KV 卸载容量(GB)。
-
-    取值规则：
-      * ``LMCACHE_MAX_LOCAL_CPU_SIZE=auto`` → 复用原内存卸载公式，native 直接取整节点 GB；
-      * ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 未设/非法 → 200；
-      * 已设 → 页面传入的整节点 GB 值，native 直接复用，不按卡数放大。
-    """
-    # Page-owned KV_MEM_OFFLOAD_SIZE wins; LMCACHE_MAX_LOCAL_CPU_SIZE is legacy.
-    size_env_name = "KV_MEM_OFFLOAD_SIZE"
-    raw_size = os.getenv(size_env_name, "").strip()
-    if not raw_size:
-        size_env_name = "LMCACHE_MAX_LOCAL_CPU_SIZE"
-        raw_size = os.getenv(size_env_name, "").strip()
-    if raw_size.lower() == "auto":
-        auto_total = resolve_offload_cpu_capacity_gb(
-            params,
-            size_env_name=size_env_name,
-        )
-        if auto_total is not None:
-            return int(auto_total)
-        return 200
-    if not raw_size:
-        return 200
-    try:
-        return int(raw_size)
-    except ValueError:
-        logger.warning(
-            "[Qwen3.5 NVFP4 KV Offload] Invalid %s=%r; falling back to 200 GB.",
-            size_env_name,
-            raw_size,
-        )
-        return 200
+    return _resolve_native_offload_gb(
+        params,
+        fallback_gb=200,
+        log_context="DeepSeek-V4 KV Offload",
+    )
 
 
 _GLM5_A2_ADDITIONAL_CONFIG: Dict[str, Any] = {
@@ -3107,6 +3189,7 @@ def _build_vllm_cmd_parts(params: Dict[str, Any]) -> str:
     """
     engine_config = _prepare_engine_config(params)
     use_vllm_serve = bool(engine_config.pop("use_vllm_serve", False))
+    extra_cli_args = engine_config.pop("extra_cli_args", [])
     if use_vllm_serve:
         model_value = engine_config.pop("model", params.get("model_path", "/weights"))
         cmd_parts = ["vllm", "serve", shlex.quote(str(model_value))]
@@ -3129,6 +3212,15 @@ def _build_vllm_cmd_parts(params: Dict[str, Any]) -> str:
 
         arg_name = f"--{arg.replace('_', '-')}"
         cmd_parts.extend(_format_cli_arg(arg_name, value))
+
+    allowed_raw_args = {"-cc.pass_config.fuse_allreduce_rms=False"}
+    if isinstance(extra_cli_args, str):
+        extra_cli_args = [extra_cli_args]
+    for raw_arg in extra_cli_args or ():
+        if raw_arg in allowed_raw_args:
+            cmd_parts.append(raw_arg)
+        else:
+            logger.warning("[vLLM] rejected unapproved raw CLI arg: %r", raw_arg)
 
     return " ".join(cmd_parts)
 
@@ -3252,17 +3344,11 @@ def _resolve_whitelist_mtp_num_speculative_tokens(params: Dict[str, Any], engine
     """从 spec 白名单场景行读取逐场景 MTP token 数。
 
     MTP token 数属于模型+芯片场景契约。把它放在白名单行上，可以避免
-    adapter 内部再维护一张容易漂移的局部表；新增 Day0 profile，或同一模型
+    adapter 内部再维护一张容易漂移的局部表；新增 Day0 场景行，或同一模型
     在不同芯片上使用不同 token 数时（例如 Qwen3.5-27B 的 910C 与 910B），
     也能保持单一事实源。
     """
-    row = resolve_feature_whitelist_row(
-        engine,
-        params.get("model_name"),
-        params.get("model_path"),
-        params.get("_smart_card_token") or resolve_card_token(),
-        "spec",
-    )
+    row = resolve_feature_whitelist_row_from_params(params, engine, "spec")
     if not row:
         return None
     raw_tokens = row.get("mtp_num_speculative_tokens")
@@ -3300,6 +3386,9 @@ def _lmcache_requires_suffix_speculative_strategy(
             "[KVCache Offload] auto memory offload capacity below floor and no "
             "LMCache backend is active; keeping mtp speculative strategy."
         )
+        return False
+    if _resolve_offload_backend(params, engine)[0] == _OFFLOAD_NATIVE_BACKEND_VARIANT:
+        logger.info("[KVCache Offload] native KV offload coexists with MTP.")
         return False
     if _is_glm51_nvidia_vllm_params(params, engine, model_info):
         logger.warning(
@@ -3342,6 +3431,12 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     """Return the speculative decoding strategy selected for vLLM."""
     if engine not in ("vllm", "vllm_ascend"):
         return ""
+
+    mtp_row = _mtp_whitelist_override_row(params, engine)
+    if mtp_row and params.get("enable_speculative_decode"):
+        smart_feats = params.get("_smart_feats")
+        if smart_feats is None or "spec" in smart_feats:
+            return str(mtp_row.get("mtp_method") or "mtp")
 
     draft_path = params.get("speculative_decode_model_path")
     normalized_draft_path = _normalize_speculative_draft_path(draft_path)
@@ -3527,6 +3622,24 @@ def _build_mtp_speculative_cmd(
     strategy: str,
 ) -> str:
     """构建已经选定 MTP 策略后的 speculative-config。"""
+    row = _mtp_whitelist_override_row(params, engine)
+    if row:
+        tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
+        if tokens is None:
+            logger.warning(
+                "[Speculative Decode] MTP whitelist row has no valid token count; skipping."
+            )
+            return ""
+        method = str(row.get("mtp_method") or "mtp")
+        config = [
+            f'"method":"{method}"',
+            f'"num_speculative_tokens":{tokens}',
+        ]
+        moe_backend = row.get("mtp_moe_backend")
+        if moe_backend:
+            config.append(f'"moe_backend":"{moe_backend}"')
+        return _format_speculative_result(config, compact=True)
+
     strategy, is_v4_flash, is_v4_flash_pro5000, is_qwen35_nvfp4_native = (
         _normalize_mtp_strategy(params, engine, model_info, strategy)
     )
@@ -3593,7 +3706,8 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         bool((params.get("engine_config") or {}).get("speculative_config")),
     )
 
-    if spec_draft_raw:
+    mtp_row = _mtp_whitelist_override_row(params, engine)
+    if spec_draft_raw and not mtp_row:
         if normalized_draft_path:
             logger.info("[AdvFeature-SpecDecode] Draft model path detected: %s, using draft_model strategy",
                         normalized_draft_path)
@@ -3622,6 +3736,28 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
 def build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     """Build the speculative decoding CLI fragment."""
     return _build_speculative_cmd(params, engine)
+
+
+def resolve_effective_speculative_details(
+    params: Dict[str, Any], engine: str,
+) -> Optional[Dict[str, Any]]:
+    """Return explicit MTP details from the same whitelist row used by the CLI."""
+    if not params.get("enable_speculative_decode"):
+        return None
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is not None and "spec" not in smart_feats:
+        return None
+    row = _mtp_whitelist_override_row(params, engine)
+    if not row:
+        return None
+    tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
+    if tokens is None:
+        return None
+    return {
+        "method": str(row.get("mtp_method") or "mtp"),
+        "num_speculative_tokens": tokens,
+        "moe_backend": row.get("mtp_moe_backend"),
+    }
 
 
 def _should_append_auto_speculative_config(params: Dict[str, Any]) -> bool:
@@ -3702,6 +3838,17 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
         params.get("model_type"),
     )
     arch = model_info.model_architecture
+    sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
+    if sparse_row and sparse_row.get("strategy") == "indexcache":
+        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
+        logger.info(
+            "[KV Sparse] sparse whitelist -> IndexCache topk=%s",
+            topk,
+        )
+        return (
+            " --hf-overrides "
+            f"'{{\"use_index_cache\":true,\"index_topk_freq\":{topk}}}'"
+        )
 
     # [GLM5.1-Ascend-Tmp] vllm_ascend 路径：
     # 仅 GLM-5.1 走 IndexCache，不写 engine_config，
@@ -3764,6 +3911,10 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
                                  params.get("model_type"))
     arch = model_info.model_architecture
     sparse_level = get_sparse_level_env()
+    sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
+    if sparse_row and sparse_row.get("strategy") == "indexcache":
+        topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
+        return f"indexcache_use_index_cache_topk{topk}"
     if engine == "vllm_ascend":
         if is_glm51_ascend_kvsparse_tmp_scope(
             model_info, engine,
@@ -3805,13 +3956,12 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     if not get_lmcache_env():
         return ""
 
-    if _is_deepseek_v4_flash_params(params):
+    if _resolve_offload_backend(params, engine)[0] == _OFFLOAD_NATIVE_BACKEND_VARIANT:
+        size_gb = _resolve_native_backend_offload_gb(params, engine)
+        logger.info("[KV Offload] whitelist backend native -> --kv-offloading-size=%dGB", size_gb)
+    elif _is_deepseek_v4_flash_params(params):
         size_gb = _resolve_v4_flash_offload_gb(params)
         logger.info("[KV Offload] DeepSeek-V4-Flash (NV) -> native backend, "
-                    "--kv-offloading-size=%dGB", size_gb)
-    elif is_qwen3_5_397b_nvfp4_vllm(params, engine):
-        size_gb = _resolve_qwen35_nvfp4_offload_gb(params)
-        logger.info("[KV Offload] Qwen3.5-397B-A17B-NVFP4 -> native backend, "
                     "--kv-offloading-size=%dGB", size_gb)
     else:
         return ""

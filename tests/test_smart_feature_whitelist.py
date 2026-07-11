@@ -138,6 +138,17 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     for feature in ("spec", "sparse", "offload"):
         for entry in whitelist[feature]:
             assert len(entry.get("card_tokens", [])) == 1
+    for entry in whitelist["offload"]:
+        assert entry.get("backend") in {"native", "lmcache", "memcache"}
+        for field in (
+            "size_source",
+            "size_fallback_gb",
+            "size_env_names",
+            "memcache_meta_port",
+            "memcache_config_port",
+            "memcache_protocol",
+        ):
+            assert field not in entry
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -194,6 +205,36 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/ZhipuAI/GLM-5.1-FP8",
         "h20-141",
     ) == frozenset({"sparse"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "GLM5.1",
+        "/models/GLM5.1",
+        "h20-141",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3-Embedding-0.6B",
+        "/models/Qwen3-Embedding-0.6B",
+        "l20",
+    ) == frozenset({"offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.6-27B",
+        "/models/Qwen3.6-27B",
+        "l20",
+    ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen3.6-35B-A3B",
+        "/models/Qwen3.6-35B-A3B",
+        "l20",
+    ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "bge-large-zh-v1.5",
+        "/models/bge-large-zh-v1.5",
+        "l20",
+    ) == frozenset()
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
@@ -226,12 +267,68 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/harbor_data/Kimi-K2.7-Code",
         "910c",
     ) == frozenset({"offload"})
+
+
+def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    hardware = {"device": "nvidia", "details": [{"name": "NVIDIA L20"}]}
+    params = {
+        "engine": "vllm",
+        "model_name": "bge-large-zh-v1.5",
+        "model_path": "/models/bge-large-zh-v1.5",
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(params, hardware)
+
+    assert params["enable_sparse"] is False
+    assert params["enable_speculative_decode"] is True
+    assert params["_smart_feats"] == []
+
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
         "Kimi-K2.7-Code",
         "/harbor_data/Kimi-K2.7-Code",
         "910b",
     ) == frozenset()
+
+
+def test_offload_backend_lookup_respects_effective_smart_feats(monkeypatch):
+    monkeypatch.delenv("CONFIG_FORCE", raising=False)
+    params = {
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
+        "_smart_card_token": "l20",
+        "_smart_feats": [],
+    }
+
+    assert model_utils.resolve_feature_whitelist_row_from_params(
+        params,
+        "vllm",
+        "offload",
+    ) is not None
+    assert model_utils.resolve_feature_whitelist_row_from_params(
+        params,
+        "vllm",
+        "offload",
+        require_enabled=True,
+    ) is None
+    assert model_utils.resolve_offload_whitelist_backend(params, "vllm") == ""
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_deepseek_v4_flash_ascend_offload_backend_remains_lmcache(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        card_token,
+        "offload",
+    )
+
+    assert row is not None
+    assert row["backend"] == "lmcache"
 
 
 def test_deepseek_v4_flash_a3_respects_upper_smart_feature_switches_when_disabled(monkeypatch):

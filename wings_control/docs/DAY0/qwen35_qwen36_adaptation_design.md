@@ -362,7 +362,7 @@ tokens：
 
 原始 Excel 的部分 Qwen3.6 脚本片段中出现 `hermes`，但这是脚本证据与产品口径的差异。Wings 适配必须按 `qwen3_coder` 收敛，dry-run 需要验证最终命令没有回落到 `hermes`。
 
-Function Call 参数只在页面开关、接口参数、环境变量或模型默认策略要求启用时输出，不能因为场景支持就无条件注入。支持能力表示“可以启用”，不是“启动命令必然携带 `--enable-auto-tool-choice`”。
+Function Call 参数只在页面开关、接口参数或环境变量显式启用时输出，不能因为场景支持或默认模板声明了 parser 能力就无条件注入。支持能力表示“可以启用”，不是“启动命令必然携带 `--enable-auto-tool-choice`”。
 
 ### Reasoning / Thinking
 

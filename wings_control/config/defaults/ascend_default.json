@@ -154,7 +154,6 @@
             },
             "tokenizer_mode": "deepseek_v4",
             "tool_call_parser": "deepseek_v4",
-            "enable_auto_tool_choice": true,
             "use_vllm_serve": true
           },
           "vllm_ascend_distributed": {
@@ -183,7 +182,6 @@
             },
             "tokenizer_mode": "deepseek_v4",
             "tool_call_parser": "deepseek_v4",
-            "enable_auto_tool_choice": true,
             "use_vllm_serve": true
           }
         },
@@ -213,7 +211,6 @@
             },
             "tokenizer_mode": "deepseek_v4",
             "tool_call_parser": "deepseek_v4",
-            "enable_auto_tool_choice": true,
             "use_vllm_serve": true
           },
           "vllm_ascend_distributed": {
@@ -241,7 +238,6 @@
             },
             "tokenizer_mode": "deepseek_v4",
             "tool_call_parser": "deepseek_v4",
-            "enable_auto_tool_choice": true,
             "use_vllm_serve": true
           }
         },
@@ -269,7 +265,6 @@
             },
             "tokenizer_mode": "deepseek_v4",
             "tool_call_parser": "deepseek_v4",
-            "enable_auto_tool_choice": true,
             "use_vllm_serve": true
           }
         }
@@ -1203,7 +1198,6 @@
             "enable_expert_parallel": true,
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
-            "enable_auto_tool_choice": true,
             "tool_call_parser": "kimi_k2",
             "async_scheduling": true,
             "compilation_config": "{\"cudagraph_capture_sizes\":[4,8,16,32,64,128,256], \"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
@@ -1220,7 +1214,6 @@
             "enable_expert_parallel": true,
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
-            "enable_auto_tool_choice": true,
             "tool_call_parser": "kimi_k2",
             "async_scheduling": true,
             "compilation_config": "{\"cudagraph_capture_sizes\":[4,8,16,32,64,128,256], \"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
@@ -1239,7 +1232,6 @@
             "enable_expert_parallel": true,
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
-            "enable_auto_tool_choice": true,
             "tool_call_parser": "kimi_k2",
             "async_scheduling": true,
             "additional_config": {
@@ -1263,7 +1255,6 @@
             "enable_expert_parallel": true,
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
-            "enable_auto_tool_choice": true,
             "tool_call_parser": "kimi_k2",
             "async_scheduling": true,
             "additional_config": {

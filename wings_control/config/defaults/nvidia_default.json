@@ -390,6 +390,20 @@
             "context_length": 4096,
             "tool_call_parser": "glm"
           }
+        },
+        "GLM-4.7": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "tool_call_parser": "glm47"
+          }
+        },
+        "GLM4.7": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "tool_call_parser": "glm47"
+          }
         }
       },
       "GlmMoeDsaForCausalLM": {
@@ -415,6 +429,33 @@
             "trust_remote_code": true,
             "context_length": 4096,
             "tool_call_parser": "glm"
+          }
+        },
+        "GLM-5": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "chat_template_content_format": "string",
+            "tool_call_parser": "glm47",
+            "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"]
+          }
+        },
+        "GLM5.1": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "chat_template_content_format": "string",
+            "tool_call_parser": "glm47",
+            "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"]
+          }
+        },
+        "GLM-5.1": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "chat_template_content_format": "string",
+            "tool_call_parser": "glm47",
+            "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"]
           }
         }
       },
@@ -444,6 +485,16 @@
             "context_length": 4096,
             "tool_call_parser": "qwen"
           }
+        },
+        "Qwen3.6-27B": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "tool_call_parser": "qwen3_coder",
+            "mm_encoder_tp_mode": "data",
+            "enable_prefix_caching": true,
+            "kv_cache_dtype": "fp8"
+          }
         }
       },
       "Qwen3_5MoeForConditionalGeneration": {
@@ -471,6 +522,16 @@
             "trust_remote_code": true,
             "context_length": 4096,
             "tool_call_parser": "qwen"
+          }
+        },
+        "Qwen3.6-35B-A3B": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "tool_call_parser": "qwen3_xml",
+            "mm_encoder_tp_mode": "data",
+            "enable_prefix_caching": true,
+            "kv_cache_dtype": "fp8"
           }
         },
         "Qwen-AgentWorld-35B-A3B": {
@@ -514,7 +575,6 @@
             "tool_call_parser": "qwen3_coder",
             "mm_encoder_tp_mode": "data",
             "kv_cache_dtype": "fp8",
-            "enable_auto_tool_choice": true,
             "enable_prefix_caching": true
           }
         }
@@ -548,7 +608,6 @@
               "kv_cache_dtype": "fp8",
               "moe_backend": "flashinfer_cutlass",
               "tool_call_parser": "minimax_m2",
-              "enable_auto_tool_choice": true,
               "speculative_config": {
                 "method": "suffix",
                 "num_speculative_tokens": 10
@@ -652,6 +711,25 @@
         "vllm_distributed": {
           "trust_remote_code": true
         }
+      },
+      "Qwen3ForCausalLM": {
+        "Qwen3-Embedding-0.6B": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "gpu_memory_utilization": 0.9,
+            "kv_cache_dtype": "fp8"
+          }
+        }
+      },
+      "BertModel": {
+        "bge-large-zh-v1.5": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "gpu_memory_utilization": 0.9
+          }
+        }
       }
     },
     "rerank": {
@@ -661,6 +739,15 @@
         },
         "vllm_distributed": {
           "trust_remote_code": true
+        }
+      },
+      "XLMRobertaForSequenceClassification": {
+        "bge-reranker-large": {
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "gpu_memory_utilization": 0.9
+          }
         }
       }
     }

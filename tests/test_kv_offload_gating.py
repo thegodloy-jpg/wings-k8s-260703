@@ -579,6 +579,7 @@ def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tm
         "tensor_parallel_size": 8,
         "data_parallel_size": 1,
         "enable_speculative_decode": True,
+        "_smart_card_token": "rtxpro5000-72",
         "_smart_feats": ["spec", "offload"],
     }
 
@@ -619,6 +620,7 @@ def test_qwen35_nvfp4_native_reports_effective_kv_mem_size(monkeypatch, tmp_path
         "model_path": "/models/Qwen3.5-397B-NVFP4",
         "model_type": "llm",
         "device_count": 8,
+        "_smart_card_token": "rtxpro5000-72",
         "_smart_feats": ["spec", "offload"],
     }
 
@@ -897,7 +899,7 @@ def test_memcache_auto_memory_is_evenly_split_per_card(monkeypatch):
         ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c", 50071, 50081, "device_rdma"),
     ],
 )
-def test_qwen_day0_memcache_profile_follows_offload_whitelist(
+def test_qwen_day0_memcache_profile_uses_static_scene_defaults(
     monkeypatch,
     model_name,
     card_token,
@@ -905,11 +907,12 @@ def test_qwen_day0_memcache_profile_follows_offload_whitelist(
     expected_config_port,
     expected_protocol,
 ):
-    """Qwen Day0 MemCache 端口和协议必须来自同一条场景白名单。
+    """Qwen Day0 MemCache 端口和协议来自代码侧场景默认。
 
     页面仍然可以通过 WINGS_MEMCACHE_META_SERVICE_URL 和
     WINGS_MEMCACHE_CONFIG_STORE_URL、WINGS_MEMCACHE_PROTOCOL 覆盖最终值。
     页面未覆盖时，不能用全局 RDMA 默认值覆盖 Qwen3.5 的 SDMA 标准。
+    白名单只负责命中 memcache backend，不承载端口和协议。
     """
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -971,6 +974,27 @@ def test_qwen_day0_910b_never_enables_memcache(monkeypatch, model_name):
     }
 
     assert memcache_hybrid.is_qwen_day0_memcache_params(params, "vllm_ascend") is False
+    assert memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        params,
+    ) == memcache_hybrid.empty_memcache_hybrid_fragment()
+
+
+def test_memcache_backend_respects_effective_offload_switch(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
+        "model_type": "llm",
+        "device_count": 2,
+        "_smart_card_token": "910c",
+        "_smart_feats": [],
+    }
+
+    assert memcache_hybrid.is_memcache_hybrid_params(params, "vllm_ascend") is False
     assert memcache_hybrid.build_memcache_hybrid_fragment(
         "vllm_ascend",
         params,
@@ -1130,6 +1154,7 @@ def test_qwen35_nvfp4_uses_native_kv_offload_cli(monkeypatch):
             "model_name": "Qwen3.5-397B-A17B-NVFP4",
             "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
             "device_count": 8,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
         "vllm",
@@ -1148,6 +1173,7 @@ def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(m
             "model_name": "Qwen3.5-397B-A17B-NVFP4",
             "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
             "device_count": 8,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
         "vllm",
@@ -1167,6 +1193,7 @@ def test_qwen35_nvfp4_native_offload_prefers_kv_mem_size_without_per_card_scalin
             "model_name": "Qwen3.5-397B-A17B-NVFP4",
             "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
             "device_count": 8,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
         "vllm",
@@ -1190,6 +1217,7 @@ def test_qwen35_nvfp4_native_offload_auto_uses_kv_mem_formula_without_per_card_s
             "device_count": 8,
             "tensor_parallel_size": 8,
             "data_parallel_size": 1,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
         "vllm",
@@ -1213,6 +1241,7 @@ def test_qwen35_nvfp4_native_offload_auto_reuses_kv_mem_formula_floor(monkeypatc
             "device_count": 8,
             "tensor_parallel_size": 8,
             "data_parallel_size": 1,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
         "vllm",
@@ -1235,6 +1264,7 @@ def test_qwen35_nvfp4_native_offload_auto_uses_formula_without_per_card_scaling(
             "device_count": 8,
             "tensor_parallel_size": 8,
             "data_parallel_size": 1,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
         "vllm",
@@ -1257,6 +1287,7 @@ def test_qwen35_nvfp4_native_offload_legacy_auto_floor_variant_matches_cli(monke
         "device_count": 8,
         "tensor_parallel_size": 8,
         "data_parallel_size": 1,
+        "_smart_card_token": "rtxpro5000-72",
         "_smart_feats": ["spec", "offload"],
     }
 
@@ -1339,6 +1370,7 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
             "engine": "vllm",
             "model_name": "Qwen3.5-397B-A17B-NVFP4",
             "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
         },
     )
@@ -1374,6 +1406,7 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_env(monkeypatch):
             "model_name": "Qwen3.5-397B-A17B-NVFP4",
             "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
             "device_count": 8,
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["offload"],
         },
     )

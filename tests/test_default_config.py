@@ -22,6 +22,23 @@ class _FakeDeepSeekV4Info:
         return "llm"
 
 
+class _FakeModelInfo:
+    config = {}
+    model_quantize = ""
+
+    def __init__(self, model_name, architecture, model_type="llm"):
+        self.model_name = model_name
+        self.model_path = Path("/models") / model_name
+        self.model_architecture = architecture
+        self.model_type = model_type
+
+    def identify_model_architecture(self):
+        return self.model_architecture
+
+    def identify_model_type(self):
+        return self.model_type
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
@@ -214,6 +231,18 @@ def test_nvidia_default_contains_function_call_model_defaults():
 
     model_defaults = config["model_deploy_config"]["llm"]["DeepseekV3ForCausalLM"]
     assert model_defaults["default"]["vllm"]["tool_call_parser"] == "deepseek_v3"
+
+
+def test_model_default_templates_do_not_enable_auto_tool_choice():
+    for device in ("nvidia", "ascend"):
+        assert not _contains_key(_model_deploy_config(device), "enable_auto_tool_choice")
+
+
+def test_pd_default_templates_do_not_enable_auto_tool_choice():
+    pd_path = Path(config_loader.DEFAULT_CONFIG_DIR) / config_loader.DEFAULT_CONFIG_FILES["pd_config"]
+    pd_config = json.loads(pd_path.read_text(encoding="utf-8")).get("pd_config", {})
+
+    assert not _contains_key(pd_config, "enable_auto_tool_choice")
 
 
 def test_deepseek_v4_flash_ascend_a2_defaults_are_selected_without_static_topology(monkeypatch):
@@ -432,6 +461,14 @@ def _contains_quantization_ascend(value) -> bool:
         )
     if isinstance(value, list):
         return any(_contains_quantization_ascend(v) for v in value)
+    return False
+
+
+def _contains_key(value, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(v, key) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(v, key) for v in value)
     return False
 
 
@@ -741,7 +778,7 @@ def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
         assert config["gpu_memory_utilization"] == 0.9
         assert config["quantization"] == "ascend"
         assert config["async_scheduling"] is True
-        assert config["enable_auto_tool_choice"] is True
+        assert "enable_auto_tool_choice" not in config
         assert config["tool_call_parser"] == "kimi_k2"
         assert "tensor_parallel_size" not in config
         assert "data_parallel_size" not in config
@@ -824,3 +861,83 @@ def test_nvidia_defaults_follow_parameter_reduction_plan():
         for engine in ("vllm", "vllm_distributed"):
             assert "gpu_memory_utilization" not in llm[arch]["default"][engine]
             assert "block_size" not in llm[arch]["default"][engine]
+
+
+def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
+    config = _model_deploy_config("nvidia")
+    llm = config["llm"]
+
+    glm5 = llm["GlmMoeDsaForCausalLM"]["GLM-5"]["vllm"]
+    assert glm5["use_vllm_serve"] is True
+    assert glm5["chat_template_content_format"] == "string"
+    assert glm5["extra_cli_args"] == ["-cc.pass_config.fuse_allreduce_rms=False"]
+    assert "max_model_len" not in glm5
+    assert "enable_expert_parallel" not in glm5
+
+    glm47 = llm["Glm4MoeForCausalLM"]["GLM4.7"]["vllm"]
+    assert glm47["tool_call_parser"] == "glm47"
+    assert "max_model_len" not in glm47
+
+    qwen27 = llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["vllm"]
+    assert qwen27["kv_cache_dtype"] == "fp8"
+    assert "calculate_kv_scales" not in qwen27
+    assert "enable_expert_parallel" not in qwen27
+
+    qwen35 = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.6-35B-A3B"]["vllm"]
+    assert qwen35["tool_call_parser"] == "qwen3_xml"
+    assert qwen35["kv_cache_dtype"] == "fp8"
+    assert "calculate_kv_scales" not in qwen35
+
+    embedding = config["embedding"]
+    qwen_embedding = embedding["Qwen3ForCausalLM"]["Qwen3-Embedding-0.6B"]["vllm"]
+    assert qwen_embedding["kv_cache_dtype"] == "fp8"
+    assert "calculate_kv_scales" not in qwen_embedding
+    assert embedding["BertModel"]["bge-large-zh-v1.5"]["vllm"]["gpu_memory_utilization"] == 0.9
+
+    rerank = config["rerank"]
+    assert (
+        rerank["XLMRobertaForSequenceClassification"]["bge-reranker-large"]["vllm"]
+        ["gpu_memory_utilization"]
+        == 0.9
+    )
+
+
+def test_nvidia_day0_exact_default_replaces_arch_default(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    hardware = {
+        "device": "nvidia",
+        "count": 8,
+        "details": [{"name": "NVIDIA H20 141GB", "total_memory": 141}],
+    }
+    params = {
+        "engine": "vllm",
+        "model_name": "GLM-5",
+        "model_path": "/models/GLM-5",
+        "model_type": "llm",
+        "device_count": 8,
+        "distributed": False,
+        "nnodes": 1,
+        "node_ips": "",
+        "gpu_usage_mode": "full",
+        "distributed_executor_backend": "ray",
+        "_smart_feats": [],
+        "_smart_card_token": "h20-141",
+    }
+    model_info = _FakeModelInfo("GLM-5", "GlmMoeDsaForCausalLM")
+
+    defaults = config_loader._get_model_specific_config(hardware, params, model_info)
+
+    assert defaults["use_vllm_serve"] is True
+    assert defaults["tensor_parallel_size"] == 8
+    assert "tool_call_parser" not in defaults
+    assert "enable_auto_tool_choice" not in defaults
+    assert "max_model_len" not in defaults
+    assert "enable_expert_parallel" not in defaults
+
+    enabled = config_loader._get_model_specific_config(
+        hardware,
+        {**params, "enable_auto_tool_choice": True},
+        model_info,
+    )
+    assert enabled["tool_call_parser"] == "glm47"
+    assert enabled["enable_auto_tool_choice"] is True
