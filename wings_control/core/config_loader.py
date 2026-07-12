@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -3264,6 +3265,35 @@ def _model_config_key_matches_lookup_names(config_key_lower: str, lookup_names: 
     )
 
 
+def _normalize_card_token_for_match(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _model_config_card_tokens_match(
+    config: Dict[str, Any],
+    hardware_env: Dict[str, Any] | None,
+) -> bool:
+    card_tokens = config.get("card_tokens")
+    if not card_tokens:
+        return True
+    if isinstance(card_tokens, str):
+        card_tokens = [card_tokens]
+    if not isinstance(card_tokens, (list, tuple, set)):
+        return False
+
+    current_card = _normalize_card_token_for_match(resolve_card_token(hardware_env))
+    if not current_card:
+        return False
+
+    return any(
+        token and token in current_card
+        for token in (
+            _normalize_card_token_for_match(candidate)
+            for candidate in card_tokens
+        )
+    )
+
+
 def _is_deepseek_v4_flash_lookup(lookup_names: list) -> bool:
     return any(
         "deepseek-v4-flash" in name
@@ -3532,6 +3562,13 @@ def _match_model_engine_config(
         )
         if special_config is not None:
             return special_config
+        if not _model_config_card_tokens_match(config, hardware_env):
+            logger.info(
+                "Skipping engine config for model '%s' because current card does not match card_tokens=%s",
+                model,
+                config.get("card_tokens"),
+            )
+            return {}
         logger.info("Using engine config for model '%s' (engine_key=%s)", model, engine_key)
         return config.get(engine_key, {})
 

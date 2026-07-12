@@ -941,6 +941,22 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]
 
+    assert llm["Glm4MoeForCausalLM"]["GLM-4.7"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["Glm4MoeForCausalLM"]["GLM4.7"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["GlmMoeDsaForCausalLM"]["GLM-5"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["GlmMoeDsaForCausalLM"]["GLM5.1"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["GlmMoeDsaForCausalLM"]["GLM-5.1"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["card_tokens"] == [
+        "l20",
+        "h20-96",
+        "h20-141",
+    ]
+    assert llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.6-35B-A3B"]["card_tokens"] == [
+        "l20",
+        "h20-96",
+        "h20-141",
+    ]
+
     glm5 = llm["GlmMoeDsaForCausalLM"]["GLM-5"]["vllm"]
     assert glm5["use_vllm_serve"] is True
     assert glm5["chat_template_content_format"] == "string"
@@ -963,17 +979,117 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert "calculate_kv_scales" not in qwen35
 
     embedding = config["embedding"]
+    assert embedding["Qwen3ForCausalLM"]["Qwen3-Embedding-0.6B"]["card_tokens"] == [
+        "l20",
+        "h20-96",
+        "h20-141",
+    ]
+    assert embedding["BertModel"]["bge-large-zh-v1.5"]["card_tokens"] == [
+        "l20",
+        "h20-96",
+        "h20-141",
+    ]
     qwen_embedding = embedding["Qwen3ForCausalLM"]["Qwen3-Embedding-0.6B"]["vllm"]
     assert qwen_embedding["kv_cache_dtype"] == "fp8"
     assert "calculate_kv_scales" not in qwen_embedding
     assert embedding["BertModel"]["bge-large-zh-v1.5"]["vllm"]["gpu_memory_utilization"] == 0.9
 
     rerank = config["rerank"]
+    assert rerank["XLMRobertaForSequenceClassification"]["bge-reranker-large"]["card_tokens"] == [
+        "l20",
+        "h20-96",
+        "h20-141",
+    ]
     assert (
         rerank["XLMRobertaForSequenceClassification"]["bge-reranker-large"]["vllm"]
         ["gpu_memory_utilization"]
         == 0.9
     )
+
+
+def test_nvidia_day0_exact_defaults_require_matching_card_token():
+    config = _model_deploy_config("nvidia")
+    scenario = config_loader._SpecialEngineScenario()
+    a100 = {
+        "device": "nvidia",
+        "details": [{"name": "NVIDIA A100 80GB", "total_memory": 80}],
+    }
+    l20 = {
+        "device": "nvidia",
+        "details": [{"name": "NVIDIA L20 45GB", "total_memory": 45}],
+    }
+    h20 = {
+        "device": "nvidia",
+        "details": [{"name": "NVIDIA H20 141GB", "total_memory": 141}],
+    }
+
+    glm5_arch = config["llm"]["GlmMoeDsaForCausalLM"]
+    assert config_loader._match_model_engine_config(
+        glm5_arch,
+        "glm-5",
+        "vllm",
+        scenario,
+        _FakeModelInfo("GLM-5", "GlmMoeDsaForCausalLM"),
+        a100,
+    ) == {}
+    assert config_loader._match_model_engine_config(
+        glm5_arch,
+        "glm-5",
+        "vllm",
+        scenario,
+        _FakeModelInfo("GLM-5", "GlmMoeDsaForCausalLM"),
+        l20,
+    ) == {}
+    glm5_h20 = config_loader._match_model_engine_config(
+        glm5_arch,
+        "glm-5",
+        "vllm",
+        scenario,
+        _FakeModelInfo("GLM-5", "GlmMoeDsaForCausalLM"),
+        h20,
+    )
+    assert glm5_h20["use_vllm_serve"] is True
+
+    qwen27_arch = config["llm"]["Qwen3_5ForConditionalGeneration"]
+    qwen27_a100 = config_loader._match_model_engine_config(
+        qwen27_arch,
+        "qwen3.6-27b",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3.6-27B", "Qwen3_5ForConditionalGeneration"),
+        a100,
+    )
+    assert qwen27_a100 == {}
+    qwen27_l20 = config_loader._match_model_engine_config(
+        qwen27_arch,
+        "qwen3.6-27b",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3.6-27B", "Qwen3_5ForConditionalGeneration"),
+        l20,
+    )
+    assert qwen27_l20["kv_cache_dtype"] == "fp8"
+    assert qwen27_l20["mm_encoder_tp_mode"] == "data"
+
+    embedding_arch = config["embedding"]["Qwen3ForCausalLM"]
+    assert config_loader._match_model_engine_config(
+        embedding_arch,
+        "qwen3-embedding-0.6b",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3-Embedding-0.6B", "Qwen3ForCausalLM", "embedding"),
+        a100,
+    ) == {}
+
+    rerank_arch = config["rerank"]["XLMRobertaForSequenceClassification"]
+    assert config_loader._match_model_engine_config(
+        rerank_arch,
+        "bge-reranker-large",
+        "vllm",
+        scenario,
+        _FakeModelInfo("bge-reranker-large", "XLMRobertaForSequenceClassification", "rerank"),
+        a100,
+    ) == {}
 
 
 def test_nvidia_day0_exact_default_replaces_arch_default(monkeypatch):
