@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "scenario_id": "qwen35-27b-bf16-910b-4card-single-vllm-ascend-021",
+  "description": "复用现有 DAY0 dry-run 资源的 Qwen3.5-27B 910B 自检场景",
+  "status": "accepted",
+  "model": {
+    "name": "Qwen/Qwen3.5-27B",
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "model_type": "qwen3_5",
+    "torch_dtype": "bfloat16",
+    "num_hidden_layers": 64
+  },
+  "hardware": {
+    "device": "ascend",
+    "family": "Ascend910B_64G",
+    "device_count": 4,
+    "topology": "single"
+  },
+  "engine": {
+    "name": "vllm_ascend",
+    "version": "0.21"
+  },
+  "launch": {
+    "host": "127.0.0.1",
+    "port": 7898,
+    "node_rank": 0,
+    "trust_remote_code": true,
+    "enable_auto_tool_choice": true,
+    "enable_speculative_decode": true,
+    "speculative_decode_model_path": "none",
+    "enable_sparse": true,
+    "enable_kv_offload": true,
+    "enable_kv_disk_offload": false,
+    "kv_mem_offload_size": 40,
+    "available_pod_mem_size": 262144
+  },
+  "environment": {
+    "POD_IP": "127.0.0.1",
+    "RANK_IP": "127.0.0.1",
+    "NETWORK_INTERFACE": "lo"
+  },
+  "comparison": {
+    "mode": "semantic_strict",
+    "dynamic_fields": {
+      "cli.model": "model_path",
+      "cli.port": {
+        "rule": "equals_launch_input",
+        "input": "launch.port"
+      },
+      "cli.host": "runtime_host_policy"
+    },
+    "ignore": {
+      "cli": [],
+      "environment": []
+    },
+    "extra_cli_argument": "fail",
+    "extra_environment_variable": "report",
+    "forbidden": {
+      "cli": [
+        "kv-transfer-config",
+        "no-disable-hybrid-kv-cache-manager",
+        "sparse-config"
+      ],
+      "environment": [
+        "WINGS_MEMCACHE_META_SERVICE_URL",
+        "WINGS_MEMCACHE_CONFIG_STORE_URL"
+      ]
+    }
+  },
+  "source": {
+    "type": "existing_day0_dry_run",
+    "command": "wings_control/docs/DAY0/dry_run/qwen_day0_current/Qwen3.5-27B-910B/exec_command.txt",
+    "tested": true
+  }
+}
