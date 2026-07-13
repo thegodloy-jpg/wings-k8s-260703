@@ -140,6 +140,16 @@ class _FakeQwen35Nvfp4Identifier:
         self.model_type = model_type
 
 
+class _FakeMiniMaxM3Identifier:
+    model_architecture = "MiniMaxM3SparseForConditionalGeneration"
+    model_quantize = "mxfp8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 def test_lmcache_env_exports_are_dropped_when_l2_child_switches_are_off(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "false")
@@ -950,6 +960,22 @@ def test_nvidia_lmcache_keeps_target_install_command():
     assert "lmcache-ascend:v0.4.5" not in snippet
 
 
+def test_nvidia_vllm_lmcache_skips_patch_install_target():
+    target = wings_entry._resolve_lmcache_install_target(
+        "vllm",
+        {
+            "engine": "vllm",
+            "model_name": "MiniMax/MiniMax-M2.7-NVFP4",
+            "model_path": "/models/MiniMax/MiniMax-M2.7-NVFP4",
+            "model_type": "llm",
+            "_smart_card_token": "rtxpro5000-72",
+            "_smart_feats": ["spec", "offload"],
+        },
+    )
+
+    assert target is None
+
+
 def test_kimi_k27_code_memcache_skips_lmcache_patch(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
 
@@ -987,6 +1013,25 @@ def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
     assert commands == []
 
 
+def test_kimi_w4a8_memcache_model_matchers_are_supported():
+    assert memcache_hybrid.is_kimi_k27_code_memcache_params(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code-w4a8",
+            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        },
+        "vllm_ascend",
+    ) is True
+    assert memcache_hybrid.is_kimi_k26_memcache_params(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/Kimi-K2.6-W4A8",
+            "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
+        },
+        "vllm_ascend",
+    ) is True
+
+
 def test_kimi_k27_code_memcache_engine_prelude_uses_per_card_page_offload_memory(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -1012,6 +1057,56 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_per_card_page_offload_memory
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
     assert "MMC_LOCAL_CONFIG_PATH" in fragment["engine_prelude"]
     assert "MMC_META_CONFIG_PATH" in fragment["master_script"]
+
+
+def test_kimi_k26_memcache_engine_prelude_uses_per_card_page_offload_memory(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/Kimi-K2.6-W4A8",
+            "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
+            "model_type": "llm",
+            "device_count": 16,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert fragment["enabled"] is True
+    assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in fragment["engine_prelude"]
+    assert "AscendStore" not in fragment["engine_prelude"]
+
+
+def test_kimi_k26_and_k27_code_topology_defaults_are_separate():
+    kimi26_config = vllm_adapter._prepare_engine_config(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Eco-Tech/Kimi-K2.6-W4A8",
+            "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
+            "model_type": "llm",
+            "device_count": 16,
+            "engine_config": {"tensor_parallel_size": 16},
+        }
+    )
+    assert kimi26_config["tensor_parallel_size"] == 4
+    assert kimi26_config["data_parallel_size"] == 4
+
+    kimi27_config = vllm_adapter._prepare_engine_config(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code-w4a8",
+            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_type": "llm",
+            "device_count": 16,
+            "engine_config": {},
+        }
+    )
+    assert kimi27_config["tensor_parallel_size"] == 16
+    assert "data_parallel_size" not in kimi27_config
 
 
 def test_memcache_auto_memory_is_evenly_split_per_card(monkeypatch):
@@ -1347,6 +1442,80 @@ def test_qwen35_nvfp4_native_offload_reuses_page_size_without_per_card_scaling(m
     )
 
     assert command == " --kv-offloading-backend native --kv-offloading-size 80"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "model_path", "smart_feats"),
+    [
+        (
+            "Qwen/Qwen3.5-122B-A10B",
+            "/models/Qwen/Qwen3.5-122B-A10B",
+            ["spec", "offload"],
+        ),
+        (
+            "Qwen/Qwen3.5-27B",
+            "/models/Qwen/Qwen3.5-27B",
+            ["spec", "offload"],
+        ),
+        (
+            "Qwen/Qwen3.5-35B-A3B",
+            "/models/Qwen/Qwen3.5-35B-A3B",
+            ["offload"],
+        ),
+        (
+            "MiniMax/MiniMax-M3-MXFP8",
+            "/models/MiniMax/MiniMax-M3-MXFP8",
+            ["spec", "offload"],
+        ),
+        (
+            "MiniMax/MiniMax-M2.5-NVFP4",
+            "/models/MiniMax/MiniMax-M2.5-NVFP4",
+            ["spec", "offload"],
+        ),
+    ],
+)
+def test_pro5000_native_offload_uses_kv_mem_size_and_skips_lmcache_env(
+    monkeypatch,
+    model_name,
+    model_path,
+    smart_feats,
+):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    params = {
+        "engine": "vllm",
+        "model_name": model_name,
+        "model_path": model_path,
+        "device_count": 4,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": smart_feats,
+    }
+
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm") == (
+        " --kv-offloading-backend native --kv-offloading-size 40"
+    )
+    assert vllm_adapter._build_cache_env_commands("vllm", params) == []
+
+
+def test_minimax_m3_pro5000_env_uses_v1_without_lmcache(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM3Identifier)
+    params = {
+        "engine": "vllm",
+        "model_name": "MiniMax/MiniMax-M3-MXFP8",
+        "model_path": "/models/MiniMax/MiniMax-M3-MXFP8",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_card_token": "rtxpro5000-72",
+    }
+
+    commands = vllm_adapter._build_model_env_commands(params, "vllm")
+
+    assert commands == [
+        "export VLLM_USE_V1=1",
+        "export PYTHONHASHSEED=0",
+    ]
+    assert not any("LMCACHE_" in command for command in commands)
 
 
 def test_qwen35_nvfp4_native_offload_auto_uses_kv_mem_formula_without_per_card_scaling(monkeypatch):

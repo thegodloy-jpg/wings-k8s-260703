@@ -112,6 +112,31 @@ def _build_whitelist_match_context(
     return hay, ct
 
 
+def _model_source_text(source: Optional[dict]) -> str:
+    """拼接 model_name/model_path，供只依赖模型身份的轻量判定复用。"""
+    if not source:
+        return ""
+    return " ".join(
+        str(source.get(key, "") or "").lower()
+        for key in ("model_name", "model_path")
+    )
+
+
+def is_kimi_k26_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
+    """识别 Kimi-K2.6 / Kimi-2.6 系列，仅服务 vllm_ascend 0.21 DAY0 适配。"""
+    if engine and engine != "vllm_ascend":
+        return False
+    text = _model_source_text(source)
+    return "kimi-k2.6" in text or "kimi-2.6" in text
+
+
+def is_kimi_k27_code_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
+    """识别 Kimi-K2.7-Code 系列；该系列只允许 MemCache offload，不启用自动 spec。"""
+    if engine and engine != "vllm_ascend":
+        return False
+    return "kimi-k2.7-code" in _model_source_text(source)
+
+
 def _whitelist_table_match(
     table,
     engine: str,
@@ -467,6 +492,37 @@ def is_qwen3_5_397b_nvfp4_vllm(source: Optional[dict], engine: Optional[str] = N
     return False
 
 
+def _is_rtx_pro_5000_72g_source(source: Optional[dict]) -> bool:
+    """识别 RTX PRO 5000 72G 口径。
+
+    DAY0 原始资料里同时出现 ``NVIDIA RTX PRO 5000 72GB``、
+    ``G6550+RTX PRO 5000 * 8``、``TokenBox RTX PRO 5000 * 8`` 等写法。
+    这里把未显式标 48G 的 RTX PRO 5000 视为 72G 场景，供 defaults
+    ``rtx_pro_5000_72G`` 与白名单 ``rtxpro5000-72`` 使用同一判定。
+    """
+    src = source or {}
+    card_token = str(src.get("_smart_card_token") or src.get("card_token") or "")
+    compact_card = "".join(ch for ch in card_token.lower() if ch.isalnum())
+    if "rtxpro500048" in compact_card:
+        return False
+    if "rtxpro500072" in compact_card:
+        return True
+
+    hardware_texts = [str(src.get("hardware_family") or "")]
+    for detail in src.get("device_details") or src.get("details") or []:
+        if isinstance(detail, dict):
+            hardware_texts.append(str(detail.get("name") or ""))
+
+    for text in hardware_texts:
+        compact = "".join(ch for ch in text.lower() if ch.isalnum())
+        if "rtxpro5000" not in compact:
+            continue
+        if "48" in compact:
+            continue
+        return True
+    return False
+
+
 def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[str] = None) -> bool:
     """DeepSeek-V4-Flash + rtx_pro_5000_72G + vllm 的统一判定。
 
@@ -498,19 +554,7 @@ def is_deepseek_v4_flash_rtx_pro_5000(source: Optional[dict], engine: Optional[s
             break
     if not model_hit:
         return False
-    card_token = str(src.get("_smart_card_token") or src.get("card_token") or "").lower()
-    if "rtxpro5000-72" in card_token:
-        return True
-    hardware_texts = [str(src.get("hardware_family") or "")]
-    for detail in src.get("device_details") or src.get("details") or []:
-        if isinstance(detail, dict):
-            hardware_texts.append(str(detail.get("name") or ""))
-
-    for text in hardware_texts:
-        normalized = text.lower().replace("-", "_").replace(" ", "_")
-        if "rtx_pro_5000" in normalized and "72" in normalized:
-            return True
-    return False
+    return _is_rtx_pro_5000_72g_source(src)
 
 
 def is_minimax_m27_rtx_pro_5000_vllm(source: Optional[dict], engine: Optional[str] = None) -> bool:
@@ -542,19 +586,27 @@ def is_minimax_m27_rtx_pro_5000_vllm(source: Optional[dict], engine: Optional[st
             break
     if not model_hit:
         return False
-    card_token = str(src.get("_smart_card_token") or src.get("card_token") or "").lower()
-    if "rtxpro5000-72" in card_token:
-        return True
-    hardware_texts = [str(src.get("hardware_family") or "")]
-    for detail in src.get("device_details") or src.get("details") or []:
-        if isinstance(detail, dict):
-            hardware_texts.append(str(detail.get("name") or ""))
+    return _is_rtx_pro_5000_72g_source(src)
 
-    for text in hardware_texts:
-        normalized = text.lower().replace("-", "_").replace(" ", "_")
-        if "rtx_pro_5000" in normalized and "72" in normalized:
-            return True
-    return False
+
+def is_minimax_m3_rtx_pro_5000_vllm(source: Optional[dict], engine: Optional[str] = None) -> bool:
+    """MiniMax-M3-MXFP8 + rtx_pro_5000_72G + vllm 的统一判定。
+
+    只命中官方模型名自带精度后缀的 ``MiniMax-M3-MXFP8``，不把泛化的
+    MiniMax-M3 名称纳入，避免误用本场景的 native offload 与 suffix token。
+    """
+    src = source or {}
+    eff_engine = engine or src.get("engine")
+    if eff_engine != "vllm":
+        return False
+    text = _model_source_text(src)
+    if not (
+        "minimax-m3-mxfp8" in text
+        or "minimax_m3_mxfp8" in text
+        or "minimaxm3mxfp8" in text.replace("-", "").replace("_", "")
+    ):
+        return False
+    return _is_rtx_pro_5000_72g_source(src)
 
 
 #
@@ -588,6 +640,10 @@ _LLM_MODELS = {
     "KimiK25ForConditionalGeneration": [
         "Kimi-K2.5",
         "Kimi-K2.5-w4a8",
+        "Kimi-K2.6",
+        "Kimi-K2.6-w4a8",
+        "Kimi-2.6",
+        "Kimi-2.6-w4a8",
         "Kimi-K2.7",
         "Kimi-K2.7-w4a8",
         "Kimi-K2.7-Code",
@@ -653,6 +709,7 @@ _LLM_MODELS = {
         ],
     "MiniMaxM2ForCausalLM": [
         "MiniMax-M2.5",
+        "MiniMax-M2.5-NVFP4",
         "MiniMax-M2.5-w8a8",
         "MiniMax-M2.7",
         "MiniMax-M2.7-w8a8"

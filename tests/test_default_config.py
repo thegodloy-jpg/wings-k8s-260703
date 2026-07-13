@@ -328,6 +328,53 @@ def test_deepseek_v4_flash_reasoning_parser_support_file_is_loaded(monkeypatch):
     assert config["reasoning_parser"] == "deepseek_v4"
 
 
+def test_minimax_pro5000_reasoning_parser_exact_precision_models_are_loaded():
+    config_loader._load_reasoning_parser_support.cache_clear()
+    hardware = {
+        "device": "nvidia",
+        "count": 8,
+        "details": [{"name": "G6550+RTX PRO 5000 * 8"}],
+    }
+
+    m3_config = config_loader._get_model_specific_config(
+        hardware,
+        {
+            "engine": "vllm",
+            "model_name": "MiniMax-M3-MXFP8",
+            "model_path": "/models/MiniMax-M3-MXFP8",
+            "model_type": "llm",
+            "enable_auto_think_choice": True,
+        },
+        _FakeModelInfo("MiniMax-M3-MXFP8", "MiniMaxM3SparseForConditionalGeneration"),
+    )
+    m25_config = config_loader._get_model_specific_config(
+        hardware,
+        {
+            "engine": "vllm",
+            "model_name": "MiniMax-M2.5-NVFP4",
+            "model_path": "/models/MiniMax-M2.5-NVFP4",
+            "model_type": "llm",
+            "enable_auto_think_choice": True,
+        },
+        _FakeModelInfo("MiniMax-M2.5-NVFP4", "MiniMaxM2ForCausalLM"),
+    )
+    m27_config = config_loader._get_model_specific_config(
+        hardware,
+        {
+            "engine": "vllm",
+            "model_name": "MiniMax-M2.7-NVFP4",
+            "model_path": "/models/MiniMax-M2.7-NVFP4",
+            "model_type": "llm",
+            "enable_auto_think_choice": True,
+        },
+        _FakeModelInfo("MiniMax-M2.7-NVFP4", "MiniMaxM2ForCausalLM"),
+    )
+
+    assert m3_config["reasoning_parser"] == "minimax_m3"
+    assert m25_config["reasoning_parser"] == "minimax_m2"
+    assert m27_config["reasoning_parser"] == "minimax_m2"
+
+
 def test_reasoning_parser_support_source_file_uses_short_name():
     assert config_loader.REASONING_PARSER_SUPPORT_PATH.name == "reason_parser.yaml"
     assert config_loader.REASONING_PARSER_SUPPORT_PATH.exists()
@@ -584,8 +631,16 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
     assert "no_enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910C"]["vllm_ascend"]
     _assert_engine_fields(
         deepseek_v4["DeepSeek-V4-Pro"]["vllm_ascend_distributed"],
-        {"enable_chunked_prefill": True, "enable_prefix_caching": True},
+        {
+            "enable_chunked_prefill": True,
+            "enable_prefix_caching": True,
+            "max_num_seqs": 32,
+            "tool_call_parser": "deepseek_v4",
+        },
     )
+    assert _as_dict(
+        deepseek_v4["DeepSeek-V4-Pro"]["vllm_ascend_distributed"]["additional_config"]
+    )["multistream_overlap_shared_expert"] is True
 
     glm5 = llm["GlmMoeDsaForCausalLM"]
     _assert_engines(
@@ -867,6 +922,56 @@ def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
         }
 
 
+def test_kimi_k26_ascend_defaults_follow_memcache_dflash_recipe():
+    llm = _model_deploy_config("ascend")["llm"]
+    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.6"]
+
+    for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+        config = kimi[engine]
+        assert config["max_model_len"] == 32768
+        assert config["max_num_seqs"] == 4
+        assert config["max_num_batched_tokens"] == 16384
+        assert config["gpu_memory_utilization"] == 0.9
+        assert config["seed"] == 42
+        assert config["tool_call_parser"] == "kimi_k2"
+        assert "tensor_parallel_size" not in config
+        assert "data_parallel_size" not in config
+        assert _as_dict(config["additional_config"]) == {
+            "enable_balance_scheduling": True,
+        }
+        assert _as_dict(config["compilation_config"]) == {
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+        }
+
+
+def test_kimi_ascend_exact_defaults_match_w4a8_suffixes():
+    kimi_arch = _model_deploy_config("ascend")["llm"]["KimiK25ForConditionalGeneration"]
+    scenario = config_loader._SpecialEngineScenario()
+    hardware = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+
+    kimi26 = config_loader._match_model_engine_config(
+        kimi_arch,
+        "eco-tech/kimi-k2.6-w4a8",
+        "vllm_ascend",
+        scenario,
+        _FakeModelInfo("Eco-Tech/Kimi-K2.6-W4A8", "KimiK25ForConditionalGeneration"),
+        hardware,
+    )
+    assert kimi26["max_model_len"] == 32768
+    assert kimi26["max_num_seqs"] == 4
+
+    kimi27_code = config_loader._match_model_engine_config(
+        kimi_arch,
+        "kimi-k2.7-code-w4a8",
+        "vllm_ascend",
+        scenario,
+        _FakeModelInfo("Kimi-K2.7-Code-w4a8", "KimiK25ForConditionalGeneration"),
+        hardware,
+    )
+    assert kimi27_code["max_model_len"] == 81920
+    assert kimi27_code["max_num_seqs"] == 48
+
+
 def test_nvidia_defaults_follow_parameter_reduction_plan():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]
@@ -951,10 +1056,25 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
         "h20-96",
         "h20-141",
     ]
+    assert llm["Qwen3_5ForConditionalGeneration"]["Qwen3.5-27B"]["card_tokens"] == [
+        "rtxpro5000-72",
+    ]
+    assert llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.5-122B-A10B"]["card_tokens"] == [
+        "rtxpro5000-72",
+    ]
+    assert llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.5-35B-A3B"]["card_tokens"] == [
+        "rtxpro5000-72",
+    ]
     assert llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.6-35B-A3B"]["card_tokens"] == [
         "l20",
         "h20-96",
         "h20-141",
+    ]
+    assert llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["card_tokens"] == [
+        "rtxpro5000-72",
+    ]
+    assert llm["MiniMaxM3SparseForConditionalGeneration"]["MiniMax-M3-MXFP8"]["card_tokens"] == [
+        "rtxpro5000-72",
     ]
 
     glm5 = llm["GlmMoeDsaForCausalLM"]["GLM-5"]["vllm"]
@@ -973,10 +1093,54 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert "calculate_kv_scales" not in qwen27
     assert "enable_expert_parallel" not in qwen27
 
+    qwen35_27 = llm["Qwen3_5ForConditionalGeneration"]["Qwen3.5-27B"]["vllm"]
+    assert qwen35_27["max_model_len"] == 65536
+    assert qwen35_27["enable_prefix_caching"] is True
+    assert qwen35_27["tool_call_parser"] == "qwen3_coder"
+    assert "speculative_config" not in qwen35_27
+
+    qwen35_122 = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.5-122B-A10B"]["vllm"]
+    assert qwen35_122["max_model_len"] == 65536
+    assert qwen35_122["enable_expert_parallel"] is True
+    assert qwen35_122["enable_prefix_caching"] is True
+    assert qwen35_122["tool_call_parser"] == "qwen3_coder"
+    assert "speculative_config" not in qwen35_122
+
+    qwen35_35 = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.5-35B-A3B"]["vllm"]
+    assert qwen35_35["max_model_len"] == 65536
+    assert qwen35_35["enable_expert_parallel"] is True
+    assert qwen35_35["enable_prefix_caching"] is True
+    assert qwen35_35["tool_call_parser"] == "qwen3_coder"
+    assert "speculative_config" not in qwen35_35
+
     qwen35 = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.6-35B-A3B"]["vllm"]
     assert qwen35["tool_call_parser"] == "qwen3_xml"
     assert qwen35["kv_cache_dtype"] == "fp8"
     assert "calculate_kv_scales" not in qwen35
+
+    minimax_m25 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["vllm"]
+    assert minimax_m25["max_model_len"] == 196608
+    assert minimax_m25["tensor_parallel_size"] == 4
+    assert minimax_m25["gpu_memory_utilization"] == 0.9
+    assert minimax_m25["kv_cache_dtype"] == "fp8"
+    assert minimax_m25["tool_call_parser"] == "minimax_m2"
+    assert "speculative_config" not in minimax_m25
+
+    minimax_m27 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7"]["vllm"]["rtx_pro_5000_72G"]
+    assert minimax_m27["kv_cache_dtype"] == "fp8"
+    assert minimax_m27["moe_backend"] == "flashinfer_cutlass"
+    assert "speculative_config" not in minimax_m27
+
+    minimax_m3 = llm["MiniMaxM3SparseForConditionalGeneration"]["MiniMax-M3-MXFP8"]["vllm"]
+    assert minimax_m3["max_model_len"] == 80000
+    assert minimax_m3["tensor_parallel_size"] == 8
+    assert minimax_m3["gpu_memory_utilization"] == 0.95
+    assert minimax_m3["tool_call_parser"] == "minimax_m3"
+    assert minimax_m3["model_loader_extra_config"] == {
+        "enable_multithread_load": "true",
+        "num_threads": 128,
+    }
+    assert "speculative_config" not in minimax_m3
 
     embedding = config["embedding"]
     assert embedding["Qwen3ForCausalLM"]["Qwen3-Embedding-0.6B"]["card_tokens"] == [
@@ -1021,6 +1185,10 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
     h20 = {
         "device": "nvidia",
         "details": [{"name": "NVIDIA H20 141GB", "total_memory": 141}],
+    }
+    pro5000 = {
+        "device": "nvidia",
+        "details": [{"name": "G6550+RTX PRO 5000 * 8"}],
     }
 
     glm5_arch = config["llm"]["GlmMoeDsaForCausalLM"]
@@ -1070,6 +1238,82 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
     )
     assert qwen27_l20["kv_cache_dtype"] == "fp8"
     assert qwen27_l20["mm_encoder_tp_mode"] == "data"
+
+    qwen35_27_pro5000 = config_loader._match_model_engine_config(
+        qwen27_arch,
+        "qwen/qwen3.5-27b",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3.5-27B", "Qwen3_5ForConditionalGeneration"),
+        pro5000,
+    )
+    assert qwen35_27_pro5000["max_model_len"] == 65536
+    assert qwen35_27_pro5000["enable_prefix_caching"] is True
+
+    qwen35_moe_arch = config["llm"]["Qwen3_5MoeForConditionalGeneration"]
+    qwen35_122_pro5000 = config_loader._match_model_engine_config(
+        qwen35_moe_arch,
+        "qwen/qwen3.5-122b-a10b",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3.5-122B-A10B", "Qwen3_5MoeForConditionalGeneration"),
+        pro5000,
+    )
+    assert qwen35_122_pro5000["enable_expert_parallel"] is True
+    assert qwen35_122_pro5000["tool_call_parser"] == "qwen3_coder"
+    qwen35_35_pro5000 = config_loader._match_model_engine_config(
+        qwen35_moe_arch,
+        "qwen/qwen3.5-35b-a3b",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3.5-35B-A3B", "Qwen3_5MoeForConditionalGeneration"),
+        pro5000,
+    )
+    assert qwen35_35_pro5000["enable_expert_parallel"] is True
+    assert qwen35_35_pro5000["tool_call_parser"] == "qwen3_coder"
+
+    minimax_m2_arch = config["llm"]["MiniMaxM2ForCausalLM"]
+    assert config_loader._match_model_engine_config(
+        minimax_m2_arch,
+        "minimax/minimax-m2.5-nvfp4",
+        "vllm",
+        scenario,
+        _FakeModelInfo("MiniMax-M2.5-NVFP4", "MiniMaxM2ForCausalLM"),
+        a100,
+    ) == {}
+    minimax_m25_pro5000 = config_loader._match_model_engine_config(
+        minimax_m2_arch,
+        "minimax/minimax-m2.5-nvfp4",
+        "vllm",
+        scenario,
+        _FakeModelInfo("MiniMax-M2.5-NVFP4", "MiniMaxM2ForCausalLM"),
+        pro5000,
+    )
+    assert minimax_m25_pro5000["max_model_len"] == 196608
+    assert minimax_m25_pro5000["tensor_parallel_size"] == 4
+
+    minimax_m3_arch = config["llm"]["MiniMaxM3SparseForConditionalGeneration"]
+    assert config_loader._match_model_engine_config(
+        minimax_m3_arch,
+        "minimax/minimax-m3-mxfp8",
+        "vllm",
+        scenario,
+        _FakeModelInfo("MiniMax-M3-MXFP8", "MiniMaxM3SparseForConditionalGeneration"),
+        a100,
+    ) == {}
+    minimax_m3_pro5000 = config_loader._match_model_engine_config(
+        minimax_m3_arch,
+        "minimax/minimax-m3-mxfp8",
+        "vllm",
+        scenario,
+        _FakeModelInfo("MiniMax-M3-MXFP8", "MiniMaxM3SparseForConditionalGeneration"),
+        pro5000,
+    )
+    assert minimax_m3_pro5000["max_model_len"] == 80000
+    assert minimax_m3_pro5000["model_loader_extra_config"] == {
+        "enable_multithread_load": "true",
+        "num_threads": 128,
+    }
 
     embedding_arch = config["embedding"]["Qwen3ForCausalLM"]
     assert config_loader._match_model_engine_config(

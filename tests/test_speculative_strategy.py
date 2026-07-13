@@ -49,6 +49,16 @@ class _FakeGlm47Identifier:
         self.model_type = model_type
 
 
+class _FakeKimiIdentifier:
+    model_architecture = "KimiK25ForConditionalGeneration"
+    model_quantize = "w4a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeQwen36MoeIdentifier:
     model_architecture = "Qwen3_5MoeForConditionalGeneration"
     model_quantize = ""
@@ -91,9 +101,19 @@ class _FakePro5000Identifier:
         if "qwen3.5-397b-a17b-nvfp4" in text:
             self.model_architecture = "Qwen3_5MoeForConditionalGeneration"
             self.model_quantize = "nvfp4"
+        elif "qwen3.5-122b-a10b" in text or "qwen3.5-35b-a3b" in text:
+            self.model_architecture = "Qwen3_5MoeForConditionalGeneration"
+        elif "qwen3.5-27b" in text:
+            self.model_architecture = "Qwen3_5ForConditionalGeneration"
         elif "deepseek-v4-flash" in text:
             self.model_architecture = "DeepseekV4ForCausalLM"
             self.model_quantize = "fp4"
+        elif "minimax-m3-mxfp8" in text:
+            self.model_architecture = "MiniMaxM3SparseForConditionalGeneration"
+        elif "minimax-m2.5-nvfp4" in text:
+            self.model_architecture = "MiniMaxM2ForCausalLM"
+        elif "minimax-m2.7-nvfp4" in text:
+            self.model_architecture = "MiniMaxM2ForCausalLM"
         else:
             self.model_architecture = "unknown_architecture"
 
@@ -318,6 +338,110 @@ def test_qwen35_nvfp4_pro5000_speculative_config_matches_tokenbox(monkeypatch):
     assert command == ' --speculative-config \'{"method":"mtp","num_speculative_tokens":3}\''
 
 
+@pytest.mark.parametrize(
+    ("model_name", "model_path", "expected_tokens"),
+    [
+        ("Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", 1),
+        ("Qwen/Qwen3.5-27B", "/models/Qwen/Qwen3.5-27B", 2),
+    ],
+)
+def test_qwen35_pro5000_mtp_uses_whitelist_method_and_tokens(
+    monkeypatch,
+    model_name,
+    model_path,
+    expected_tokens,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+
+    params = {
+        "engine": "vllm",
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec", "offload"],
+        "_smart_card_token": "rtxpro5000-72",
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+
+    assert command == (
+        " --speculative-config "
+        f"'{{\"method\":\"mtp\",\"num_speculative_tokens\":{expected_tokens}}}'"
+    )
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "mtp",
+        "num_speculative_tokens": expected_tokens,
+        "moe_backend": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_name", "model_path", "expected_tokens"),
+    [
+        ("MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", 32),
+        ("MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", 10),
+        ("MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", 10),
+    ],
+)
+def test_minimax_pro5000_suffix_uses_whitelist_tokens(
+    monkeypatch,
+    model_name,
+    model_path,
+    expected_tokens,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+
+    params = {
+        "engine": "vllm",
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec", "offload"],
+        "_smart_card_token": "rtxpro5000-72",
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+
+    assert command == (
+        " --speculative-config "
+        f"'{{\"method\":\"suffix\",\"num_speculative_tokens\":{expected_tokens}}}'"
+    )
+    assert "suffix_decoding_max_cached_requests" not in command
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "suffix",
+        "num_speculative_tokens": expected_tokens,
+        "moe_backend": None,
+    }
+
+
+def test_qwen35_35b_pro5000_offload_only_does_not_auto_append_spec(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen/Qwen3.5-35B-A3B",
+        "model_path": "/models/Qwen/Qwen3.5-35B-A3B",
+        "model_type": "llm",
+        "enable_speculative_decode": False,
+        "_smart_feats": ["offload"],
+        "_smart_card_token": "rtxpro5000-72",
+    }
+
+    script = vllm_adapter._build_vllm_single_script(
+        params,
+        "vllm serve /models/Qwen/Qwen3.5-35B-A3B",
+        [],
+        "vllm",
+        "",
+    )
+
+    assert vllm_adapter.should_append_auto_speculative_config(params) is False
+    assert "--speculative-config" not in script
+
+
 def test_nvidia_day0_glm47_mtp_uses_whitelist_method_and_ignores_draft(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm47Identifier)
 
@@ -336,6 +460,110 @@ def test_nvidia_day0_glm47_mtp_uses_whitelist_method_and_ignores_draft(monkeypat
     command = vllm_adapter.build_speculative_cmd(params, "vllm")
     assert command == " --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
     assert "old-draft" not in command
+
+
+def test_ascend_glm47_mtp_only_does_not_fall_back_to_suffix(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm47Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/GLM-4.7-w8a8-floatmtp",
+        "model_path": "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_card_token": "910c",
+        "_smart_feats": ["spec"],
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "glm4_moe_mtp"
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+    assert command == (
+        " --speculative-config "
+        "'{\"method\": \"mtp\", \"num_speculative_tokens\": 3, "
+        "\"speculative_token_range\": \"256,512\"}'"
+    )
+
+
+def test_ascend_deepseek_v4_pro_mtp_uses_exact_whitelist_enforce_eager(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_card_token": "910c",
+        "_smart_feats": ["spec", "sparse"],
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "mtp"
+    assert vllm_adapter.build_speculative_cmd(params, "vllm_ascend") == (
+        " --speculative-config "
+        "'{\"method\":\"mtp\",\"num_speculative_tokens\":1,\"enforce_eager\":true}'"
+    )
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm_ascend") == {
+        "method": "mtp",
+        "num_speculative_tokens": 1,
+        "moe_backend": None,
+        "enforce_eager": True,
+    }
+
+
+def test_kimi_k26_uses_suffix_fallback_without_dflash_draft(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeKimiIdentifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/Kimi-K2.6-W4A8",
+        "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_card_token": "910c",
+        "_smart_feats": ["spec", "offload"],
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    assert vllm_adapter.build_speculative_cmd(params, "vllm_ascend") == (
+        " --speculative-config "
+        "'{\"method\" : \"suffix\", \"num_speculative_tokens\": 5, "
+        "\"suffix_decoding_max_cached_requests\": 1000}'"
+    )
+
+    params["speculative_decode_model_path"] = "z-lab/Kimi-K2.6-NonDFlash-Draft"
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    assert "draft_model" not in vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+
+    params["speculative_decode_model_path"] = "z-lab/Kimi-K2.6-DFlash"
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "dflash"
+    assert vllm_adapter.build_speculative_cmd(params, "vllm_ascend") == (
+        " --speculative-config "
+        "'{\"method\":\"dflash\",\"model\":\"z-lab/Kimi-K2.6-DFlash\","
+        "\"num_speculative_tokens\":15}'"
+    )
+
+    params["_smart_feats"] = ["offload"]
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == ""
+    assert vllm_adapter.build_speculative_cmd(params, "vllm_ascend") == ""
+
+
+def test_kimi_k27_code_does_not_inherit_k26_dflash(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeKimiIdentifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K2.7-Code-w4a8",
+        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "z-lab/Kimi-K2.6-DFlash",
+        "_smart_card_token": "910c",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == ""
+    assert vllm_adapter.build_speculative_cmd(params, "vllm_ascend") == ""
 
 
 def test_nvidia_day0_qwen35_mtp_uses_whitelist_moe_backend(monkeypatch):

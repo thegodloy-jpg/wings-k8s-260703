@@ -20,7 +20,7 @@ Feature matrix:
 
 | Model | KV offload | Speculative decode | Spec method |
 | --- | --- | --- | --- |
-| Kimi K2.6 family | supported | supported only when DFlash draft model is provided | `dflash` |
+| Kimi K2.6 family | supported | supported; DFlash only when DFlash draft model is provided | `dflash` or suffix fallback |
 | `Kimi-K2.7-Code` | supported | not supported | none |
 
 Do not route this adaptation through `pd_config.json`. The official Kimi recipe uses `kv_role=kv_both` with `AscendStoreConnector`, not the existing P/D disaggregation producer-consumer path.
@@ -138,7 +138,7 @@ If implementation reuses `resolve_offload_cpu_capacity_gb()`, the wrapper must d
 
 ## Speculative Decode
 
-Kimi K2.6 supports speculative decoding only through DFlash.
+Kimi K2.6 uses DFlash only when the user provides a matching DFlash draft model path. If speculative decoding is enabled but no matching DFlash draft is provided, keep the project suffix fallback instead of disabling speculative decoding.
 
 Expected config when the user provides a DFlash draft model path:
 
@@ -159,21 +159,21 @@ z-lab/Kimi-K2.6-DFlash
 Required behavior:
 
 - add a DFlash detection branch before the generic `draft_model` speculative branch
-- identify DFlash draft paths by model path or model id, for example containing `dflash`
+- identify DFlash draft paths by model path or model id token, for example a standalone `dflash` token
 - for Kimi K2.6, emit `method=dflash` only when a DFlash path is present
-- if Kimi K2.6 has no DFlash path, disable speculative decoding and keep offload only
-- do not fall back to suffix speculative decoding for Kimi
+- if Kimi K2.6 has no DFlash path, fall back to suffix when speculative decoding is enabled
+- do not route non-DFlash Kimi K2.6 draft paths through the generic `draft_model` branch
 - do not enable speculative decoding for `Kimi-K2.7-Code`
 
-The effective advanced feature state must be based on the resolved speculative strategy, not just the raw `enable_speculative_decode` switch. Otherwise the Kimi K2.6 family without a DFlash draft path would be incorrectly reported as speculative enabled.
+The effective advanced feature state is still driven by the whitelist and user switch. The adapter then chooses `dflash` when a DFlash draft is present, otherwise suffix.
 
 Current project caveat:
 
-- `config_loader.apply_effective_feature_enablement()` intentionally keeps `enable_speculative_decode=true` for whitelist misses so the adapter can fall back to suffix
+- `config_loader.apply_effective_feature_enablement()` intentionally keeps `enable_speculative_decode=true` for effective spec so the adapter can fall back to suffix
 - `vllm_adapter.resolve_speculative_strategy()` also falls through to suffix when no draft path exists
-- Kimi must add a model-specific exception in both the effective-feature calculation and the adapter strategy path
+- Kimi K2.6 must add a model-specific adapter branch only for choosing DFlash versus suffix; Kimi K2.7 Code remains spec-suppressed
 
-For Kimi K2.6, `enable_speculative_decode=true` is not enough. The effective spec feature is true only when a DFlash draft model path is present and accepted.
+For Kimi K2.6, `enable_speculative_decode=true` plus whitelist support is enough to keep spec effective. A DFlash draft path only changes the method from suffix to `dflash`.
 
 ## TP / DP Strategy
 
@@ -300,14 +300,14 @@ Required changes:
 - disable offload when capacity is missing or invalid
 - prevent Kimi MemCache from falling into LMCache patch/env behavior
 - keep advanced feature state aligned with the effective offload/spec result
-- add Kimi-specific speculative effective-state logic so K2.6 without DFlash does not keep suffix fallback alive
+- keep Kimi K2.6 speculative effective state alive so no-DFlash cases can use suffix fallback
 
 ### `wings_control/engines/vllm_adapter.py`
 
 Required changes:
 
 - add Kimi DFlash detection before generic draft-model speculative logic
-- prevent Kimi from falling back to suffix speculative decoding
+- prevent Kimi K2.6 non-DFlash draft paths from entering the generic `draft_model` branch; fall back to suffix instead
 - add Kimi-specific TP/DP defaults:
   - Kimi K2.6 family: `TP=4`, `DP=device_count/4`
   - `Kimi-K2.7-Code`: `TP=device_count`, DP unset or `1`
@@ -333,7 +333,7 @@ Required changes:
 - treat the new MemCache offload variant as an active backend
 - skip LMCache patch installation for Kimi MemCache
 - write `advanced_features.json` from effective feature resolution
-- avoid reporting speculative decoding as active when the Kimi K2.6 family has no DFlash draft model
+- report Kimi K2.6 speculative decoding as active when the whitelist and user switch make spec effective; distinguish DFlash from suffix in command verification
 - avoid adding Kimi MemCache to the generic LMCache fallback-removal path unless the fallback path knows how to remove `MMC_LOCAL_CONFIG_PATH` and `AscendStoreConnector`
 - call the dedicated MemCache helper when MemCache offload is effective
 - join the helper's engine-side prelude with the `script_body` produced from `_build_pid_tracked_script(start_engine_service(merged), ...)`
@@ -377,7 +377,7 @@ Required changes:
 Add or update tests around:
 
 - Kimi K2.6 with DFlash path: offload plus `method=dflash`
-- Kimi K2.6 without DFlash path: offload only, no speculative config and `advanced_features.json.features.speculative_decode=false`
+- Kimi K2.6 without DFlash path: offload plus suffix speculative config when spec is enabled and whitelisted
 - Kimi K2.7 Code: offload only, no speculative config
 - missing offload memory: offload removed, no `MMC_LOCAL_CONFIG_PATH`, no `kv_transfer_config`
 - valid offload memory: `ock.mmc.local_service.dram.size` equals the resolved MemCache local-service memory value
@@ -413,10 +413,11 @@ vllm serve <Kimi-K2.6-model-path> \
   --data-parallel-size 4 \
   --no-enable-prefix-caching \
   --enable-expert-parallel \
+  --speculative-config '{"method" : "suffix", "num_speculative_tokens": 5, "suffix_decoding_max_cached_requests": 1000}' \
   --kv-transfer-config '{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache"}}'
 ```
 
-No `--speculative-config` should be emitted.
+Suffix `--speculative-config` should be emitted when speculative decoding is enabled and Kimi K2.6 hits the spec whitelist.
 
 ### Kimi-K2.7-Code
 
@@ -445,8 +446,8 @@ No speculative config should be emitted for `Kimi-K2.7-Code`.
 - Kimi MemCache offload memory comes from page configuration
 - no `20GB` fallback remains
 - missing memory capacity disables offload instead of silently enabling it
-- Kimi K2.6 speculative decoding is DFlash only
-- Kimi K2.6 without DFlash draft model degrades to offload only
+- Kimi K2.6 speculative decoding uses DFlash only when a DFlash draft model is provided
+- Kimi K2.6 without DFlash draft model falls back to suffix when spec is enabled and whitelisted
 - Kimi 2.7 Code never emits speculative config
 - function call parser is `kimi_k2` when function calling is enabled
 - reasoning parser resolves to `kimi_k2` when thinking/reasoning parsing is enabled

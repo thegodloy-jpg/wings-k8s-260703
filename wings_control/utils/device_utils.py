@@ -330,6 +330,8 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
             return "rtxpro5000-72"
         if "rtxpro5000" in compact and "48" in compact:
             return "rtxpro5000-48"
+        if "rtxpro5000" in compact:
+            return "rtxpro5000-72"
     if not name:
         from core.version_util import engine_version_platform
         platform = engine_version_platform() or ""

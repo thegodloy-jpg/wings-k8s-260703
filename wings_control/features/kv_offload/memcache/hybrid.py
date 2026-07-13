@@ -16,6 +16,8 @@ try:
     from utils.device_utils import resolve_card_token
     from utils.model_utils import (
         feature_allowed,
+        is_kimi_k26_family,
+        is_kimi_k27_code_family,
         resolve_feature_whitelist_row_from_params,
         resolve_offload_whitelist_backend,
     )
@@ -28,6 +30,8 @@ except ImportError:
     from wings_control.utils.device_utils import resolve_card_token  # type: ignore
     from wings_control.utils.model_utils import (  # type: ignore
         feature_allowed,
+        is_kimi_k26_family,
+        is_kimi_k27_code_family,
         resolve_feature_whitelist_row_from_params,
         resolve_offload_whitelist_backend,
     )
@@ -68,13 +72,11 @@ def empty_memcache_hybrid_fragment() -> dict:
 
 def is_kimi_k27_code_memcache_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
     """判断当前参数是否应使用 Kimi K2.7 Code MemCache offload。"""
-    if not params or engine != "vllm_ascend":
-        return False
-    text = " ".join(
-        str(params.get(key, "") or "").lower()
-        for key in ("model_name", "model_path")
-    )
-    return "kimi-k2.7-code" in text and "w4a8" not in text
+    return is_kimi_k27_code_family(params, engine)
+
+
+def is_kimi_k26_memcache_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
+    return is_kimi_k26_family(params, engine)
 
 
 def is_qwen_day0_memcache_params(params: Optional[Dict[str, Any]], engine: str) -> bool:
@@ -107,7 +109,10 @@ def is_memcache_hybrid_params(params: Optional[Dict[str, Any]], engine: str) -> 
         return backend == MEMCACHE_OFFLOAD_VARIANT
     smart_feats = (params or {}).get("_smart_feats")
     if smart_feats is not None:
-        return "offload" in smart_feats and is_kimi_k27_code_memcache_params(params, engine)
+        return "offload" in smart_feats and (
+            is_kimi_k27_code_memcache_params(params, engine)
+            or is_kimi_k26_memcache_params(params, engine)
+        )
     return False
 
 

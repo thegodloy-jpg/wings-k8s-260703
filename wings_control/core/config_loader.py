@@ -48,6 +48,7 @@ from utils.model_utils import (ModelIdentifier,
                                is_deepseek_v4_flash_rtx_pro_5000,
                                is_minimax_m27_rtx_pro_5000_vllm,
                                is_qwen3_5_397b_nvfp4_vllm,
+                               is_kimi_k27_code_family,
                                THINKING_ALWAYS_ON, THINKING_HYBRID, THINKING_NONE)
 from utils.device_utils import check_pcie_cards, resolve_card_token
 try:
@@ -2847,6 +2848,11 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     # "spec" 回落到 suffix 地板，而不是在收口层直接关闭投机。
     spec_whitelisted = "spec" in feats or "spec" in forced_feats
     spec_eff = spec_req or "spec" in forced_feats
+    # Kimi-K2.7-Code 的 DAY0 证据只包含 MemCache 卸载；即使页面打开投机开关，
+    # 也不能回落到 suffix 或 dflash，避免把 Kimi-K2.6 的能力扩散到 Code 变体。
+    if engine == "vllm_ascend" and is_kimi_k27_code_family(p, engine) and spec_eff:
+        logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
+        spec_eff = False
     p["enable_speculative_decode"] = spec_eff
     os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
     if spec_eff and spec_whitelisted:
@@ -3164,6 +3170,9 @@ def _handle_sglang_distributed(distributed_config: Dict[str, Any], cmd_params: D
 _PREFIX_TOKEN_MATCH_CONFIG_KEYS = {
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    "kimi-k2.6",
+    "kimi-2.6",
+    "kimi-k2.7-code",
     "minimax-m2.7",
 }
 _MODEL_NAME_TOKEN_BOUNDARY_CHARS = set("-_./:")
@@ -3428,6 +3437,11 @@ class _SpecialNvidiaConfigSelection:
 def _build_model_config_lookup_names(model_name_lower: str, model_info=None) -> list[str]:
     """构造模型默认配置查找名，并保持原有候选优先级。"""
     lookup_names = [model_name_lower]
+    # DAY0 样例常传入 ``org/model`` 路径，defaults key 只保留精确模型名；
+    # 追加 basename 可复用同一 exact profile，且不改变完整路径候选的优先级。
+    basename = model_name_lower.rstrip("/").rsplit("/", 1)[-1]
+    if basename and basename not in lookup_names:
+        lookup_names.append(basename)
     if model_name_lower.startswith("deepseek-v4-pro-") and model_name_lower.endswith("-mtp1"):
         lookup_names.append(model_name_lower[:-1])
     for extra in _fingerprint_model_config_keys(model_info):

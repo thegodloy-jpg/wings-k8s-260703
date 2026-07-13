@@ -89,6 +89,7 @@ _CARD_TOKEN_ALIASES: dict[str, str] = {
     # ── NVIDIA RTX Pro 5000 ──
     "rtxpro500048g": "rtx_pro_5000_48G",
     "rtxpro500072g": "rtx_pro_5000_72G",
+    "rtxpro5000": "rtx_pro_5000_72G",
     # ── NVIDIA H20 ──
     "h2096g": "h20_96G",
     "h20141g": "h20_141G",

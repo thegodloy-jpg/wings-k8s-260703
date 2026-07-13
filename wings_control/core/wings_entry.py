@@ -399,7 +399,12 @@ def _is_lmcache_offload_allowed(engine: str, merged: dict | None) -> bool:
 
 
 def _uses_non_lmcache_offload_backend(engine: str, merged: dict | None) -> bool:
-    """识别已由 MemCache 或 native backend 承担卸载的互斥场景。"""
+    """识别已由 MemCache 或 native backend 承担卸载的互斥场景。
+
+    这些场景的最终命令已经通过 ``kv_transfer_config``、MemCache 片段或
+    ``--kv-offloading-backend native`` 表达卸载能力，不需要也不能再安装
+    LMCache patch，否则会把两套互斥 backend 混在同一个启动脚本里。
+    """
     if is_memcache_hybrid_params(merged, engine):
         logger.info("[MemCache] Model uses official MemCache; skipping LMCache patch install.")
         return True
@@ -435,11 +440,13 @@ def _uses_non_lmcache_offload_backend(engine: str, merged: dict | None) -> bool:
 
 
 def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | None:
-    """决定是否安装 LMCache 补丁，并返回目标平台（vllm→nvidia-x86 / vllm_ascend→ascend-arm）。
+    """决定是否安装 LMCache 补丁，并返回目标平台（vllm_ascend→ascend-arm）。
 
     命中下列任一情况返回 None（跳过安装）：
       * ``ENABLE_KV_OFFLOAD`` 未开启；
-      * V4-Flash on NV/vllm → 用 native ``--kv-offloading-backend``（构建期 CLI flag）；
+      * NVIDIA/vLLM → 使用镜像内运行时，不安装 LMCache patch；
+      * whitelist backend 为 native 的 NV/vllm 场景 → 用 native ``--kv-offloading-backend``；
+      * V4-Flash on NV/vllm → 用 native ``--kv-offloading-backend``（历史特例兜底）；
       * GLM-5.1 on NV/vllm → 强制关闭 LMCache；
       * 引擎无已知 lmcache-target 映射。
     """
@@ -461,6 +468,15 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
         return None
 
     if _uses_non_lmcache_offload_backend(engine, merged):
+        return None
+
+    if engine == "vllm":
+        # 本轮明确 NV 场景的 LMCache 运行时由镜像提供；启动脚本只负责
+        # native CLI 或已有 LMCache env，不再执行 install.py --lmcache-target nvidia-x86。
+        logger.info(
+            "[LMCache] NVIDIA/vLLM LMCache uses image-provided runtime; "
+            "skipping LMCache patch install."
+        )
         return None
 
     target = _ENGINE_LMCACHE_TARGET_MAP.get(engine)

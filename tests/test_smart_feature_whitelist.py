@@ -222,6 +222,24 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/Qwen3.5-397B-A17B",
         "rtxpro5000-72",
     ) == frozenset({"spec", "sparse"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen/Qwen3.5-122B-A10B",
+        "/models/Qwen/Qwen3.5-122B-A10B",
+        "rtxpro5000-72",
+    ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen/Qwen3.5-27B",
+        "/models/Qwen/Qwen3.5-27B",
+        "rtxpro5000-72",
+    ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "Qwen/Qwen3.5-35B-A3B",
+        "/models/Qwen/Qwen3.5-35B-A3B",
+        "rtxpro5000-72",
+    ) == frozenset({"offload"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
@@ -247,6 +265,18 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/MiniMax/MiniMax-M2.7-NVFP4",
         "rtxpro5000-72",
     ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "MiniMax/MiniMax-M3-MXFP8",
+        "/models/MiniMax/MiniMax-M3-MXFP8",
+        "rtxpro5000-72",
+    ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "MiniMax/MiniMax-M2.5-NVFP4",
+        "/models/MiniMax/MiniMax-M2.5-NVFP4",
+        "rtxpro5000-72",
+    ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "MiniMax/MiniMax-M2.7",
@@ -317,8 +347,38 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset({"spec", "sparse"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
+        "Eco-Tech/GLM-4.7-w8a8-floatmtp",
+        "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp",
+        "910c",
+    ) == frozenset({"spec"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        "/models/Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        "910c",
+    ) == frozenset({"spec", "sparse"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "DeepSeek-Coder-V2-Instruct-BF16",
+        "/models/DeepSeek-Coder-V2-Instruct-BF16",
+        "910c",
+    ) == frozenset({"spec"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Eco-Tech/Kimi-K2.6-W4A8",
+        "/models/Eco-Tech/Kimi-K2.6-W4A8",
+        "910c",
+    ) == frozenset({"spec", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
         "Kimi-K2.7-Code",
         "/harbor_data/Kimi-K2.7-Code",
+        "910c",
+    ) == frozenset({"offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Kimi-K2.7-Code-w4a8",
+        "/harbor_data/Kimi-K2.7-Code-w4a8",
         "910c",
     ) == frozenset({"offload"})
 
@@ -648,6 +708,20 @@ class _FakeKimiK27CodeInfo:
         return "llm"
 
 
+class _FakeKimiK26Info:
+    model_name = "Eco-Tech/Kimi-K2.6-W4A8"
+    model_path = "/models/Eco-Tech/Kimi-K2.6-W4A8"
+    model_architecture = "KimiK25ForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_architecture():
+        return "KimiK25ForConditionalGeneration"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
+
+
 def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
     monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
     monkeypatch.delenv("ENGINE_VERSION", raising=False)
@@ -685,6 +759,94 @@ def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
             "backend": "memcache",
         },
     }
+
+
+def test_kimi_k26_uses_memcache_ascend_store_connector(monkeypatch):
+    monkeypatch.delenv("WINGS_ASCEND_PLATFORM", raising=False)
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/Kimi-K2.6-W4A8",
+        "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
+        "model_type": "llm",
+        "distributed": False,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "device_count": 16,
+    }
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+    config = config_loader._get_model_specific_config(
+        hardware_env,
+        params,
+        _FakeKimiK26Info(),
+    )
+
+    kv_transfer = json.loads(config["kv_transfer_config"])
+    assert params["_smart_feats"] == ["offload", "spec"]
+    assert params["enable_speculative_decode"] is True
+    assert kv_transfer == {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
+        "kv_load_failure_policy": "recompute",
+        "kv_connector_extra_config": {
+            "lookup_rpc_port": "0",
+            "backend": "memcache",
+        },
+    }
+
+
+def test_kimi_k26_effective_spec_allows_suffix_fallback_without_dflash(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/Kimi-K2.6-W4A8",
+        "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
+        "enable_sparse": False,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+    }
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+
+    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_smart_feats"] == ["spec"]
+    assert params["enable_speculative_decode"] is True
+
+    params["enable_speculative_decode"] = True
+    params["speculative_decode_model_path"] = "z-lab/Kimi-K2.6-DFlash"
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+
+    assert params["_smart_feats"] == ["spec"]
+    assert params["enable_speculative_decode"] is True
+
+
+def test_kimi_k27_code_effective_spec_is_suppressed(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K2.7-Code-w4a8",
+        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "enable_sparse": False,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "z-lab/Kimi-K2.6-DFlash",
+    }
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+
+    assert params["_allowed_smart_feats"] == ["offload"]
+    assert params["_smart_feats"] == ["offload"]
+    assert params["enable_speculative_decode"] is False
 
 
 @pytest.mark.parametrize(
@@ -837,6 +999,18 @@ def test_nvidia_card_token_only_normalizes_chip_names():
     }) == "rtxpro5000-72"
     assert resolve_card_token({
         "device": "nvidia",
+        "details": [{"name": "G6550+RTX PRO 5000 * 8"}],
+    }) == "rtxpro5000-72"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "TokenBox RTX PRO 5000 * 8"}],
+    }) == "rtxpro5000-72"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "RTX PRO 5000 48GB"}],
+    }) == "rtxpro5000-48"
+    assert resolve_card_token({
+        "device": "nvidia",
         "details": [{"name": "NH02(141GB) / G8600 V7"}],
     }) == "nh02(141gb) / g8600 v7"
     assert resolve_card_token({
@@ -961,12 +1135,19 @@ def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
     [
         ("vllm", "Qwen3.5-397B-A17B-NVFP4", "/models/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", 3),
         ("vllm", "Qwen3.5-397B-A17B", "/models/Qwen/Qwen3.5-397B-A17B", "rtxpro5000-72", 3),
+        ("vllm", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "rtxpro5000-72", 1),
+        ("vllm", "Qwen/Qwen3.5-27B", "/models/Qwen/Qwen3.5-27B", "rtxpro5000-72", 2),
+        ("vllm", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", 32),
+        ("vllm", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", 10),
+        ("vllm", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "zai-org/GLM-4.7", "/models/zai-org/GLM-4.7", "h20-141", 1),
         ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 3),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910b", 1),
+        ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp", "910c", 1),
+        ("vllm_ascend", "DeepSeek-Coder-V2-Instruct-BF16", "/models/DeepSeek-Coder-V2-Instruct-BF16", "910c", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.2-w8a8", "/models/Eco-Tech/GLM-5.2-w8a8", "910c", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910b", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910c", 3),
@@ -996,6 +1177,97 @@ def test_spec_whitelist_mtp_rows_carry_mtp_tokens(
 
     assert row is not None
     assert row.get("mtp_num_speculative_tokens") == expected_tokens
+
+
+def test_qwen35_35b_pro5000_native_offload_has_no_spec_row():
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "Qwen/Qwen3.5-35B-A3B",
+        "/models/Qwen/Qwen3.5-35B-A3B",
+        "rtxpro5000-72",
+        "spec",
+    ) is None
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "Qwen/Qwen3.5-35B-A3B",
+        "/models/Qwen/Qwen3.5-35B-A3B",
+        "rtxpro5000-72",
+        "offload",
+    )
+
+    assert row is not None
+    assert row.get("backend") == "native"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "model_path", "expected_backend"),
+    [
+        ("MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "native"),
+        ("MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "native"),
+        ("MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "lmcache"),
+    ],
+)
+def test_minimax_pro5000_offload_backend_stays_model_specific(
+    model_name,
+    model_path,
+    expected_backend,
+):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        model_path,
+        "rtxpro5000-72",
+        "offload",
+    )
+
+    assert row is not None
+    assert row.get("backend") == expected_backend
+
+
+@pytest.mark.parametrize(
+    ("feature", "model_name", "model_path", "card_token", "expected_source"),
+    [
+        ("spec", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", "vllm-minimax-m3"),
+        ("offload", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", "vllm-minimax-m3"),
+        ("spec", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("offload", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("spec", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("sparse", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("offload", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("spec", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("offload", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("spec", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "rtxpro5000-72", "vllm-0.23"),
+        ("offload", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "rtxpro5000-72", "vllm-0.23"),
+        ("spec", "Qwen/Qwen3.5-27B", "/models/Qwen/Qwen3.5-27B", "rtxpro5000-72", "vllm-0.23"),
+        ("offload", "Qwen/Qwen3.5-27B", "/models/Qwen/Qwen3.5-27B", "rtxpro5000-72", "vllm-0.23"),
+        ("offload", "Qwen/Qwen3.5-35B-A3B", "/models/Qwen/Qwen3.5-35B-A3B", "rtxpro5000-72", "vllm-0.23"),
+        ("spec", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910b", "vllm-ascend-0.21"),
+        ("spec", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910c", "vllm-ascend-0.21"),
+        ("spec", "DeepSeek-Coder-V2-Instruct-BF16", "/models/DeepSeek-Coder-V2-Instruct-BF16", "910c", "vllm-ascend-0.21"),
+        ("offload", "Eco-Tech/Kimi-K2.6-W4A8", "/models/Eco-Tech/Kimi-K2.6-W4A8", "910c", "vllm-ascend-0.21"),
+        ("spec", "Eco-Tech/Kimi-K2.6-W4A8", "/models/Eco-Tech/Kimi-K2.6-W4A8", "910c", "vllm-ascend-0.21"),
+        ("offload", "Kimi-K2.7-Code-w4a8", "/harbor_data/Kimi-K2.7-Code-w4a8", "910c", "vllm-ascend-0.21"),
+    ],
+)
+def test_day0_adapted_whitelist_rows_use_engine_version_source(
+    feature,
+    model_name,
+    model_path,
+    card_token,
+    expected_source,
+):
+    # source 是文档元信息，不参与 matcher；这里单独锁定本轮 DAY0 收编口径，
+    # 防止后续把 Pro 5000 / Ascend 0.21 场景误回填成旧矩阵来源。
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend" if card_token.startswith("910") else "vllm",
+        model_name,
+        model_path,
+        card_token,
+        feature,
+    )
+
+    assert row is not None
+    assert row.get("source") == expected_source
 
 
 def test_detect_hardware_accepts_minimal_ascend_hardware_family_file(tmp_path, monkeypatch):
@@ -1036,6 +1308,12 @@ def test_resolve_card_model_uses_hardware_env_only(monkeypatch):
     assert resolve_card_model(
         {"hardware_family": "NVIDIA RTX PRO 5000 72GB Blackwell"}
     ) == "rtx_pro_5000_72G"
+    assert resolve_card_model(
+        {"hardware_family": "G6550+RTX PRO 5000 * 8"}
+    ) == "rtx_pro_5000_72G"
+    assert resolve_card_model(
+        {"hardware_family": "NVIDIA RTX PRO 5000 48GB Blackwell"}
+    ) == "rtx_pro_5000_48G"
 
 
 def test_deepseek_v4_flash_pro5000_detection_uses_source_hardware_or_resolved_token(monkeypatch):
@@ -1054,8 +1332,36 @@ def test_deepseek_v4_flash_pro5000_detection_uses_source_hardware_or_resolved_to
     }) is True
     assert model_utils.is_deepseek_v4_flash_rtx_pro_5000({
         **source,
+        "hardware_family": "TokenBox RTX PRO 5000 * 8",
+    }) is True
+    assert model_utils.is_deepseek_v4_flash_rtx_pro_5000({
+        **source,
+        "hardware_family": "NVIDIA RTX PRO 5000 48GB Blackwell",
+    }) is False
+    assert model_utils.is_deepseek_v4_flash_rtx_pro_5000({
+        **source,
         "_smart_card_token": "rtxpro5000-72",
     }) is True
+
+
+def test_minimax_m3_pro5000_detection_is_exact_to_m3_mxfp8():
+    source = {
+        "engine": "vllm",
+        "model_name": "MiniMax/MiniMax-M3-MXFP8",
+        "model_path": "/models/MiniMax/MiniMax-M3-MXFP8",
+        "_smart_card_token": "rtxpro5000-72",
+    }
+
+    assert model_utils.is_minimax_m3_rtx_pro_5000_vllm(source) is True
+    assert model_utils.is_minimax_m3_rtx_pro_5000_vllm({
+        **source,
+        "model_name": "MiniMax/MiniMax-M3",
+        "model_path": "/models/MiniMax/MiniMax-M3",
+    }) is False
+    assert model_utils.is_minimax_m3_rtx_pro_5000_vllm({
+        **source,
+        "_smart_card_token": "rtxpro5000-48",
+    }) is False
 
 
 def test_deepseek_v4_flash_pro5000_token_drives_nv_parallel_defaults(monkeypatch):

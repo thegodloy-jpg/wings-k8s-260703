@@ -19,6 +19,7 @@ vLLM 引擎适配器。
 import logging
 import json
 import os
+import re
 import shlex
 import stat
 from typing import Dict, Any, List, Optional, Tuple
@@ -30,6 +31,9 @@ from utils.model_utils import (ModelIdentifier, ModelIdentifierDraft,
                                is_qwen3_5_397b_nvfp4_vllm,
                                is_deepseek_v4_flash_rtx_pro_5000,
                                is_minimax_m27_rtx_pro_5000_vllm,
+                               is_minimax_m3_rtx_pro_5000_vllm,
+                               is_kimi_k26_family,
+                               is_kimi_k27_code_family,
                                is_glm51_ascend_kvsparse_tmp_scope, is_glm52_model,
                                is_glm52_single_node_even, feature_allowed,
                                resolve_feature_whitelist_row_from_params,
@@ -2057,6 +2061,16 @@ def _build_model_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
         logger.info("[MiniMax-M2.7] inject LMCache runtime env for %s on vllm (RTX-PRO-5000)", arch)
         return _build_minimax_m27_rtx_pro_5000_env_commands(params)
 
+    # MiniMax-M3-MXFP8 是 Pro 5000 native offload 场景：这里只注入官方启动
+    # 所需的 vLLM V1/PYTHONHASHSEED env，pip/arctic-inference 属于镜像前置，
+    # LMCache env 与补丁安装均不得套用 MiniMax-M2.7 的 LMCache 配方。
+    if is_minimax_m3_rtx_pro_5000_vllm(params, engine):
+        logger.info("[MiniMax-M3] inject native-offload runtime env for %s on vllm (RTX-PRO-5000)", arch)
+        return [
+            "export VLLM_USE_V1=1",
+            "export PYTHONHASHSEED=0",
+        ]
+
     if engine == "vllm_ascend" and _is_deepseek_v4_flash_params(params, model_info):
         return _build_deepseek_v4_flash_env(params)
     if engine == "vllm_ascend" and is_deepseek_v4_pro_adapted_scope(params, model_info):
@@ -2214,6 +2228,43 @@ def _apply_generic_deepseek_ascend_dp_defaults(
         engine_config.pop("enable_expert_parallel")
 
 
+def _apply_kimi_ascend_engine_defaults(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+    explicit_keys: set,
+) -> None:
+    """补齐 Kimi 0.21 DAY0 拓扑默认值。
+
+    Kimi-K2.6 的官方命令按 4 卡 TP 分组，DP=总卡数/4；Kimi-K2.7-Code
+    保持单 DP 形态，TP 使用当前卡数。仅当用户没有显式传入 TP/DP 时注入，
+    避免覆盖页面或 API 的明确配置。
+    """
+    if params.get("engine") != "vllm_ascend":
+        return
+    if not (
+        is_kimi_k26_family(params, "vllm_ascend")
+        or is_kimi_k27_code_family(params, "vllm_ascend")
+    ):
+        return
+
+    device_count = _safe_int(params.get("device_count")) or 0
+    if is_kimi_k26_family(params, "vllm_ascend"):
+        if device_count > 0 and device_count % 4 == 0:
+            if "tensor_parallel_size" not in explicit_keys:
+                engine_config["tensor_parallel_size"] = 4
+            if "data_parallel_size" not in explicit_keys:
+                engine_config["data_parallel_size"] = device_count // 4
+        elif device_count > 0:
+            logger.warning(
+                "[Kimi K2.6] device_count=%s is not divisible by 4; skip TP=4/DP auto defaults.",
+                device_count,
+            )
+        return
+
+    if device_count > 0:
+        if "tensor_parallel_size" not in explicit_keys:
+            engine_config["tensor_parallel_size"] = device_count
+
 
 def _apply_glm5_dsa_distributed_fixups(
     params: Dict[str, Any],
@@ -2308,6 +2359,7 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     # 以确保最终值恒为 256（覆盖 json 默认与用户显式值）。
     _force_deepseek_v4_flash_nv_block_size(params, engine_config)
     _apply_glm5_ascend_engine_defaults(params, engine_config, explicit_keys)
+    _apply_kimi_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_generic_deepseek_ascend_dp_defaults(params, engine_config, explicit_keys)
     _apply_glm5_dsa_distributed_fixups(params, engine_config, explicit_keys)
    
@@ -3170,6 +3222,29 @@ def _normalize_speculative_draft_path(value: Any) -> str:
     return raw
 
 
+def _has_kimi_dflash_draft_path(params: Dict[str, Any]) -> bool:
+    """判断 Kimi-K2.6 是否显式选择 DFlash draft。
+
+    只有 draft path 中出现独立 ``dflash`` token 时才启用 DFlash；``none``、
+    ``no-dflash``、``without-dflash`` 等否定写法不能误触发。
+    """
+    draft_path = _normalize_speculative_draft_path(
+        params.get("speculative_decode_model_path")
+    )
+    if not draft_path:
+        return False
+    tokens = [
+        token for token in re.split(r"[/\\._\-\s]+", draft_path.lower())
+        if token
+    ]
+    for index, token in enumerate(tokens):
+        if token != "dflash":
+            continue
+        previous = tokens[index - 1] if index > 0 else ""
+        return previous not in {"non", "not", "no", "without"}
+    return False
+
+
 def _is_mtp_or_suffix_strategy(params: Dict[str, Any], engine: str) -> bool:
     """判断当前投机推理策略是否为 MTP 或 suffix（即非草稿模型方案）。
 
@@ -3409,6 +3484,21 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     if engine not in ("vllm", "vllm_ascend"):
         return ""
 
+    model_info = ModelIdentifier(
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("model_type"),
+    )
+    if engine == "vllm_ascend" and model_info.model_architecture == "KimiK25ForConditionalGeneration":
+        if is_kimi_k26_family(params, engine):
+            if not params.get("enable_speculative_decode") or not _spec_feature_is_allowed(params, engine):
+                return ""
+            if _has_kimi_dflash_draft_path(params):
+                return "dflash"
+            return "suffix"
+        if is_kimi_k27_code_family(params, engine):
+            return ""
+
     strategy = _resolve_whitelist_mtp_strategy(params, engine)
     if strategy:
         return strategy
@@ -3416,11 +3506,6 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
     if strategy:
         return strategy
 
-    model_info = ModelIdentifier(
-        params.get("model_name"),
-        params.get("model_path"),
-        params.get("model_type"),
-    )
     if model_info.model_architecture == "Qwen3NextForCausalLM" and engine == "vllm_ascend":
         return "suffix"
 
@@ -3469,6 +3554,22 @@ def _handle_draft_model_case(params: Dict[str, Any], config: List[str]) -> None:
         config.append('"method" : "draft_model"')
         num_spec_tokens = 4
         config.append(f'"num_speculative_tokens": {num_spec_tokens}')
+
+
+def _build_kimi_dflash_speculative_cmd(params: Dict[str, Any]) -> str:
+    """生成 Kimi-K2.6 官方 DFlash speculative-config。"""
+    draft_path = _normalize_speculative_draft_path(params.get("speculative_decode_model_path"))
+    if not draft_path:
+        return ""
+    safe_path = draft_path.replace('\\', '\\\\').replace('"', '\\"')
+    return _format_speculative_result(
+        [
+            '"method":"dflash"',
+            f'"model":"{safe_path}"',
+            '"num_speculative_tokens":15',
+        ],
+        compact=True,
+    )
 
 
 def _handle_mtp_case(model_info: ModelIdentifier, mtp_support_models: List[Any],
@@ -3570,6 +3671,8 @@ def _build_mtp_speculative_cmd(
             f'"method":"{method}"',
             f'"num_speculative_tokens":{tokens}',
         ]
+        if row.get("enforce_eager") is True:
+            config.append('"enforce_eager":true')
         moe_backend = row.get("mtp_moe_backend")
         if moe_backend:
             config.append(f'"moe_backend":"{moe_backend}"')
@@ -3640,7 +3743,16 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     )
 
     mtp_row = _mtp_whitelist_override_row(params, engine)
-    if spec_draft_raw and not mtp_row:
+    kimi_k26_dflash_only = (
+        engine == "vllm_ascend"
+        and model_info.model_architecture == "KimiK25ForConditionalGeneration"
+        and is_kimi_k26_family(params, engine)
+    )
+    if strategy == "dflash":
+        logger.info("[AdvFeature-SpecDecode] Kimi DFlash strategy selected")
+        return _build_kimi_dflash_speculative_cmd(params)
+
+    if spec_draft_raw and not mtp_row and not kimi_k26_dflash_only:
         if normalized_draft_path:
             logger.info("[AdvFeature-SpecDecode] Draft model path detected: %s, using draft_model strategy",
                         normalized_draft_path)
@@ -3650,6 +3762,10 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         logger.info("[AdvFeature-SpecDecode] Draft model path is '%s' — treated as no draft model, "
                     "falling through to strategy='%s'",
                     spec_draft_raw, strategy)
+
+    if mtp_row:
+        logger.info("[AdvFeature-SpecDecode] Whitelist strategy selected: %s", strategy)
+        return _build_mtp_speculative_cmd(params, engine, model_info, strategy)
 
     if strategy == "suffix":
         logger.info("[AdvFeature-SpecDecode] Architecture %s → suffix strategy",
@@ -3686,11 +3802,14 @@ def resolve_effective_speculative_details(
     tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
     if tokens is None:
         return None
-    return {
+    details = {
         "method": str(row.get("mtp_method") or "mtp"),
         "num_speculative_tokens": tokens,
         "moe_backend": row.get("mtp_moe_backend"),
     }
+    if row.get("enforce_eager") is True:
+        details["enforce_eager"] = True
+    return details
 
 
 def _should_append_auto_speculative_config(params: Dict[str, Any]) -> bool:
@@ -3834,6 +3953,8 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
 
     - 仅 ``engine == "vllm"`` 且模型命中特例时生效（Ascend 0.21 走 LMCache dynamic）。
     - 复用 ``ENABLE_KV_OFFLOAD`` 总开关（get_lmcache_env）作为触发条件。
+    - Pro 5000 新增场景优先读白名单 backend：Qwen / MiniMax-M2.5 / MiniMax-M3
+      命中 native，MiniMax-M2.7 命中 lmcache，不在这里生成 native CLI。
     - size 按模型复用对应 native 容量解析器。
     - 与 LMCache env 路径互斥：命中时 ``_build_cache_env_commands`` 跳过 LMCache 导出。
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。

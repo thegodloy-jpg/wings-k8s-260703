@@ -92,6 +92,10 @@ architectures:
     models:
       Kimi-K2.5:      {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.5-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
+      Kimi-K2.6:      {vllm: kimi_k2, vllm_ascend: kimi_k2}
+      Kimi-K2.6-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
+      Kimi-2.6:       {vllm: kimi_k2, vllm_ascend: kimi_k2}
+      Kimi-2.6-w4a8:  {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.7:      {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.7-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.7-Code:      {vllm: kimi_k2, vllm_ascend: kimi_k2}
@@ -180,8 +184,10 @@ architectures:
       vllm_ascend: {default: minimax_m2_append_think}
     models:
       MiniMax-M2.5:      {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
+      MiniMax-M2.5-NVFP4: {vllm: minimax_m2, vllm_ascend: minimax_m2_append_think}
       MiniMax-M2.5-w8a8: {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
       MiniMax-M2.7:      {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
+      MiniMax-M2.7-NVFP4: {vllm: minimax_m2, vllm_ascend: minimax_m2_append_think}
       MiniMax-M2.7-w8a8: {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
 
   # ── 以下架构在两引擎 default 段均未配 reasoning_parser, 全部模型 null（不启用思维解析）──
@@ -197,7 +203,7 @@ architectures:
     config: {}
     models:
       MiniMax-M3:       {vllm: null, vllm_ascend: null}
-      MiniMax-M3-MXFP8: {vllm: null, vllm_ascend: null}
+      MiniMax-M3-MXFP8: {vllm: minimax_m3, vllm_ascend: null}
 
   - name: Qwen2ForCausalLM
     config: {}
