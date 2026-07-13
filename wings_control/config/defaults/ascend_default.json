@@ -419,7 +419,7 @@
           }
         },
         "GLM-4.7-W8A8-floatmtp-Ascend910B": {
-          "card_tokens": ["910b", "ascend910b"],
+          "card_tokens": ["910b"],
           "vllm_ascend": {
             "trust_remote_code": true,
             "use_vllm_serve": true,
@@ -472,7 +472,7 @@
           }
         },
         "GLM-4.7-W8A8-floatmtp-Ascend910C": {
-          "card_tokens": ["910c", "ascend910c"],
+          "card_tokens": ["910c"],
           "vllm_ascend": {
             "trust_remote_code": true,
             "use_vllm_serve": true,

@@ -974,6 +974,9 @@ def test_kimi_ascend_exact_defaults_match_w4a8_suffixes():
 
 def test_glm47_ascend_exact_defaults_use_card_specific_cudagraph_sizes():
     glm_arch = _model_deploy_config("ascend")["llm"]["Glm4MoeForCausalLM"]
+    assert glm_arch["GLM-4.7-W8A8-floatmtp-Ascend910B"]["card_tokens"] == ["910b"]
+    assert glm_arch["GLM-4.7-W8A8-floatmtp-Ascend910C"]["card_tokens"] == ["910c"]
+
     scenario = config_loader._SpecialEngineScenario()
     model_info = _FakeModelInfo(
         "Eco-Tech/GLM-4.7-W8A8-floatmtp",
