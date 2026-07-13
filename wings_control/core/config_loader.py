@@ -1443,7 +1443,7 @@ def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) 
     )
 
 
-def _apply_pd_external_lb(cmd_known_params, model_info):
+def _apply_pd_external_lb(cmd_known_params, model_info, hardware_env=None):
     """检测 external-lb PD 并应用模型配置注册表（config/defaults/pd_config.json）。
 
     命中条件：PD_ROLE∈{P,D}（DP_SIZE≥1，含 1P1D）。命中后（专属架构优先、回退 default）：
@@ -1454,6 +1454,17 @@ def _apply_pd_external_lb(cmd_known_params, model_info):
     """
     pd_role = get_pd_role_env()
     logger.info("[PD external-lb] entry check: PD_ROLE=%s", pd_role)
+    device = (hardware_env or {}).get("device")
+    engine = cmd_known_params.get("engine")
+    if pd_role and device != "ascend" and engine != "vllm_ascend":
+        logger.info(
+            "[PD external-lb] skipped for non-Ascend PD role=%s device=%s engine=%s; "
+            "keep non-Ascend PD KV path.",
+            pd_role,
+            device or "<unknown>",
+            engine or "<unknown>",
+        )
+        return
     ext = _get_pd_external_lb_params()
     if not ext:
         # _get_pd_external_lb_params 返回 None 时，若 PD_ROLE 已设但缺少 DP_SIZE/TP_SIZE
@@ -4091,7 +4102,7 @@ def load_and_merge_configs(
 
     # 6. PD external-lb：检测并应用 PD 模型配置注册表（pd_config.json）。
     #    必须在所有合并 + explicit_keys 终定之后，确保不覆盖用户显式键。
-    _apply_pd_external_lb(final_engine_params, model_info)
+    _apply_pd_external_lb(final_engine_params, model_info, hardware_env)
 
     logger.info("Final engine_config keys: %s", list(engine_config.keys()))
 

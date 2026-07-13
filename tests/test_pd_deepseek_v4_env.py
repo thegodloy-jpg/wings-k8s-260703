@@ -22,6 +22,7 @@ _CLEAR_ENV = (
     "DP_SIZE",
     "DP_SIZE_LOCAL",
     "DTYPE",
+    "DISTRIBUTED_EXECUTOR_BACKEND",
     "ENABLE_AUTO_THINK_CHOICE",
     "ENABLE_AUTO_TOOL_CHOICE",
     "ENABLE_CHUNKED_PREFILL",
@@ -298,3 +299,57 @@ def test_deepseek_v4_pd_logs_env_trigger_path(tmp_path, monkeypatch, caplog):
     assert "[PD external-lb env merge]" in logs
     assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" in logs
     assert "stripped_env=[]" in logs
+
+
+def test_nvidia_pd_does_not_use_ascend_external_lb_mooncake_registry(tmp_path, monkeypatch):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    monkeypatch.setenv("PD_ROLE", "P")
+    monkeypatch.setenv("PD_INDEX", "0")
+    monkeypatch.setenv("PD_PREFILL_DP_SIZE", "2")
+    monkeypatch.setenv("PD_PREFILL_TP_SIZE", "4")
+    monkeypatch.setenv("PD_DECODE_DP_SIZE", "2")
+    monkeypatch.setenv("PD_DECODE_TP_SIZE", "4")
+    monkeypatch.setenv("DP_SIZE_LOCAL", "1")
+    monkeypatch.setenv("MASTER_IP", _PREFILL_IP)
+    monkeypatch.setenv("RANK_IP", _PREFILL_IP)
+    monkeypatch.setenv("HOST_IP", _PREFILL_IP)
+    monkeypatch.setenv("POD_IP", _PREFILL_IP)
+    monkeypatch.setenv("NODE_IPS", _PREFILL_IP)
+
+    model_dir = tmp_path / "deepseek-v4-nvidia"
+    _write_deepseek_v4_config(model_dir)
+    launch_args = parse_launch_args(
+        [
+            "--model-name",
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "--model-path",
+            str(model_dir),
+            "--model-type",
+            "llm",
+            "--engine",
+            "vllm",
+            "--device-count",
+            "8",
+            "--trust-remote-code",
+        ]
+    )
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    merged = _prepare_merged_params(
+        launch_args,
+        PortPlan(
+            enable_proxy=True,
+            backend_port=_VLLM_START_PORT,
+            proxy_port=18000,
+            health_port=19000,
+        ),
+        {"device": "nvidia", "count": 8, "details": [{"name": "H20"}] * 8},
+    )
+
+    assert "_pd_external_lb" not in merged
+    engine_config = merged["engine_config"]
+    assert engine_config.get("quantization") != "ascend"
+    kv_transfer = json.loads(engine_config["kv_transfer_config"])
+    assert kv_transfer["kv_connector"] == "NixlConnector"
+    assert "Mooncake" not in kv_transfer["kv_connector"]
