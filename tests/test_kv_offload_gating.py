@@ -2,6 +2,7 @@ import sys
 import json
 import logging
 import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -792,6 +793,151 @@ def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkey
     assert target == "ascend-arm"
     assert "lmcache-ascend:v0.4.5" in snippet
     assert "--lmcache-target ascend-arm" not in snippet
+
+
+def test_deepseek_v4_flash_lmcache_legacy_env_alias_enables_patch(monkeypatch):
+    monkeypatch.delenv("ENABLE_KV_OFFLOAD", raising=False)
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+    )
+
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
+    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_smart_feats"] == ["offload"]
+    assert wings_entry._resolve_lmcache_install_target("vllm_ascend", params) == "ascend-arm"
+
+
+def test_lmcache_patch_uses_effective_smart_feats_when_env_not_synced(monkeypatch):
+    monkeypatch.delenv("ENABLE_KV_OFFLOAD", raising=False)
+    monkeypatch.delenv("LMCACHE_OFFLOAD", raising=False)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "_smart_feats": ["offload"],
+    }
+
+    assert wings_entry._resolve_lmcache_install_target("vllm_ascend", params) == "ascend-arm"
+
+
+def test_lmcache_env_exports_use_effective_smart_feats_when_env_not_synced(monkeypatch):
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    monkeypatch.delenv("ENABLE_KV_OFFLOAD", raising=False)
+    monkeypatch.delenv("LMCACHE_OFFLOAD", raising=False)
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_feats": ["offload"],
+    }
+
+    commands = vllm_adapter._build_cache_env_commands("vllm_ascend", params)
+    rendered = "\n".join(commands)
+    variant = vllm_adapter.resolve_offload_variant(params, "vllm_ascend")
+    resolved_size = vllm_adapter.resolve_effective_kv_mem_offload_size(
+        params,
+        "vllm_ascend",
+        variant,
+    )
+
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=10" in rendered
+    assert variant == "lmcache_cpu+custom"
+    assert resolved_size == 10
+
+
+def test_memcache_fragment_uses_effective_smart_feats_when_env_not_synced(monkeypatch):
+    monkeypatch.delenv("ENABLE_KV_OFFLOAD", raising=False)
+    monkeypatch.delenv("LMCACHE_OFFLOAD", raising=False)
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
+        "vllm_ascend",
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+            "device_count": 16,
+            "_smart_feats": ["offload"],
+        },
+    )
+
+    assert fragment["enabled"] is True
+    assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in fragment["engine_prelude"]
+
+
+def test_native_kv_offload_uses_effective_smart_feats_when_env_not_synced(monkeypatch):
+    monkeypatch.delenv("ENABLE_KV_OFFLOAD", raising=False)
+    monkeypatch.delenv("LMCACHE_OFFLOAD", raising=False)
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "20")
+
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.6-27B",
+        "model_path": "/models/Qwen3.6-27B",
+        "model_type": "llm",
+        "_smart_card_token": "l20",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm") == (
+        " --kv-offloading-backend native --kv-offloading-size 20"
+    )
+    assert vllm_adapter.resolve_offload_variant(params, "vllm") == (
+        "native_kv_offloading_backend"
+    )
+    assert vllm_adapter.resolve_effective_kv_mem_offload_size(params, "vllm") == 20
+
+
+def test_fallback_uses_effective_smart_feats_for_kv_offload(monkeypatch):
+    monkeypatch.delenv("ENABLE_KV_OFFLOAD", raising=False)
+    monkeypatch.delenv("LMCACHE_OFFLOAD", raising=False)
+    captured = {}
+
+    def _capture_start_engine_service(merged):
+        captured.update(merged)
+        return "exec engine\n"
+
+    monkeypatch.setattr(wings_entry, "start_engine_service", _capture_start_engine_service)
+
+    wings_entry._build_advanced_feature_fallback_cmd(
+        {
+            "engine": "vllm",
+            "model_name": "Qwen3.6-27B",
+            "model_path": "/models/Qwen3.6-27B",
+            "model_type": "llm",
+            "_smart_card_token": "l20",
+            "_smart_feats": ["offload"],
+            "enable_speculative_decode": False,
+            "enable_sparse": False,
+            "engine_config": {
+                "model": "/models/Qwen3.6-27B",
+                "kv_transfer_config": {"kv_connector": "LMCacheConnectorV1"},
+            },
+        }
+    )
+
+    assert "kv_transfer_config" not in captured["engine_config"]
+    assert captured["_wings_fallback_no_kv_offload"] is True
 
 
 def test_nvidia_lmcache_keeps_target_install_command():

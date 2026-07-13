@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 try:
     from utils.env_utils import (
         OFFLOAD_MIN_GB,
+        get_lmcache_env,
         resolve_offload_cpu_capacity_gb,
     )
     from utils.device_utils import resolve_card_token
@@ -21,6 +22,7 @@ try:
 except ImportError:
     from wings_control.utils.env_utils import (  # type: ignore
         OFFLOAD_MIN_GB,
+        get_lmcache_env,
         resolve_offload_cpu_capacity_gb,
     )
     from wings_control.utils.device_utils import resolve_card_token  # type: ignore
@@ -209,13 +211,13 @@ def _resolve_qwen_day0_memcache_profile(
 
 
 def _memcache_offload_allowed(engine: str, merged: dict | None) -> bool:
-    if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() != "true":
-        return False
     if not merged:
         return False
     smart_feats = merged.get("_smart_feats")
     if smart_feats is not None:
         return "offload" in smart_feats
+    if not get_lmcache_env():
+        return False
     return feature_allowed(
         engine,
         merged.get("model_name"),

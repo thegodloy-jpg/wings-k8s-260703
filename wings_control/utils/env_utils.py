@@ -254,13 +254,17 @@ def get_sglang_distributed_port():
 def get_lmcache_env():
     """检查 KVCache Offload（卸载到 CPU/磁盘）功能是否启用。
 
-    从 ENABLE_KV_OFFLOAD 环境变量读取。
+    优先从 ENABLE_KV_OFFLOAD 环境变量读取；未显式设置时兼容旧的
+    LMCACHE_OFFLOAD 环境变量。
     判断是否将 KVCache 卸载到 CPU 内存或本地磁盘以节省 GPU 显存。
 
     Returns:
         bool: 启用返回 True，未设置或为 'false' 时返回 False
     """
-    return os.getenv('ENABLE_KV_OFFLOAD', 'false').lower() == 'true'
+    primary = os.getenv('ENABLE_KV_OFFLOAD')
+    if primary is not None:
+        return primary.strip().lower() == 'true'
+    return os.getenv('LMCACHE_OFFLOAD', 'false').strip().lower() == 'true'
 
 
 def get_qat_env():

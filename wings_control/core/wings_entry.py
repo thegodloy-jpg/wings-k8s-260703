@@ -47,7 +47,7 @@ from utils.vllm_helpers import (
     build_modelslim_quarot_patch_preamble,
     build_triton_patch_preamble,
 )
-from utils.env_utils import get_local_ip, get_master_ip, validate_ip
+from utils.env_utils import get_local_ip, get_lmcache_env, get_master_ip, validate_ip
 from utils.device_utils import resolve_card_token
 from utils.model_utils import (
     ModelIdentifier,
@@ -443,7 +443,7 @@ def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | N
       * GLM-5.1 on NV/vllm → 强制关闭 LMCache；
       * 引擎无已知 lmcache-target 映射。
     """
-    if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() != "true":
+    if not _is_kv_offload_requested(merged):
         return None
 
     if not _is_lmcache_offload_allowed(engine, merged):
@@ -1018,8 +1018,11 @@ wings_source_env_with_diff() {
 _ADVANCED_FEATURES_FILE = settings.ADVANCED_FEATURES_FILE
 
 
-def _is_kv_offload_requested() -> bool:
-    return os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true"
+def _is_kv_offload_requested(merged: dict | None = None) -> bool:
+    smart_feats = merged.get("_smart_feats") if isinstance(merged, dict) else None
+    if smart_feats is not None:
+        return "offload" in smart_feats
+    return get_lmcache_env()
 
 
 def _offload_variant_has_active_backend(variant: str | None) -> bool:
@@ -1036,7 +1039,7 @@ def _offload_variant_has_active_backend(variant: str | None) -> bool:
 
 def _resolve_kv_offload_state(engine: str, merged: dict) -> tuple[bool, str | None]:
     """Resolve effective KV offload state and diagnostic variant."""
-    if not _is_kv_offload_requested():
+    if not _is_kv_offload_requested(merged):
         return False, None
     variant = resolve_offload_variant(merged, engine)
     return _offload_variant_has_active_backend(variant), (variant or None)
@@ -1427,6 +1430,7 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
     merged_no_features = dict(merged)
     merged_no_features["enable_speculative_decode"] = False
     merged_no_features["enable_sparse"] = False
+    kv_offload_requested = _is_kv_offload_requested(merged)
     original_ec = merged_no_features.get("engine_config", {})
     if isinstance(original_ec, dict):
         ec_copy = dict(original_ec)
@@ -1437,7 +1441,7 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
                 "from engine_config for fallback (Speculative Decode was enabled)"
             )
         if (
-            os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true"
+            kv_offload_requested
             and "kv_transfer_config" in ec_copy
         ):
             ec_copy.pop("kv_transfer_config", None)
@@ -1451,7 +1455,7 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
     # engine_config 嵌套字典中，需要从正确的层级移除。
     # 使用浅拷贝 engine_config 避免污染原始 merged 数据。
     # （PD 分离的 kv_transfer_config 也会一并移除，但在崩溃回退场景下可接受）
-    if os.getenv("ENABLE_KV_OFFLOAD", "").strip().lower() == "true":
+    if kv_offload_requested:
         original_ec = merged_no_features.get("engine_config", {})
         if isinstance(original_ec, dict) and "kv_transfer_config" in original_ec:
             ec_copy = dict(original_ec)

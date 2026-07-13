@@ -899,6 +899,15 @@ def _is_offload_feature_effective(params: Optional[Dict[str, Any]], engine: str)
     )
 
 
+def _is_kv_offload_requested(params: Optional[Dict[str, Any]] = None) -> bool:
+    """Return the effective KV offload request when smart-feature state is available."""
+    if isinstance(params, dict):
+        smart_feats = params.get("_smart_feats")
+        if smart_feats is not None:
+            return "offload" in smart_feats
+    return get_lmcache_env()
+
+
 def _resolve_offload_backend(params: Optional[Dict[str, Any]], engine: str = "") -> Tuple[str, str]:
     """LMCache 后端选择，返回 ``(backend, cpu_mode)``。
 
@@ -1000,7 +1009,8 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         - LMCACHE_CONFIG_FILE: LMCache YAML 配置文件路径（自动生成）
     """
     env_commands = []
-    if not get_lmcache_env():
+    params = params or {}
+    if not _is_kv_offload_requested(params):
         return env_commands
     
 
@@ -1108,7 +1118,7 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     variant 形态：后端 ``[+auto|+custom][+qat][+cold_start]``，如
     ``lmcache_cpu+auto`` / ``lmcache_cpu+custom+qat`` / ``native_kv_offloading_backend`` / ``disabled``。
     """
-    if not get_lmcache_env():
+    if not _is_kv_offload_requested(params):
         return ""
     if memcache_hybrid.is_memcache_hybrid_params(params, engine):
         return (
@@ -1178,7 +1188,7 @@ def resolve_effective_kv_mem_offload_size(
       * Floor-disabled/discarded memory offload reports 0.
     """
     params = params or {}
-    if not get_lmcache_env():
+    if not _is_kv_offload_requested(params):
         return None
 
     resolved_variant = variant if variant is not None else resolve_offload_variant(params, engine)
@@ -3292,7 +3302,7 @@ def _lmcache_requires_suffix_speculative_strategy(
     model_info: ModelIdentifier,
 ) -> bool:
     """Return True when effective LMCache offload should force suffix over MTP."""
-    if not get_lmcache_env():
+    if not _is_kv_offload_requested(params):
         return False
     if not _is_offload_feature_effective(params, engine):
         return False
@@ -3836,7 +3846,7 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     if smart_feats is not None and "offload" not in smart_feats:
         logger.info("[KV Offload] offload not in effective smart features; skipping native offload CLI.")
         return ""
-    if not get_lmcache_env():
+    if not _is_kv_offload_requested(params):
         return ""
 
     if _resolve_offload_backend(params, engine)[0] == _OFFLOAD_NATIVE_BACKEND_VARIANT:
