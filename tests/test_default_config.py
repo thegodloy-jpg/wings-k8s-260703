@@ -972,6 +972,32 @@ def test_kimi_ascend_exact_defaults_match_w4a8_suffixes():
     assert kimi27_code["max_num_seqs"] == 48
 
 
+def test_glm47_ascend_exact_defaults_use_card_specific_cudagraph_sizes():
+    glm_arch = _model_deploy_config("ascend")["llm"]["Glm4MoeForCausalLM"]
+    scenario = config_loader._SpecialEngineScenario()
+    model_info = _FakeModelInfo(
+        "Eco-Tech/GLM-4.7-W8A8-floatmtp",
+        "Glm4MoeForCausalLM",
+    )
+
+    cases = [
+        ("Ascend910B_64G", [1, 2, 4, 8, 16, 32]),
+        ("Ascend910C", [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]),
+    ]
+    for card_name, expected_sizes in cases:
+        config = config_loader._match_model_engine_config(
+            glm_arch,
+            "eco-tech/glm-4.7-w8a8-floatmtp",
+            "vllm_ascend",
+            scenario,
+            model_info,
+            {"device": "ascend", "details": [{"name": card_name}]},
+            "/models/eco-tech/glm-4.7-w8a8-floatmtp",
+        )
+        assert config["use_vllm_serve"] is True
+        assert config["compilation_config"]["cudagraph_capture_sizes"] == expected_sizes
+
+
 def test_nvidia_defaults_follow_parameter_reduction_plan():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]

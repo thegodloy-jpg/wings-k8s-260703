@@ -417,6 +417,112 @@
             "tool_call_parser": "glm47",
             "enable_expert_parallel": true
           }
+        },
+        "GLM-4.7-W8A8-floatmtp-Ascend910B": {
+          "card_tokens": ["910b", "ascend910b"],
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "use_vllm_serve": true,
+            "data_parallel_size": 2,
+            "tensor_parallel_size": 8,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "seed": 1024,
+            "served_model_name": "glm",
+            "max_model_len": 133000,
+            "max_num_batched_tokens": 8192,
+            "max_num_seqs": 16,
+            "gpu_memory_utilization": 0.9,
+            "async_scheduling": true,
+            "additional_config": {
+              "enable_shared_expert_dp": true,
+              "ascend_fusion_config": {
+                "fusion_ops_gmmswigluquant": false
+              }
+            },
+            "compilation_config": {
+              "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32],
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "use_vllm_serve": true,
+            "data_parallel_size": 2,
+            "tensor_parallel_size": 8,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "seed": 1024,
+            "served_model_name": "glm",
+            "max_model_len": 133000,
+            "max_num_batched_tokens": 8192,
+            "max_num_seqs": 16,
+            "gpu_memory_utilization": 0.9,
+            "async_scheduling": true,
+            "additional_config": {
+              "enable_shared_expert_dp": true,
+              "ascend_fusion_config": {
+                "fusion_ops_gmmswigluquant": false
+              }
+            },
+            "compilation_config": {
+              "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32],
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          }
+        },
+        "GLM-4.7-W8A8-floatmtp-Ascend910C": {
+          "card_tokens": ["910c", "ascend910c"],
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "use_vllm_serve": true,
+            "data_parallel_size": 2,
+            "tensor_parallel_size": 8,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "seed": 1024,
+            "served_model_name": "glm",
+            "max_model_len": 133000,
+            "max_num_batched_tokens": 8192,
+            "max_num_seqs": 16,
+            "gpu_memory_utilization": 0.9,
+            "async_scheduling": true,
+            "additional_config": {
+              "enable_shared_expert_dp": true,
+              "ascend_fusion_config": {
+                "fusion_ops_gmmswigluquant": false
+              }
+            },
+            "compilation_config": {
+              "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          },
+          "vllm_ascend_distributed": {
+            "trust_remote_code": true,
+            "use_vllm_serve": true,
+            "data_parallel_size": 2,
+            "tensor_parallel_size": 8,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "seed": 1024,
+            "served_model_name": "glm",
+            "max_model_len": 133000,
+            "max_num_batched_tokens": 8192,
+            "max_num_seqs": 16,
+            "gpu_memory_utilization": 0.9,
+            "async_scheduling": true,
+            "additional_config": {
+              "enable_shared_expert_dp": true,
+              "ascend_fusion_config": {
+                "fusion_ops_gmmswigluquant": false
+              }
+            },
+            "compilation_config": {
+              "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            }
+          }
         }
       },
       "GlmMoeDsaForCausalLM": {
