@@ -3305,13 +3305,11 @@ def _model_config_card_tokens_match(
     if not current_card:
         return False
 
-    return any(
-        token and token in current_card
-        for token in (
-            _normalize_card_token_for_match(candidate)
-            for candidate in card_tokens
-        )
-    )
+    for candidate in card_tokens:
+        token = _normalize_card_token_for_match(candidate)
+        if token and token in current_card:
+            return True
+    return False
 
 
 def _is_deepseek_v4_flash_lookup(lookup_names: list) -> bool:
