@@ -1,4 +1,4 @@
-# Kimi K2.6 / K2.7-Code MemCache Offload and DFlash Adaptation
+# Kimi K2.6-W4A8 / K2.7-Code-w4a8 MemCache Offload and DFlash Adaptation
 
 ## Scope
 
@@ -6,22 +6,19 @@ This document describes the required adaptation for Kimi models on Ascend vLLM w
 
 Target model tokens:
 
-- `Kimi-K2.6`
 - `Kimi-K2.6-W4A8`
-- `Kimi-2.6`
-- `Kimi-2.6-W4A8`
-- `Kimi-K2.7-Code`
+- `Kimi-K2.7-Code-w4a8`
 
-The whitelist and model matching must use lower-case substring tokens and should include both `kimi-k2.6` and `kimi-2.6` spelling forms. The official sample uses `Eco-Tech/Kimi-K2.6-W4A8`, while the product requirement may refer to it as `kimi-2.6`.
+The whitelist and model matching must use the accurate lower-case tokens `kimi-k2.6-w4a8` and `kimi-k2.7-code-w4a8`. Do not add short aliases such as `kimi-k2.6`, `kimi-2.6`, or `kimi-k2.7-code`.
 
-Kimi K2.7 Code adaptation scope is limited to `Kimi-K2.7-Code`.
+Kimi K2.7 Code adaptation scope is limited to `Kimi-K2.7-Code-w4a8`.
 
 Feature matrix:
 
 | Model | KV offload | Speculative decode | Spec method |
 | --- | --- | --- | --- |
-| Kimi K2.6 family | supported | supported; DFlash only when DFlash draft model is provided | `dflash` or suffix fallback |
-| `Kimi-K2.7-Code` | supported | not supported | none |
+| `Kimi-K2.6-W4A8` | supported | supported; DFlash only when DFlash draft model is provided | `dflash` or suffix fallback |
+| `Kimi-K2.7-Code-w4a8` | supported | not supported | none |
 
 Do not route this adaptation through `pd_config.json`. The official Kimi recipe uses `kv_role=kv_both` with `AscendStoreConnector`, not the existing P/D disaggregation producer-consumer path.
 
@@ -138,7 +135,7 @@ If implementation reuses `resolve_offload_cpu_capacity_gb()`, the wrapper must d
 
 ## Speculative Decode
 
-Kimi K2.6 uses DFlash only when the user provides a matching DFlash draft model path. If speculative decoding is enabled but no matching DFlash draft is provided, keep the project suffix fallback instead of disabling speculative decoding.
+Kimi K2.6-W4A8 uses DFlash only when the user provides a matching DFlash draft model path. If speculative decoding is enabled but no matching DFlash draft is provided, keep the project suffix fallback instead of disabling speculative decoding.
 
 Expected config when the user provides a DFlash draft model path:
 
@@ -160,10 +157,10 @@ Required behavior:
 
 - add a DFlash detection branch before the generic `draft_model` speculative branch
 - identify DFlash draft paths by model path or model id token, for example a standalone `dflash` token
-- for Kimi K2.6, emit `method=dflash` only when a DFlash path is present
-- if Kimi K2.6 has no DFlash path, fall back to suffix when speculative decoding is enabled
-- do not route non-DFlash Kimi K2.6 draft paths through the generic `draft_model` branch
-- do not enable speculative decoding for `Kimi-K2.7-Code`
+- for Kimi K2.6-W4A8, emit `method=dflash` only when a DFlash path is present
+- if Kimi K2.6-W4A8 has no DFlash path, fall back to suffix when speculative decoding is enabled
+- do not route non-DFlash Kimi K2.6-W4A8 draft paths through the generic `draft_model` branch
+- do not enable speculative decoding for `Kimi-K2.7-Code-w4a8`
 
 The effective advanced feature state is still driven by the whitelist and user switch. The adapter then chooses `dflash` when a DFlash draft is present, otherwise suffix.
 
@@ -171,9 +168,9 @@ Current project caveat:
 
 - `config_loader.apply_effective_feature_enablement()` intentionally keeps `enable_speculative_decode=true` for effective spec so the adapter can fall back to suffix
 - `vllm_adapter.resolve_speculative_strategy()` also falls through to suffix when no draft path exists
-- Kimi K2.6 must add a model-specific adapter branch only for choosing DFlash versus suffix; Kimi K2.7 Code remains spec-suppressed
+- Kimi K2.6-W4A8 must add a model-specific adapter branch only for choosing DFlash versus suffix; Kimi K2.7 Code-w4a8 remains spec-suppressed
 
-For Kimi K2.6, `enable_speculative_decode=true` plus whitelist support is enough to keep spec effective. A DFlash draft path only changes the method from suffix to `dflash`.
+For Kimi K2.6-W4A8, `enable_speculative_decode=true` plus whitelist support is enough to keep spec effective. A DFlash draft path only changes the method from suffix to `dflash`.
 
 ## TP / DP Strategy
 
@@ -183,19 +180,19 @@ Recommended defaults:
 
 | Model | Official example | Runtime rule |
 | --- | --- | --- |
-| Kimi K2.6 family | `TP=4`, `DP=4` on 16 cards | default `TP=4`, `DP=device_count/4` when divisible |
-| `Kimi-K2.7-Code` | `TP=16` on 16 cards | default `TP=device_count`, leave DP unset or `1` |
+| `Kimi-K2.6-W4A8` | `TP=4`, `DP=4` on 16 cards | default `TP=4`, `DP=device_count/4` when divisible |
+| `Kimi-K2.7-Code-w4a8` | `TP=16` on 16 cards | default `TP=device_count`, leave DP unset or `1` |
 
-For the Kimi K2.6 family, if the detected device count cannot be divided by 4, do not inject an invalid DP topology. Either keep explicit user values or disable the automatic recipe with a clear diagnostic.
+For `Kimi-K2.6-W4A8`, if the detected device count cannot be divided by 4, do not inject an invalid DP topology. Either keep explicit user values or disable the automatic recipe with a clear diagnostic.
 
-For `Kimi-K2.7-Code`, preserve the official single-DP shape. Do not reuse the existing Kimi distributed DP default if it would split 16 cards into smaller TP groups.
+For `Kimi-K2.7-Code-w4a8`, preserve the official single-DP shape. Do not reuse the existing Kimi distributed DP default if it would split 16 cards into smaller TP groups.
 
 Current project caveat:
 
-- both Kimi K2.6 and Kimi K2.7 Code are expected to map to `KimiK25ForConditionalGeneration`
+- both Kimi K2.6-W4A8 and Kimi K2.7 Code-w4a8 are expected to map to `KimiK25ForConditionalGeneration`
 - the existing architecture-level default returns `TP=device_count` for Kimi on 8 or 16 cards
 - therefore topology cannot be decided by architecture alone
-- adapter logic must branch on `model_name` / `model_path` tokens to separate K2.6 from K2.7 Code
+- adapter logic must branch on `model_name` / `model_path` tokens to separate K2.6-W4A8 from K2.7 Code-w4a8
 
 ## Function Call and Reason Parser
 
@@ -219,14 +216,14 @@ Function call behavior:
 Reasoning parser:
 
 - keep reasoning parser ownership in `docs/features/reasoning_parser/reason_parser.yaml`
-- add explicit entries for Kimi K2.6 spelling forms
-- keep `Kimi-K2.7-Code` mapped to `kimi_k2`
+- add explicit entries for `Kimi-K2.6-W4A8`
+- keep `Kimi-K2.7-Code-w4a8` mapped to `kimi_k2`
 - do not move `reasoning_parser` into `ascend_default.json`
 
 Reasoning behavior:
 
 - `reason_parser.yaml` already provides `KimiK25ForConditionalGeneration.default = kimi_k2`
-- explicit Kimi K2.6 rows improve readability and test coverage, but the parser still only reaches the final command when `enable_auto_think_choice` is enabled
+- explicit Kimi K2.6-W4A8 rows improve readability and test coverage, but the parser still only reaches the final command when `enable_auto_think_choice` is enabled
 - if `enable_auto_think_choice` is false, `config_loader._set_reasoning_parser()` removes `reasoning_parser`
 
 `enable_auto_tool_choice` and `enable_auto_think_choice` are separate controls. Function call parser injection depends on tool-call settings. Reasoning parser injection depends on the thinking/reasoning setting.
@@ -237,10 +234,10 @@ Reasoning behavior:
 
 Add model whitelist rows:
 
-- Kimi K2.6 spelling forms: `spec`, `offload`
-- `Kimi-K2.7-Code`: `offload`
+- `Kimi-K2.6-W4A8`: `spec`, `offload`
+- `Kimi-K2.7-Code-w4a8`: `offload`
 
-Do not add `spec` for `Kimi-K2.7-Code`.
+Do not add `spec` for `Kimi-K2.7-Code-w4a8`.
 
 Rows must include `engine=vllm_ascend` and both `910b` / `910c` card tokens if both Ascend platforms are supported. Current whitelist matching is engine + name token + card token, so missing hardware card detection still suppresses the feature.
 
@@ -248,14 +245,14 @@ Rows must include `engine=vllm_ascend` and both `910b` / `910c` card tokens if b
 
 Add Kimi K2.6 spelling forms to the Kimi architecture mapping.
 
-The current Kimi 2.7 Code entries already map to `KimiK25ForConditionalGeneration`; 2.6 should join the same Kimi family unless a separate architecture is introduced by runtime metadata.
+The current Kimi 2.7 Code-w4a8 entries already map to `KimiK25ForConditionalGeneration`; Kimi-K2.6-W4A8 should join the same Kimi family unless a separate architecture is introduced by runtime metadata.
 
 ### `wings_control/config/defaults/ascend_default.json`
 
 Add model-specific defaults for:
 
-- Kimi K2.6 spelling forms
-- `Kimi-K2.7-Code`
+- `Kimi-K2.6-W4A8`
+- `Kimi-K2.7-Code-w4a8`
 
 Defaults should preserve:
 
@@ -268,7 +265,7 @@ Defaults should preserve:
 
 Do not put fixed `tensor_parallel_size` / `data_parallel_size` here unless the deployment is explicitly single-shape. Topology should be runtime-derived.
 
-Kimi K2.7 Code model-specific defaults should include the official recipe values:
+Kimi K2.7 Code-w4a8 model-specific defaults should include the official recipe values:
 
 ```json
 {
@@ -288,7 +285,7 @@ Kimi K2.7 Code model-specific defaults should include the official recipe values
 }
 ```
 
-Current generic `KimiK25ForConditionalGeneration.default` is not enough for Kimi K2.7 Code because it uses `max_model_len=4096`, `max_num_seqs=16`, and `max_num_batched_tokens=16384`.
+Current generic `KimiK25ForConditionalGeneration.default` is not enough for Kimi K2.7 Code-w4a8 because it uses `max_model_len=4096`, `max_num_seqs=16`, and `max_num_batched_tokens=16384`.
 
 ### `wings_control/core/config_loader.py`
 
@@ -300,17 +297,17 @@ Required changes:
 - disable offload when capacity is missing or invalid
 - prevent Kimi MemCache from falling into LMCache patch/env behavior
 - keep advanced feature state aligned with the effective offload/spec result
-- keep Kimi K2.6 speculative effective state alive so no-DFlash cases can use suffix fallback
+- keep Kimi K2.6-W4A8 speculative effective state alive so no-DFlash cases can use suffix fallback
 
 ### `wings_control/engines/vllm_adapter.py`
 
 Required changes:
 
 - add Kimi DFlash detection before generic draft-model speculative logic
-- prevent Kimi K2.6 non-DFlash draft paths from entering the generic `draft_model` branch; fall back to suffix instead
+- prevent Kimi K2.6-W4A8 non-DFlash draft paths from entering the generic `draft_model` branch; fall back to suffix instead
 - add Kimi-specific TP/DP defaults:
-  - Kimi K2.6 family: `TP=4`, `DP=device_count/4`
-  - `Kimi-K2.7-Code`: `TP=device_count`, DP unset or `1`
+  - `Kimi-K2.6-W4A8`: `TP=4`, `DP=device_count/4`
+  - `Kimi-K2.7-Code-w4a8`: `TP=device_count`, DP unset or `1`
 - expose the offload variant as `memcache`
 - keep generating only the vLLM command surface; `AscendStoreConnector` is injected into `engine_config` by `config_loader.py`
 - do not concatenate MemCache helper script fragments here
@@ -368,33 +365,33 @@ See `wings_control/docs/features/memcache/memcache_hybrid_kimi.md` for the exact
 
 Required changes:
 
-- add explicit `Kimi-2.6` and `Kimi-2.6-W4A8` mappings to `kimi_k2`
-- add explicit `Kimi-K2.6` and `Kimi-K2.6-W4A8` mappings to `kimi_k2`
-- keep existing `Kimi-K2.7-Code` mapping
+- keep the explicit `Kimi-K2.6-W4A8` mapping to `kimi_k2`
+- keep the explicit `Kimi-K2.7-Code-w4a8` mapping to `kimi_k2`
+- do not add short aliases such as `Kimi-K2.6`, `Kimi-2.6`, or `Kimi-K2.7-Code`
 
 ### Tests
 
 Add or update tests around:
 
-- Kimi K2.6 with DFlash path: offload plus `method=dflash`
-- Kimi K2.6 without DFlash path: offload plus suffix speculative config when spec is enabled and whitelisted
-- Kimi K2.7 Code: offload only, no speculative config
+- Kimi K2.6-W4A8 with DFlash path: offload plus `method=dflash`
+- Kimi K2.6-W4A8 without DFlash path: offload plus suffix speculative config when spec is enabled and whitelisted
+- Kimi K2.7 Code-w4a8: offload only, no speculative config
 - missing offload memory: offload removed, no `MMC_LOCAL_CONFIG_PATH`, no `kv_transfer_config`
 - valid offload memory: `ock.mmc.local_service.dram.size` equals the resolved MemCache local-service memory value
 - function call parser remains `kimi_k2` only when function calling is effectively enabled
 - reasoning parser mapping resolves to `kimi_k2` only when thinking/reasoning parsing is effectively enabled
-- Kimi K2.7 Code topology does not inherit a K2.6 `TP=4, DP=device_count/4` recipe
-- Kimi K2.6 topology does not inherit the current architecture-level `TP=device_count` Kimi default
+- Kimi K2.7 Code-w4a8 topology does not inherit a K2.6-W4A8 `TP=4, DP=device_count/4` recipe
+- Kimi K2.6-W4A8 topology does not inherit the current architecture-level `TP=device_count` Kimi default
 - final assembled `start_command.sh` places the MemCache prelude before the engine command
 - feature-disabled fallback unsets `MMC_LOCAL_CONFIG_PATH`
 - MemCache variant does not emit LMCache env/YAML config
 
 ## Expected Command Fragments
 
-### Kimi K2.6 with offload and DFlash
+### Kimi K2.6-W4A8 with offload and DFlash
 
 ```bash
-vllm serve <Kimi-K2.6-model-path> \
+vllm serve <Kimi-K2.6-W4A8-model-path> \
   --quantization ascend \
   --tensor-parallel-size 4 \
   --data-parallel-size 4 \
@@ -404,10 +401,10 @@ vllm serve <Kimi-K2.6-model-path> \
   --kv-transfer-config '{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache"}}'
 ```
 
-### Kimi K2.6 without DFlash draft model
+### Kimi K2.6-W4A8 without DFlash draft model
 
 ```bash
-vllm serve <Kimi-K2.6-model-path> \
+vllm serve <Kimi-K2.6-W4A8-model-path> \
   --quantization ascend \
   --tensor-parallel-size 4 \
   --data-parallel-size 4 \
@@ -417,12 +414,12 @@ vllm serve <Kimi-K2.6-model-path> \
   --kv-transfer-config '{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache"}}'
 ```
 
-Suffix `--speculative-config` should be emitted when speculative decoding is enabled and Kimi K2.6 hits the spec whitelist.
+Suffix `--speculative-config` should be emitted when speculative decoding is enabled and Kimi K2.6-W4A8 hits the spec whitelist.
 
-### Kimi-K2.7-Code
+### Kimi-K2.7-Code-w4a8
 
 ```bash
-vllm serve <Kimi-K2.7-Code-model-path> \
+vllm serve <Kimi-K2.7-Code-w4a8-model-path> \
   --served-model-name kimi_k27 \
   --quantization ascend \
   --tensor-parallel-size <device_count> \
@@ -436,19 +433,19 @@ vllm serve <Kimi-K2.7-Code-model-path> \
   --kv-transfer-config '{"kv_connector":"AscendStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache"}}'
 ```
 
-No speculative config should be emitted for `Kimi-K2.7-Code`.
+No speculative config should be emitted for `Kimi-K2.7-Code-w4a8`.
 
 ## Acceptance Criteria
 
-- Kimi K2.6 appears in the smart feature whitelist with `spec` and `offload`
-- Kimi 2.7 Code appears in the smart feature whitelist with `offload` only
+- Kimi K2.6-W4A8 appears in the smart feature whitelist with `spec` and `offload`
+- Kimi 2.7 Code-w4a8 appears in the smart feature whitelist with `offload` only
 - Kimi MemCache offload uses `AscendStoreConnector`
 - Kimi MemCache offload memory comes from page configuration
 - no `20GB` fallback remains
 - missing memory capacity disables offload instead of silently enabling it
-- Kimi K2.6 speculative decoding uses DFlash only when a DFlash draft model is provided
-- Kimi K2.6 without DFlash draft model falls back to suffix when spec is enabled and whitelisted
-- Kimi 2.7 Code never emits speculative config
+- Kimi K2.6-W4A8 speculative decoding uses DFlash only when a DFlash draft model is provided
+- Kimi K2.6-W4A8 without DFlash draft model falls back to suffix when spec is enabled and whitelisted
+- Kimi 2.7 Code-w4a8 never emits speculative config
 - function call parser is `kimi_k2` when function calling is enabled
 - reasoning parser resolves to `kimi_k2` when thinking/reasoning parsing is enabled
 - PD disaggregation config is not used for this feature

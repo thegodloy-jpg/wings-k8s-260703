@@ -1325,7 +1325,7 @@
             "mm_encoder_tp_mode": "data"
           }
         },
-        "Kimi-K2.6": {
+        "Kimi-K2.6-W4A8": {
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 32768,
@@ -1371,53 +1371,7 @@
             "mm_encoder_tp_mode": "data"
           }
         },
-        "Kimi-2.6": {
-          "vllm_ascend": {
-            "trust_remote_code": true,
-            "max_model_len": 32768,
-            "max_num_seqs": 4,
-            "max_num_batched_tokens": 16384,
-            "gpu_memory_utilization": 0.9,
-            "quantization": "ascend",
-            "seed": 42,
-            "enable_expert_parallel": true,
-            "allowed-local-media-path": "/",
-            "no_enable_prefix_caching": true,
-            "tool_call_parser": "kimi_k2",
-            "async_scheduling": true,
-            "additional_config": {
-              "enable_balance_scheduling": true
-            },
-            "compilation_config": {
-              "cudagraph_mode": "FULL_DECODE_ONLY"
-            },
-            "mm_processor_cache_gb": 0,
-            "mm_encoder_tp_mode": "data"
-          },
-          "vllm_ascend_distributed": {
-            "trust_remote_code": true,
-            "max_model_len": 32768,
-            "max_num_seqs": 4,
-            "max_num_batched_tokens": 16384,
-            "gpu_memory_utilization": 0.9,
-            "quantization": "ascend",
-            "seed": 42,
-            "enable_expert_parallel": true,
-            "allowed-local-media-path": "/",
-            "no_enable_prefix_caching": true,
-            "tool_call_parser": "kimi_k2",
-            "async_scheduling": true,
-            "additional_config": {
-              "enable_balance_scheduling": true
-            },
-            "compilation_config": {
-              "cudagraph_mode": "FULL_DECODE_ONLY"
-            },
-            "mm_processor_cache_gb": 0,
-            "mm_encoder_tp_mode": "data"
-          }
-        },
-        "Kimi-K2.7-Code": {
+        "Kimi-K2.7-Code-w4a8": {
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 81920,

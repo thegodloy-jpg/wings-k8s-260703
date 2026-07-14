@@ -2848,8 +2848,8 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     # "spec" 回落到 suffix 地板，而不是在收口层直接关闭投机。
     spec_whitelisted = "spec" in feats or "spec" in forced_feats
     spec_eff = spec_req or "spec" in forced_feats
-    # Kimi-K2.7-Code 的 DAY0 证据只包含 MemCache 卸载；即使页面打开投机开关，
-    # 也不能回落到 suffix 或 dflash，避免把 Kimi-K2.6 的能力扩散到 Code 变体。
+    # Kimi-K2.7-Code-w4a8 的 DAY0 证据只包含 MemCache 卸载；即使页面打开投机开关，
+    # 也不能回落到 suffix 或 dflash，避免把 Kimi-K2.6-W4A8 的能力扩散到 Code 变体。
     if engine == "vllm_ascend" and is_kimi_k27_code_family(p, engine) and spec_eff:
         logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
         spec_eff = False
@@ -3170,9 +3170,6 @@ def _handle_sglang_distributed(distributed_config: Dict[str, Any], cmd_params: D
 _PREFIX_TOKEN_MATCH_CONFIG_KEYS = {
     "deepseek-v4-flash",
     "deepseek-v4-pro",
-    "kimi-k2.6",
-    "kimi-2.6",
-    "kimi-k2.7-code",
     "minimax-m2.7",
 }
 _MODEL_NAME_TOKEN_BOUNDARY_CHARS = set("-_./:")

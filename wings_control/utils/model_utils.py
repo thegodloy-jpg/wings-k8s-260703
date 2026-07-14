@@ -123,18 +123,18 @@ def _model_source_text(source: Optional[dict]) -> str:
 
 
 def is_kimi_k26_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
-    """识别 Kimi-K2.6 / Kimi-2.6 系列，仅服务 vllm_ascend 0.21 DAY0 适配。"""
+    """识别 Kimi-K2.6-W4A8，仅服务 vllm_ascend 0.21 DAY0 适配。"""
     if engine and engine != "vllm_ascend":
         return False
     text = _model_source_text(source)
-    return "kimi-k2.6" in text or "kimi-2.6" in text
+    return "kimi-k2.6-w4a8" in text
 
 
 def is_kimi_k27_code_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
-    """识别 Kimi-K2.7-Code 系列；该系列只允许 MemCache offload，不启用自动 spec。"""
+    """识别 Kimi-K2.7-Code-w4a8；该模型只允许 MemCache offload，不启用自动 spec。"""
     if engine and engine != "vllm_ascend":
         return False
-    return "kimi-k2.7-code" in _model_source_text(source)
+    return "kimi-k2.7-code-w4a8" in _model_source_text(source)
 
 
 def _whitelist_table_match(
@@ -640,13 +640,9 @@ _LLM_MODELS = {
     "KimiK25ForConditionalGeneration": [
         "Kimi-K2.5",
         "Kimi-K2.5-w4a8",
-        "Kimi-K2.6",
         "Kimi-K2.6-w4a8",
-        "Kimi-2.6",
-        "Kimi-2.6-w4a8",
         "Kimi-K2.7",
         "Kimi-K2.7-w4a8",
-        "Kimi-K2.7-Code",
         "Kimi-K2.7-Code-w4a8",
         ],
     "DeepseekV32ForCausalLM": [

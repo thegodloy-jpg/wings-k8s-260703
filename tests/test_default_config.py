@@ -897,7 +897,7 @@ def test_qwen35_day0_defaults_keep_language_model_only_from_excel():
 
 def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
     llm = _model_deploy_config("ascend")["llm"]
-    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code"]
+    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code-w4a8"]
 
     for engine in ("vllm_ascend", "vllm_ascend_distributed"):
         config = kimi[engine]
@@ -924,7 +924,7 @@ def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
 
 def test_kimi_k26_ascend_defaults_follow_memcache_dflash_recipe():
     llm = _model_deploy_config("ascend")["llm"]
-    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.6"]
+    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.6-W4A8"]
 
     for engine in ("vllm_ascend", "vllm_ascend_distributed"):
         config = kimi[engine]

@@ -2235,7 +2235,7 @@ def _apply_kimi_ascend_engine_defaults(
 ) -> None:
     """补齐 Kimi 0.21 DAY0 拓扑默认值。
 
-    Kimi-K2.6 的官方命令按 4 卡 TP 分组，DP=总卡数/4；Kimi-K2.7-Code
+    Kimi-K2.6-W4A8 的官方命令按 4 卡 TP 分组，DP=总卡数/4；Kimi-K2.7-Code-w4a8
     保持单 DP 形态，TP 使用当前卡数。仅当用户没有显式传入 TP/DP 时注入，
     避免覆盖页面或 API 的明确配置。
     """
@@ -3223,7 +3223,7 @@ def _normalize_speculative_draft_path(value: Any) -> str:
 
 
 def _has_kimi_dflash_draft_path(params: Dict[str, Any]) -> bool:
-    """判断 Kimi-K2.6 是否显式选择 DFlash draft。
+    """判断 Kimi-K2.6-W4A8 是否显式选择 DFlash draft。
 
     只有 draft path 中出现独立 ``dflash`` token 时才启用 DFlash；``none``、
     ``no-dflash``、``without-dflash`` 等否定写法不能误触发。
@@ -3557,7 +3557,7 @@ def _handle_draft_model_case(params: Dict[str, Any], config: List[str]) -> None:
 
 
 def _build_kimi_dflash_speculative_cmd(params: Dict[str, Any]) -> str:
-    """生成 Kimi-K2.6 官方 DFlash speculative-config。"""
+    """生成 Kimi-K2.6-W4A8 官方 DFlash speculative-config。"""
     draft_path = _normalize_speculative_draft_path(params.get("speculative_decode_model_path"))
     if not draft_path:
         return ""

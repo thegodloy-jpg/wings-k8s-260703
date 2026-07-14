@@ -41,7 +41,7 @@
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/deepseek-v4-flash-w8a8-mtp", "deepseek-v4-flash-w8a8-mtp"], "card_tokens": ["910b"], "arch": "DeepseekV4ForCausalLM", "source": "vllm-ascend-0.21", "mtp_num_speculative_tokens": 1},
     {"engine": "vllm_ascend", "name_tokens": ["vllm-ascend/deepseek-v4-pro-w4a8-mtp", "deepseek-v4-pro-w4a8-mtp"], "card_tokens": ["910c"], "arch": "DeepseekV4ForCausalLM", "source": "vllm-ascend-0.21", "mtp_method": "mtp", "mtp_num_speculative_tokens": 1, "enforce_eager": true},
     {"engine": "vllm_ascend", "name_tokens": ["deepseek-ai/deepseek-coder-v2-instruct", "deepseek-coder-v2-instruct"], "card_tokens": ["910c"], "arch": "DeepseekV3ForCausalLM", "source": "vllm-ascend-0.21", "mtp_method": "mtp", "mtp_num_speculative_tokens": 3},
-    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.6", "kimi-2.6"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "vllm-ascend-0.21", "method": "dflash", "draft_path_required": true},
+    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.6-w4a8"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "vllm-ascend-0.21", "method": "dflash", "draft_path_required": true},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.2-w8a8", "glm-5.2-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "mtp_num_speculative_tokens": 3},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910b"], "arch": "GlmMoeDsaForCausalLM", "source": "user", "mtp_num_speculative_tokens": 3},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "user", "mtp_num_speculative_tokens": 3},
@@ -114,7 +114,7 @@
     {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.6-27b", "qwen3.6-27b"], "exclude_name_tokens": ["w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/qwen3.6-35b-a3b-w8a8", "qwen3.6-35b-a3b-w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"},
     {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.6-35b-a3b", "qwen3.6-35b-a3b"], "exclude_name_tokens": ["w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"},
-    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.6", "kimi-2.6"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"},
-    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.7-code"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"}
+    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.6-w4a8"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"},
+    {"engine": "vllm_ascend", "name_tokens": ["kimi-k2.7-code-w4a8"], "card_tokens": ["910c"], "arch": "KimiK25ForConditionalGeneration", "source": "vllm-ascend-0.21", "backend": "memcache"}
   ]
 }

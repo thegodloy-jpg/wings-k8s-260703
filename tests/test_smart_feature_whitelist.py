@@ -374,7 +374,13 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Kimi-K2.7-Code",
         "/harbor_data/Kimi-K2.7-Code",
         "910c",
-    ) == frozenset({"offload"})
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "Eco-Tech/Kimi-K2.6",
+        "/models/Eco-Tech/Kimi-K2.6",
+        "910c",
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
         "Kimi-K2.7-Code-w4a8",
@@ -561,8 +567,8 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
-        "Kimi-K2.7-Code",
-        "/harbor_data/Kimi-K2.7-Code",
+        "Kimi-K2.7-Code-w4a8",
+        "/harbor_data/Kimi-K2.7-Code-w4a8",
         "910b",
     ) == frozenset()
 
@@ -695,8 +701,8 @@ def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstrea
 
 
 class _FakeKimiK27CodeInfo:
-    model_name = "Kimi-K2.7-Code"
-    model_path = "/harbor_data/Kimi-K2.7-Code"
+    model_name = "Kimi-K2.7-Code-w4a8"
+    model_path = "/harbor_data/Kimi-K2.7-Code-w4a8"
     model_architecture = "KimiK25ForConditionalGeneration"
 
     @staticmethod
@@ -732,8 +738,8 @@ def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
 
     params = {
         "engine": "vllm_ascend",
-        "model_name": "Kimi-K2.7-Code",
-        "model_path": "/harbor_data/Kimi-K2.7-Code",
+        "model_name": "Kimi-K2.7-Code-w4a8",
+        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
         "model_type": "llm",
         "distributed": False,
         "enable_speculative_decode": False,
