@@ -374,6 +374,14 @@ def test_minimax_pro5000_reasoning_parser_exact_precision_models_are_loaded():
     assert m25_config["reasoning_parser"] == "minimax_m2"
     assert m27_config["reasoning_parser"] == "minimax_m2"
 
+    found, parser = config_loader._resolve_reasoning_parser_support(
+        "MiniMaxM2ForCausalLM",
+        "MiniMax-M2.7-w8a8-QuaRot",
+        "vllm_ascend",
+    )
+    assert found is True
+    assert parser == "minimax_m2_append_think"
+
 
 def test_reasoning_parser_support_source_file_uses_short_name():
     assert config_loader.REASONING_PARSER_SUPPORT_PATH.name == "reason_parser.yaml"
@@ -1001,6 +1009,58 @@ def test_glm47_ascend_exact_defaults_use_card_specific_cudagraph_sizes():
         assert config["compilation_config"]["cudagraph_capture_sizes"] == expected_sizes
 
 
+def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
+    minimax_arch = _model_deploy_config("ascend")["llm"]["MiniMaxM2ForCausalLM"]
+    scenario = config_loader._SpecialEngineScenario()
+    model_info = _FakeModelInfo(
+        "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "MiniMaxM2ForCausalLM",
+    )
+
+    cases = [
+        ("Ascend910C", True, True),
+        ("Ascend910B_64G", False, False),
+    ]
+    for card_name, expect_eager, expect_kv_bytes in cases:
+        config = config_loader._match_model_engine_config(
+            minimax_arch,
+            "minimax/minimax-m2.7-w8a8-quarot",
+            "vllm_ascend",
+            scenario,
+            model_info,
+            {"device": "ascend", "details": [{"name": card_name}]},
+            "/models/minimax/minimax-m2.7-w8a8-quarot",
+        )
+
+        assert config["use_vllm_serve"] is True
+        assert config["trust_remote_code"] is True
+        assert config["quantization"] == "ascend"
+        assert config["load_format"] == "dummy"
+        assert config["async_scheduling"] is True
+        assert config["no_enable_prefix_caching"] is True
+        assert config["enable_expert_parallel"] is True
+        assert "tensor_parallel_size" not in config
+        assert "data_parallel_size" not in config
+        assert config["max_num_seqs"] == 48
+        assert config["max_model_len"] == 40690
+        assert config["max_num_batched_tokens"] == 16384
+        assert config["gpu_memory_utilization"] == 0.9
+        assert "served_model_name" not in config
+        assert config["tool_call_parser"] == "minimax_m2"
+        assert _as_dict(config["additional_config"]) == {
+            "enable_cpu_binding": True,
+            "enable_fused_mc2": True,
+            "enable_flashcomm1": True,
+            "weight_nz_mode": True,
+        }
+        if expect_eager:
+            assert config["enforce_eager"] is True
+        else:
+            assert "enforce_eager" not in config
+        assert ("kv_cache_memory_bytes" in config) is expect_kv_bytes
+        assert "speculative_config" not in config
+
+
 def test_nvidia_defaults_follow_parameter_reduction_plan():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]
@@ -1146,6 +1206,22 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert qwen35["tool_call_parser"] == "qwen3_xml"
     assert qwen35["kv_cache_dtype"] == "fp8"
     assert "calculate_kv_scales" not in qwen35
+
+    qwen_agent = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen-AgentWorld-35B-A3B"]
+    for engine in ("vllm", "vllm_distributed"):
+        engine_config = qwen_agent[engine]
+        assert engine_config["use_vllm_serve"] is True
+        assert engine_config["max_model_len"] == 262144
+        assert engine_config["max_num_batched_tokens"] == 1024
+        assert "tensor_parallel_size" not in engine_config
+        assert engine_config["enable_prefix_caching"] is True
+        assert engine_config["language_model_only"] is True
+        assert "served_model_name" not in engine_config
+        assert engine_config["model_loader_extra_config"] == {
+            "enable_multithread_load": "true",
+            "num_threads": 128,
+        }
+        assert "speculative_config" not in engine_config
 
     minimax_m25 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["vllm"]
     assert minimax_m25["max_model_len"] == 196608

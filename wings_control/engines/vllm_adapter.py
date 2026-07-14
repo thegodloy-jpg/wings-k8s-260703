@@ -26,7 +26,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import yaml
 
-from utils.model_utils import (ModelIdentifier, ModelIdentifierDraft,
+from utils.model_utils import (ModelIdentifier,
                                INDEXCACHE_ARCHS, is_glm_moe_dsa_glm51,
                                is_qwen3_5_397b_nvfp4_vllm,
                                is_deepseek_v4_flash_rtx_pro_5000,
@@ -3256,27 +3256,96 @@ def _normalize_speculative_draft_path(value: Any) -> str:
     return raw
 
 
-def _has_kimi_dflash_draft_path(params: Dict[str, Any]) -> bool:
-    """判断 Kimi-K2.6-W4A8 是否显式选择 DFlash draft。
-
-    只有 draft path 中出现独立 ``dflash`` token 时才启用 DFlash；``none``、
-    ``no-dflash``、``without-dflash`` 等否定写法不能误触发。
-    """
-    draft_path = _normalize_speculative_draft_path(
-        params.get("speculative_decode_model_path")
-    )
-    if not draft_path:
-        return False
+def _draft_path_has_positive_token(draft_path: str, token: str) -> bool:
+    """判断 draft path 是否包含正向独立 token，避免 NonDFlash 误触发。"""
     tokens = [
-        token for token in re.split(r"[/\\._\-\s]+", draft_path.lower())
-        if token
+        item for item in re.split(r"[/\\._\-\s]+", draft_path.lower())
+        if item
     ]
-    for index, token in enumerate(tokens):
-        if token != "dflash":
+    expected = token.lower()
+    for index, item in enumerate(tokens):
+        if item != expected:
             continue
         previous = tokens[index - 1] if index > 0 else ""
         return previous not in {"non", "not", "no", "without"}
     return False
+
+
+def _whitelist_draft_method(row: Optional[dict]) -> str:
+    """从白名单读取 draft 方法；未声明则不启用非 MTP/suffix 策略。"""
+    if not row:
+        return ""
+    raw_method = row.get("draft_method")
+    if not raw_method and row.get("draft_path_required") is True:
+        raw_method = row.get("method")
+    method = str(raw_method or "").strip().lower()
+    return "" if method in {"", "mtp", "suffix"} or method.endswith("_mtp") else method
+
+
+def _resolve_whitelist_draft_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
+    """命中白名单 draft 配方且提供真实 draft path 时返回该行，否则走 suffix。"""
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "spec",
+        require_enabled=True,
+    )
+    method = _whitelist_draft_method(row)
+    draft_path = _normalize_speculative_draft_path(
+        params.get("speculative_decode_model_path")
+    )
+    if not method or not draft_path:
+        return None
+    if method == "dflash" and not _draft_path_has_positive_token(draft_path, "dflash"):
+        logger.info(
+            "[SpecDecode-DIAG] draft_path=%r does not match DFlash whitelist recipe; "
+            "falling back to suffix.",
+            draft_path,
+        )
+        return None
+    return row
+
+
+def _resolve_whitelist_draft_strategy(params: Dict[str, Any], engine: str) -> str:
+    """白名单 draft 策略名；未命中或缺少真实 draft path 时为空。"""
+    return _whitelist_draft_method(_resolve_whitelist_draft_row(params, engine))
+
+
+def _resolve_whitelist_draft_tokens(row: dict, method: str) -> int:
+    """读取白名单 draft token；未配置时按方法给出保守默认值。"""
+    tokens = _safe_int(row.get("draft_num_speculative_tokens"))
+    if tokens is not None and tokens > 0:
+        return tokens
+    return 15 if method == "dflash" else 4
+
+
+def _build_whitelist_draft_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
+    """按白名单 draft 配方渲染 DFlash/Eagle3 等非 MTP/suffix 配置。"""
+    row = _resolve_whitelist_draft_row(params, engine)
+    if not row:
+        return ""
+    method = _whitelist_draft_method(row)
+    draft_path = _normalize_speculative_draft_path(params.get("speculative_decode_model_path"))
+    if not draft_path:
+        return ""
+    safe_path = draft_path.replace('\\', '\\\\').replace('"', '\\"')
+    compact = method == "dflash"
+    sep = ":" if compact else ": "
+    config = [
+        f'"method"{sep}"{method}"',
+        f'"model"{sep}"{safe_path}"',
+        f'"num_speculative_tokens"{sep}{_resolve_whitelist_draft_tokens(row, method)}',
+    ]
+    if method != "dflash":
+        config.insert(2, f'"draft_tensor_parallel_size"{sep}1')
+    if row.get("draft_enforce_eager") is True:
+        config.append(f'"enforce_eager"{sep}true')
+    logger.info(
+        "[AdvFeature-SpecDecode] Whitelist draft strategy selected: method=%s model=%s",
+        method,
+        draft_path,
+    )
+    return _format_speculative_result(config, compact=compact)
 
 
 def _build_speculative_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
@@ -3447,26 +3516,25 @@ def _resolve_whitelist_mtp_strategy(params: Dict[str, Any], engine: str) -> str:
     return str(mtp_row.get("mtp_method") or "mtp")
 
 
-def _resolve_draft_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
-    """Resolve a real draft path to eagle3/draft_model; sentinels fall through."""
+def _resolve_draft_speculative_strategy(
+    params: Dict[str, Any],
+    engine: str,
+) -> str:
+    """仅在白名单声明 draft method 且传入真实 draft path 时返回策略。"""
     draft_path = params.get("speculative_decode_model_path")
-    normalized_path = _normalize_speculative_draft_path(draft_path)
     raw_lower = str(draft_path).strip().lower() if draft_path else ""
     logger.info(
         "[SpecDecode-DIAG] resolve_speculative_strategy entry: "
         "raw_draft_path=%r stripped_lower=%r engine=%s",
         draft_path, raw_lower, engine,
     )
-    if normalized_path:
-        logger.info(
-            "[SpecDecode-DIAG] draft_path is real (not none/empty) → entering draft_model branch"
-        )
-        draft_info = ModelIdentifierDraft(normalized_path)
-        is_eagle3 = "eagle3" in draft_info.draft_model_architecture.lower()
-        return "eagle3" if is_eagle3 else "draft_model"
+    strategy = _resolve_whitelist_draft_strategy(params, engine)
+    if strategy:
+        return strategy
     if draft_path:
         logger.info(
-            "[SpecDecode-DIAG] draft_path=%r filtered as 'none' → falling through to MTP/suffix",
+            "[SpecDecode-DIAG] draft_path=%r has no matching whitelist draft recipe; "
+            "falling through to MTP/suffix",
             draft_path,
         )
     else:
@@ -3498,19 +3566,21 @@ def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
         params.get("model_path"),
         params.get("model_type"),
     )
+    # Kimi-K2.6 是一个特殊的「能力白名单 + 真实 draft path」组合：
+    # 白名单只证明该模型族在 910C 上支持 DFlash，不代表用户没传 DFlash draft
+    # 时也能渲染 method=dflash；没匹配上就直接 suffix。
     if engine == "vllm_ascend" and model_info.model_architecture == "KimiK25ForConditionalGeneration":
         if is_kimi_k26_family(params, engine):
             if not params.get("enable_speculative_decode") or not _spec_feature_is_allowed(params, engine):
                 return ""
-            if _has_kimi_dflash_draft_path(params):
-                return "dflash"
-            return "suffix"
+            return _resolve_whitelist_draft_strategy(params, engine) or "suffix"
         if is_kimi_k27_code_family(params, engine):
             return ""
 
     strategy = _resolve_whitelist_mtp_strategy(params, engine)
     if strategy:
         return strategy
+    # MTP 白名单优先；其它 draft 特性也必须匹配白名单，否则直接回 suffix。
     strategy = _resolve_draft_speculative_strategy(params, engine)
     if strategy:
         return strategy
@@ -3542,43 +3612,6 @@ def _format_speculative_result(config_entries: List[str], compact: bool = False)
     result = f" --speculative-config '{body}'"
     logger.info("[AdvFeature-SpecDecode] Generated params: %s", result.strip())
     return result
-
-
-def _handle_draft_model_case(params: Dict[str, Any], config: List[str]) -> None:
-    """处理有草稿模型的推测解码配置"""
-    draft_path = _normalize_speculative_draft_path(params.get("speculative_decode_model_path"))
-    # 对路径中的双引号和反斜杠进行 JSON 转义，防止 JSON-in-shell 注入
-    safe_path = draft_path.replace('\\', '\\\\').replace('"', '\\"')
-    config.append(f'"model": "{safe_path}"')
-    config.append('"draft_tensor_parallel_size": 1')
-    draft_model_info = ModelIdentifierDraft(draft_path)
-
-    if 'eagle3' in draft_model_info.draft_model_architecture.lower():
-        logger.info('--- Using the Eagle3 speculative decoding approach ---')
-        config.append('"method" : "eagle3"')
-        num_spec_tokens = 4
-        config.append(f'"num_speculative_tokens": {num_spec_tokens}')
-    else:
-        logger.info('--- Using the draft model speculative decoding approach ---')
-        config.append('"method" : "draft_model"')
-        num_spec_tokens = 4
-        config.append(f'"num_speculative_tokens": {num_spec_tokens}')
-
-
-def _build_kimi_dflash_speculative_cmd(params: Dict[str, Any]) -> str:
-    """生成 Kimi-K2.6-W4A8 官方 DFlash speculative-config。"""
-    draft_path = _normalize_speculative_draft_path(params.get("speculative_decode_model_path"))
-    if not draft_path:
-        return ""
-    safe_path = draft_path.replace('\\', '\\\\').replace('"', '\\"')
-    return _format_speculative_result(
-        [
-            '"method":"dflash"',
-            f'"model":"{safe_path}"',
-            '"num_speculative_tokens":15',
-        ],
-        compact=True,
-    )
 
 
 def _handle_mtp_case(model_info: ModelIdentifier, mtp_support_models: List[Any],
@@ -3721,7 +3754,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     """推测解码方案的自动选取。
 
     根据模型架构自动选择最优的推测解码策略：
-    1. MTP 白名单逐场景覆盖；2. 草稿模型 → eagle3 / draft_model；
+    1. MTP 白名单逐场景覆盖；2. 白名单 draft 配方 → dflash/eagle3；
     3. 架构 MTP（受 spec/offload gate 约束）；4. 其他 → suffix。
 
     Args:
@@ -3743,7 +3776,6 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         return ""
 
     spec_draft_raw = params.get("speculative_decode_model_path")
-    normalized_draft_path = _normalize_speculative_draft_path(spec_draft_raw)
     logger.info(
         "[SpecDecode-DIAG] _build_speculative_cmd entry: "
         "enable_spec_decode=%s draft_path=%r engine=%s strategy=%s engine_has_spec_config=%s",
@@ -3752,25 +3784,16 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     )
 
     mtp_row = _mtp_whitelist_override_row(params, engine)
-    kimi_k26_dflash_only = (
-        engine == "vllm_ascend"
-        and model_info.model_architecture == "KimiK25ForConditionalGeneration"
-        and is_kimi_k26_family(params, engine)
-    )
-    if strategy == "dflash":
-        logger.info("[AdvFeature-SpecDecode] Kimi DFlash strategy selected")
-        return _build_kimi_dflash_speculative_cmd(params)
+    if strategy not in {"suffix", "mtp"} and not strategy.endswith("_mtp"):
+        return _build_whitelist_draft_speculative_cmd(params, engine)
 
-    if spec_draft_raw and not mtp_row and not kimi_k26_dflash_only:
-        if normalized_draft_path:
-            logger.info("[AdvFeature-SpecDecode] Draft model path detected: %s, using draft_model strategy",
-                        normalized_draft_path)
-            speculative_config_temp = []
-            _handle_draft_model_case(params, speculative_config_temp)
-            return _format_speculative_result(speculative_config_temp)
-        logger.info("[AdvFeature-SpecDecode] Draft model path is '%s' — treated as no draft model, "
-                    "falling through to strategy='%s'",
-                    spec_draft_raw, strategy)
+    if spec_draft_raw and not mtp_row:
+        logger.info(
+            "[AdvFeature-SpecDecode] Draft model path is '%s' — treated as no "
+            "matching whitelist draft recipe, falling through to strategy='%s'",
+            spec_draft_raw,
+            strategy,
+        )
 
     if mtp_row:
         logger.info("[AdvFeature-SpecDecode] Whitelist strategy selected: %s", strategy)

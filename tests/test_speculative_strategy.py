@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -69,6 +70,16 @@ class _FakeQwen36MoeIdentifier:
         self.model_type = model_type
 
 
+class _FakeMiniMaxM2Identifier:
+    model_architecture = "MiniMaxM2ForCausalLM"
+    model_quantize = "w8a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeUnknownGlm51Identifier:
     model_architecture = "unknown_architecture"
     model_quantize = "w8a8"
@@ -101,6 +112,8 @@ class _FakePro5000Identifier:
         if "qwen3.5-397b-a17b-nvfp4" in text:
             self.model_architecture = "Qwen3_5MoeForConditionalGeneration"
             self.model_quantize = "nvfp4"
+        elif "qwen-agentworld-35b-a3b" in text:
+            self.model_architecture = "Qwen3_5MoeForConditionalGeneration"
         elif "qwen3.5-122b-a10b" in text or "qwen3.5-35b-a3b" in text:
             self.model_architecture = "Qwen3_5MoeForConditionalGeneration"
         elif "qwen3.5-27b" in text:
@@ -416,6 +429,93 @@ def test_minimax_pro5000_suffix_uses_whitelist_tokens(
         "num_speculative_tokens": expected_tokens,
         "moe_backend": None,
     }
+
+
+def test_qwen_agentworld_pro5000_suffix_uses_whitelist_32_tokens(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
+
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen/Qwen-AgentWorld-35B-A3B",
+        "model_path": "/models/Qwen/Qwen-AgentWorld-35B-A3B",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec"],
+        "_smart_card_token": "rtxpro5000-72",
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm") == "suffix"
+    assert command == (
+        " --speculative-config "
+        "'{\"method\":\"suffix\",\"num_speculative_tokens\":32}'"
+    )
+    assert "suffix_decoding_max_cached_requests" not in command
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "suffix",
+        "num_speculative_tokens": 32,
+        "moe_backend": None,
+    }
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_minimax_m27_w8a8_quarot_eagle3_uses_draft_path_options(
+    monkeypatch,
+    tmp_path,
+    card_token,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    draft_dir = tmp_path / "Eagle3"
+    draft_dir.mkdir()
+    (draft_dir / "config.json").write_text(
+        json.dumps({"architectures": ["MiniMaxM2Eagle3ForCausalLM"]}),
+        encoding="utf-8",
+    )
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_path": "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": str(draft_dir),
+        "_smart_feats": ["spec"],
+        "_smart_card_token": card_token,
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "eagle3"
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+    body = command.split("'", 2)[1]
+    config = json.loads(body)
+
+    assert config["method"] == "eagle3"
+    assert config["model"] == str(draft_dir)
+    assert config["draft_tensor_parallel_size"] == 1
+    assert config["num_speculative_tokens"] == 3
+    assert config["enforce_eager"] is True
+
+
+def test_minimax_m27_w8a8_quarot_without_draft_falls_back_to_suffix(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_path": "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec"],
+        "_smart_card_token": "910c",
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+
+    assert '"method" : "suffix"' in command
+    assert "eagle3" not in command
+    assert "draft_model" not in command
 
 
 def test_qwen35_35b_pro5000_offload_only_does_not_auto_append_spec(monkeypatch):

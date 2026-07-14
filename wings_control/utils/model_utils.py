@@ -718,7 +718,8 @@ _LLM_MODELS = {
         "MiniMax-M2.5-NVFP4",
         "MiniMax-M2.5-w8a8",
         "MiniMax-M2.7",
-        "MiniMax-M2.7-w8a8"
+        "MiniMax-M2.7-w8a8",
+        "MiniMax-M2.7-w8a8-QuaRot"
         ],
     "MiniMaxM3SparseForConditionalGeneration": [
         "MiniMax-M3",

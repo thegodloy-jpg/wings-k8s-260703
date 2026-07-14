@@ -599,20 +599,34 @@
         },
         "Qwen-AgentWorld-35B-A3B": {
           "vllm": {
+            "use_vllm_serve": true,
             "trust_remote_code": true,
             "max_model_len": 262144,
+            "max_num_batched_tokens": 1024,
             "gpu_memory_utilization": 0.9,
             "enable_expert_parallel": true,
+            "enable_prefix_caching": true,
             "language_model_only": true,
+            "model_loader_extra_config": {
+              "enable_multithread_load": "true",
+              "num_threads": 128
+            },
             "mm_encoder_tp_mode": "data",
             "tool_call_parser": "qwen3_xml"
           },
           "vllm_distributed": {
+            "use_vllm_serve": true,
             "trust_remote_code": true,
             "max_model_len": 262144,
+            "max_num_batched_tokens": 1024,
             "gpu_memory_utilization": 0.9,
             "enable_expert_parallel": true,
+            "enable_prefix_caching": true,
             "language_model_only": true,
+            "model_loader_extra_config": {
+              "enable_multithread_load": "true",
+              "num_threads": 128
+            },
             "mm_encoder_tp_mode": "data",
             "tool_call_parser": "qwen3_xml"
           },

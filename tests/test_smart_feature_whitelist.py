@@ -1143,6 +1143,7 @@ def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
         ("vllm", "Qwen3.5-397B-A17B", "/models/Qwen/Qwen3.5-397B-A17B", "rtxpro5000-72", 3),
         ("vllm", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "rtxpro5000-72", 1),
         ("vllm", "Qwen/Qwen3.5-27B", "/models/Qwen/Qwen3.5-27B", "rtxpro5000-72", 2),
+        ("vllm", "Qwen/Qwen-AgentWorld-35B-A3B", "/models/Qwen/Qwen-AgentWorld-35B-A3B", "rtxpro5000-72", 32),
         ("vllm", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", 32),
         ("vllm", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", 10),
@@ -1183,6 +1184,40 @@ def test_spec_whitelist_mtp_rows_carry_mtp_tokens(
 
     assert row is not None
     assert row.get("mtp_num_speculative_tokens") == expected_tokens
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_minimax_m27_w8a8_quarot_spec_rows_are_draft_only(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        card_token,
+        "spec",
+    )
+
+    assert row is not None
+    assert row["source"] == "vllm-ascend-0.21"
+    assert row.get("draft_method") == "eagle3"
+    assert row.get("draft_num_speculative_tokens") == 3
+    assert row.get("draft_enforce_eager") is True
+    assert "mtp_method" not in row
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        card_token,
+    ) == frozenset({"spec"})
+
+
+def test_minimax_m27_w8a8_without_quarot_does_not_hit_day0_draft_row():
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "MiniMax/MiniMax-M2.7-w8a8",
+        "/models/MiniMax/MiniMax-M2.7-w8a8",
+        "910c",
+        "spec",
+    ) is None
 
 
 def test_qwen35_35b_pro5000_native_offload_has_no_spec_row():
@@ -1250,6 +1285,9 @@ def test_minimax_pro5000_offload_backend_stays_model_specific(
         ("spec", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910b", "vllm-ascend-0.21"),
         ("spec", "Eco-Tech/GLM-4.7-w8a8-floatmtp", "/models/Eco-Tech/GLM-4.7-w8a8-floatmtp", "910c", "vllm-ascend-0.21"),
         ("spec", "DeepSeek-Coder-V2-Instruct-BF16", "/models/DeepSeek-Coder-V2-Instruct-BF16", "910c", "vllm-ascend-0.21"),
+        ("spec", "Qwen/Qwen-AgentWorld-35B-A3B", "/models/Qwen/Qwen-AgentWorld-35B-A3B", "rtxpro5000-72", "vllm-0.23"),
+        ("spec", "MiniMax/MiniMax-M2.7-w8a8-QuaRot", "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot", "910b", "vllm-ascend-0.21"),
+        ("spec", "MiniMax/MiniMax-M2.7-w8a8-QuaRot", "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot", "910c", "vllm-ascend-0.21"),
         ("offload", "Eco-Tech/Kimi-K2.6-W4A8", "/models/Eco-Tech/Kimi-K2.6-W4A8", "910c", "vllm-ascend-0.21"),
         ("spec", "Eco-Tech/Kimi-K2.6-W4A8", "/models/Eco-Tech/Kimi-K2.6-W4A8", "910c", "vllm-ascend-0.21"),
         ("offload", "Kimi-K2.7-Code-w4a8", "/harbor_data/Kimi-K2.7-Code-w4a8", "910c", "vllm-ascend-0.21"),

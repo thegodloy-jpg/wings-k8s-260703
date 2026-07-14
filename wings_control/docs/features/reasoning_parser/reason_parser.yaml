@@ -185,6 +185,7 @@ architectures:
       MiniMax-M2.7:      {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
       MiniMax-M2.7-NVFP4: {vllm: minimax_m2, vllm_ascend: minimax_m2_append_think}
       MiniMax-M2.7-w8a8: {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
+      MiniMax-M2.7-w8a8-QuaRot: {vllm: minimax_m2_append_think, vllm_ascend: minimax_m2_append_think}
 
   # ── 以下架构在两引擎 default 段均未配 reasoning_parser, 全部模型 null（不启用思维解析）──
   # ⚠️ 其中 DeepSeek-R1-Distill-* 与 QwQ-32B 属推理型模型, 当前未配 reasoning_parser, 如需可补。

@@ -1244,6 +1244,100 @@
             },
             "tool_call_parser": "minimax_m2"
           }
+        },
+        "MiniMax-M2.7-w8a8-QuaRot-Ascend910C": {
+          "vllm_ascend": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "enforce_eager": true,
+            "no_enable_prefix_caching": true,
+            "quantization": "ascend",
+            "load_format": "dummy",
+            "async_scheduling": true,
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_fused_mc2": true,
+              "enable_flashcomm1": true,
+              "weight_nz_mode": true
+            },
+            "enable_expert_parallel": true,
+            "max_num_seqs": 48,
+            "max_model_len": 40690,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "kv_cache_memory_bytes": "4G",
+            "tool_call_parser": "minimax_m2"
+          },
+          "vllm_ascend_distributed": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "enforce_eager": true,
+            "no_enable_prefix_caching": true,
+            "quantization": "ascend",
+            "load_format": "dummy",
+            "async_scheduling": true,
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_fused_mc2": true,
+              "enable_flashcomm1": true,
+              "weight_nz_mode": true
+            },
+            "enable_expert_parallel": true,
+            "max_num_seqs": 48,
+            "max_model_len": 40690,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "kv_cache_memory_bytes": "4G",
+            "tool_call_parser": "minimax_m2"
+          }
+        },
+        "MiniMax-M2.7-w8a8-QuaRot-Ascend910B": {
+          "vllm_ascend": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "no_enable_prefix_caching": true,
+            "quantization": "ascend",
+            "load_format": "dummy",
+            "async_scheduling": true,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_fused_mc2": true,
+              "enable_flashcomm1": true,
+              "weight_nz_mode": true
+            },
+            "enable_expert_parallel": true,
+            "max_num_seqs": 48,
+            "max_model_len": 40690,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "tool_call_parser": "minimax_m2"
+          },
+          "vllm_ascend_distributed": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "no_enable_prefix_caching": true,
+            "quantization": "ascend",
+            "load_format": "dummy",
+            "async_scheduling": true,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_fused_mc2": true,
+              "enable_flashcomm1": true,
+              "weight_nz_mode": true
+            },
+            "enable_expert_parallel": true,
+            "max_num_seqs": 48,
+            "max_model_len": 40690,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.9,
+            "tool_call_parser": "minimax_m2"
+          }
         }
       },
       "LlamaForCausalLM": {
