@@ -688,7 +688,7 @@ def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypat
     }
 
 
-def test_pro5000_spec_models_emit_ears_env_and_patch(monkeypatch):
+def test_pro5000_spec_models_do_not_emit_ears_env_or_patch(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
 
@@ -717,8 +717,13 @@ def test_pro5000_spec_models_emit_ears_env_and_patch(monkeypatch):
 
     for params in scenarios:
         env_commands = vllm_adapter._build_speculative_env_commands(params, "vllm")
-        assert "export VLLM_EARS_TOLERANCE=0.5" in env_commands
-        assert "ears" in wings_entry._collect_required_patch_features("vllm", params)
+        accel_preamble = wings_entry._build_accel_preamble("vllm", params)
+
+        assert env_commands == []
+        assert "ears" not in wings_entry._collect_required_patch_features("vllm", params)
+        assert "install-runtime-deps" not in accel_preamble
+        assert '"ears"' not in accel_preamble
+        assert "VLLM_EARS_TOLERANCE" not in accel_preamble
 
 
 def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):

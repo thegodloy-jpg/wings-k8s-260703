@@ -3279,29 +3279,8 @@ def _has_kimi_dflash_draft_path(params: Dict[str, Any]) -> bool:
     return False
 
 
-def _is_mtp_or_suffix_strategy(params: Dict[str, Any], engine: str) -> bool:
-    """判断当前投机推理策略是否为 MTP 或 suffix（即非草稿模型方案）。
-
-    当启用投机推理且未指定草稿模型路径时，策略一定是 MTP 或 suffix。
-    vllm_ascend 不注入 VLLM_EARS_TOLERANCE，Ascend 侧无需该参数。
-    MiniMax-M2.7 (NV) 不注入 VLLM_EARS_TOLERANCE（与 minimax-2.7-zyy.txt 对齐，无此项）。
-    """
-    if not params.get("enable_speculative_decode"):
-        return False
-    if engine != "vllm":
-        return False
-    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
-        return False
-    if _normalize_speculative_draft_path(params.get("speculative_decode_model_path")):
-        return False
-    return True
-
-
 def _build_speculative_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
-    """构建 MTP / suffix 投机推理策略所需的环境变量命令。
-
-    当投机推理采用 MTP 或 suffix 策略时，默认注入
-    ``VLLM_EARS_TOLERANCE=0.5`` 环境变量以控制容忍度参数。
+    """投机推理由 vLLM CLI 参数表达，不再额外注入补丁运行时环境变量。
 
     Args:
         params: 参数字典
@@ -3310,11 +3289,7 @@ def _build_speculative_env_commands(params: Dict[str, Any], engine: str) -> List
     Returns:
         List[str]: 环境变量设置命令列表，未启用时返回空列表
     """
-    if not _is_mtp_or_suffix_strategy(params, engine):
-        return []
-    logger.info("[AdvFeature-SpecDecode] MTP/suffix strategy detected, "
-                "injecting VLLM_EARS_TOLERANCE=0.5")
-    return ['export VLLM_EARS_TOLERANCE=0.5']
+    return []
 
 
 def _build_trace_env_commands(params: Dict[str, Any], engine: str) -> List[str]:

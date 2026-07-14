@@ -67,8 +67,7 @@ logger = logging.getLogger(__name__)
 # WINGS_ACCEL_DIR 由 settings.WINGS_ACCEL_DIR 决定（默认 /accel-volume，可通过环境变量覆盖）
 #
 # features 列表由以下高级特性环境变量决定（名称与 supported_features.json 对齐）：
-#   ENABLE_SPECULATIVE_DECODE → adaptive_draft_model（已改为 --install-runtime-deps 独立安装）
-#   ENABLE_SPARSE             → indexcache（仅 IndexCache 架构，通过独立安装片段处理）
+#   ENABLE_SPARSE → indexcache（仅 IndexCache 架构，通过独立安装片段处理）
 #
 # ENABLE_KV_OFFLOAD installs LMCache by target; DeepSeek-V4-Flash 0.21 uses LMCache dynamic.
 #
@@ -85,14 +84,12 @@ _ENGINE_PATCH_KEY_MAP = {
 }
 
 # 高级特性环境变量 → features 名称映射（与 supported_features.json 中的 feature key 对齐）
-# 注意：投机推理（ENABLE_SPECULATIVE_DECODE）已从此映射中移除，
-# 改为通过 --install-runtime-deps 独立安装，不再走 --features 路径。
+# 投机推理由 vLLM CLI 参数表达，不再通过 accel install.py 打补丁。
 _FEATURE_SWITCH_MAP: dict[str, str] = {
     # ENABLE_SPARSE 已从此映射移除，IndexCache 补丁通过动态 feature 聚合安装。
 }
 
 _PATCH_FEATURE_STATUS_KEYS: dict[str, str] = {
-    "ears": "speculative_decode",
     "indexcache": "sparse_kv",
 }
 
@@ -308,9 +305,7 @@ def _merge_patch_options(raw_options: str, patch_key: str, engine_version: str, 
 def _collect_enabled_features() -> list[str]:
     """Return the list of accel feature names whose environment switches are enabled.
 
-    注意：投机推理（ENABLE_SPECULATIVE_DECODE）已不在 _FEATURE_SWITCH_MAP 中，
-    改为通过 _build_speculative_runtime_deps_snippet() 独立走
-    --install-runtime-deps 路径安装，此处仅收集其他高级特性。
+    投机推理（ENABLE_SPECULATIVE_DECODE）只影响 vLLM CLI，不再触发 accel patch。
     """
     features = []
     for env_key, feat_name in _FEATURE_SWITCH_MAP.items():
@@ -318,50 +313,6 @@ def _collect_enabled_features() -> list[str]:
             continue
         features.append(feat_name)
     return features
-
-
-def _is_speculative_decode_enabled() -> bool:
-    """判断投机推理是否已启用。"""
-    return os.getenv("ENABLE_SPECULATIVE_DECODE", "").strip().lower() == "true"
-
-
-def _build_speculative_runtime_deps_snippet(enabled: bool | None = None) -> str:
-    """为投机推理生成 --install-runtime-deps 的容错 shell 片段。
-
-    当 ENABLE_SPECULATIVE_DECODE=true 时，不再通过 --features 传递
-    adaptive_draft_model，而是使用 --install-runtime-deps 让 install.py
-    安装投机推理所需的运行时依赖。
-
-    Returns:
-        str: shell 脚本片段；投机推理未启用时返回空字符串。
-    """
-    if enabled is None:
-        enabled = _is_speculative_decode_enabled()
-    if not enabled:
-        return ""
-
-    accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
-    update_json = _shell_update_feature_json("speculative_decode", False)
-    return (
-        "# --- wings-accel: install speculative decoding runtime deps (fault-tolerant) ---\n"
-        f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
-        "    echo '[wings-accel] Installing speculative decoding runtime deps...'\n"
-        "    set +e\n"
-        f"    python3 {accel_dir}/install.py --install-runtime-deps\n"
-        "    SPEC_RC=$?\n"
-        "    set -e\n"
-        "    if [ $SPEC_RC -ne 0 ]; then\n"
-        "        echo \"[wings-accel] WARNING: Speculative decoding runtime deps install failed"
-        " (exit=$SPEC_RC), skipping. Service will continue without patches.\"\n"
-        + update_json
-        + "    else\n"
-        "        echo '[wings-accel] Speculative decoding runtime deps installed successfully.'\n"
-        "    fi\n"
-        "else\n"
-        f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, "
-        "skipping speculative decoding runtime deps.'\n"
-        "fi\n"
-    )
 
 
 def _is_glm51_nvidia_vllm_merged(engine: str, merged: dict | None) -> bool:
@@ -571,31 +522,10 @@ def _collect_indexcache_patch_features(engine: str, merged: dict) -> list[str]:
     return ["indexcache"]
 
 
-def _collect_ears_patch_features(engine: str, merged: dict) -> list[str]:
-    """Return EARS accel feature when speculative suffix/MTP is selected.
-
-    vllm_ascend 不安装 EARS 补丁，已由 Ascend 侧自身实现同等优化。
-    """
-    if engine != "vllm":
-        return []
-    if not merged.get("enable_speculative_decode"):
-        return []
-    draft_path = merged.get("speculative_decode_model_path")
-    if draft_path and str(draft_path).strip().lower() not in ("none", ""):
-        return []
-
-    strategy = resolve_speculative_strategy(merged, engine)
-    if strategy == "suffix" or strategy == "mtp" or strategy.endswith("_mtp"):
-        logger.info("[EARS] Speculative strategy %s requires ears patch", strategy)
-        return ["ears"]
-    return []
-
-
 def _collect_required_patch_features(engine: str, merged: dict) -> list[str]:
     """Collect all install.py --features entries that must be installed together."""
     features = []
     features.extend(_collect_enabled_features())
-    features.extend(_collect_ears_patch_features(engine, merged))
     features.extend(_collect_indexcache_patch_features(engine, merged))
     return _dedupe_features(features)
 
@@ -661,28 +591,19 @@ def _build_accel_preamble(engine: str, merged: dict) -> str:
     """若 Accel 加速功能已开启，生成容错的 shell 安装片段；否则返回空字符串。
 
     安装策略（容错）：
-      1. 投机推理（ENABLE_SPECULATIVE_DECODE）使用 --install-runtime-deps 独立安装
-      2. LMCache KV 卸载（ENABLE_KV_OFFLOAD）使用平台对应命令独立安装
-      3. IndexCache（KV 稀疏 + IndexCache 架构）使用 --features indexcache 安装
-      4. 其他高级特性继续走 --features 路径
-      5. 先尝试批量安装所有特性
-      6. 若批量安装失败（install.py exit 非零），回退到逐特性安装
-      7. 单个特性安装失败时记录警告并跳过，继续安装其余特性
-      8. 无论安装结果如何，始终继续拉起引擎服务
+      1. LMCache KV 卸载（ENABLE_KV_OFFLOAD）使用平台对应命令独立安装
+      2. IndexCache（KV 稀疏 + IndexCache 架构）使用 --features indexcache 安装
+      3. 其他高级特性继续走 --features 路径
+      4. 先尝试批量安装所有特性
+      5. 若批量安装失败（install.py exit 非零），回退到逐特性安装
+      6. 单个特性安装失败时记录警告并跳过，继续安装其余特性
+      7. 无论安装结果如何，始终继续拉起引擎服务
     """
     if not settings.ENABLE_ACCEL:
         logger.debug("Accel disabled: skipping WINGS_ENGINE_PATCH_OPTIONS injection")
         return ""
 
     preamble_parts: list[str] = []
-
-    # ── 投机推理：独立使用 --install-runtime-deps ──
-    spec_snippet = _build_speculative_runtime_deps_snippet(
-        bool(merged.get("enable_speculative_decode")),
-    )
-    if spec_snippet:
-        logger.info("Accel: injecting speculative decoding runtime deps (--install-runtime-deps)")
-        preamble_parts.append(spec_snippet)
 
     # ── LMCache KV 卸载：独立使用平台对应安装命令 ──
     lmcache_snippet = _build_lmcache_install_snippet(engine, merged)
@@ -1251,9 +1172,8 @@ else
   pkill -9 -f 'multiproc_executor' 2>/dev/null || true
   # 一刀切：unset 所有补丁/加速层使能环境变量，退到最基本的启动命令
   # （不动 VLLM_ASCEND_ENABLE_* / VLLM_USE_V1 等常规性能 flag，它们不是补丁）
-  echo "[Engine] Unsetting patch/accel env vars for retry: WINGS_ENGINE_PATCH_OPTIONS VLLM_EARS_TOLERANCE"
+  echo "[Engine] Unsetting patch/accel env vars for retry: WINGS_ENGINE_PATCH_OPTIONS"
   unset WINGS_ENGINE_PATCH_OPTIONS
-  unset VLLM_EARS_TOLERANCE
   echo "[Engine] Waiting 5s for port release before retry..."
   sleep 5
   ENGINE_START_EPOCH=$(date +%s)
@@ -1340,9 +1260,8 @@ FEATURES_EOF
   pkill -9 -f 'multiproc_executor' 2>/dev/null || true
   # 一刀切：unset 所有补丁/加速层使能环境变量，退到最基本的启动命令
   # （不动 VLLM_ASCEND_ENABLE_* / VLLM_USE_V1 等常规性能 flag，它们不是补丁）
-  echo "[AdvFeature] Unsetting patch/accel env vars for fallback: WINGS_ENGINE_PATCH_OPTIONS VLLM_EARS_TOLERANCE"
+  echo "[AdvFeature] Unsetting patch/accel env vars for fallback: WINGS_ENGINE_PATCH_OPTIONS"
   unset WINGS_ENGINE_PATCH_OPTIONS
-  unset VLLM_EARS_TOLERANCE
   echo "[Engine] Waiting 5s for port release before restart..."
   sleep 5
   ENGINE_START_EPOCH=$(date +%s)
