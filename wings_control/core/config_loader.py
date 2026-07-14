@@ -3470,10 +3470,9 @@ def _resolve_whitelist_ascend_config_key(
 
 @dataclass
 class _SpecialEngineScenario:
-    """DeepSeek/MiniMax + 引擎 + NVIDIA 的特殊卡型选配场景标记。"""
+    """DeepSeek + 引擎 + NVIDIA 的特殊卡型选配场景标记。"""
     deepseek_sglang_nvidia: bool = False
     deepseek_v4_flash_vllm_nvidia: bool = False
-    minimax_m27_vllm_nvidia: bool = False
 
 
 @dataclass(frozen=True)
@@ -3568,18 +3567,6 @@ def _resolve_special_nvidia_engine_config(
             )
         config_key = card_model if dedicated_pro5000 else "default"
         return engine_config.get(config_key, {})
-    if scenario.minimax_m27_vllm_nvidia:
-        dedicated_pro5000 = card_model == "rtx_pro_5000_72G"
-        if dedicated_pro5000:
-            logger.info("Using dedicated config for model '%s' on %s", model, card_model)
-        else:
-            logger.info(
-                "MiniMax-M2.7+vLLM+NVIDIA (non-rtx_pro_5000_72G): "
-                "using default config for '%s'",
-                model,
-            )
-        config_key = card_model if dedicated_pro5000 else "default"
-        return engine_config.get(config_key, {})
     return None
 
 
@@ -3596,8 +3583,8 @@ def _match_model_engine_config(
 
     遍历 arch_dict 中的模型条目，找到名称匹配项后返回对应的引擎参数。
     DeepSeek+SGLang+NVIDIA 场景下额外检测 H20 GPU 型号以选用专属配置。
-    DeepSeek-V4-Flash+vLLM+NVIDIA / MiniMax-M2.7+vLLM+NVIDIA 场景下额外检测
-    NVIDIA GPU 型号以选用 rtx_pro_5000_72G 专属配置子块。
+    DeepSeek-V4-Flash+vLLM+NVIDIA 场景下额外检测 NVIDIA GPU 型号以选用
+    rtx_pro_5000_72G 专属配置子块。
     匿名模型可通过 ``model_info`` 提供的架构 + 量化指纹补充查找名（如 w4a8
     DeepseekV4 → ``deepseek-v4-pro``），以匹配 JSON 中的对应条目。
 
@@ -3838,21 +3825,9 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
             and _is_deepseek_v4_flash_lookup([model_name_lower])
         )
 
-        # MiniMax-M2.7 + vLLM + NVIDIA（非分布式）：与 V4-Flash 同构，
-        # 需在 _match_model_engine_config 内按 card_model 选中 rtx_pro_5000_72G 子块
-        # （否则只取到 {"rtx_pro_5000_72G": {...}} 外壳，丢失 use_vllm_serve/moe_backend
-        # /kv_cache_dtype/speculative_config 等固定 CLI 字段）。
-        is_minimax_m27_vllm_nvidia = (
-            model_architecture == "MiniMaxM2ForCausalLM"
-            and hardware_env.get("device") == "nvidia"
-            and engine == "vllm"
-            and not cmd_known_params.get("distributed")
-            and _is_minimax_m27_lookup([model_name_lower])
-        )
         scenario = _SpecialEngineScenario(
             deepseek_sglang_nvidia=is_deepseek_sglang_nvidia,
             deepseek_v4_flash_vllm_nvidia=is_deepseek_v4_flash_vllm_nvidia,
-            minimax_m27_vllm_nvidia=is_minimax_m27_vllm_nvidia,
         )
 
         engine_specific_defaults = _match_model_engine_config(

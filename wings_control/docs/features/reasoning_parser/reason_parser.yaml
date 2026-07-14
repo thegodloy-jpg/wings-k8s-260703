@@ -194,13 +194,15 @@ architectures:
     models:
       GLM-4-9B-0414: {vllm: null, vllm_ascend: null}
 
-  # MiniMax-M3 (GQA+MSA, 多模态): 手工启动命令未配 reasoning_parser; M3 为新架构,
-  # parser 未核实, 暂置 null(不照搬 minimax_m2)。核实官方 vLLM 后可补。
+  # MiniMax-M3 (GQA+MSA, 多模态): vLLM 官方 recipe/blog/docs 均确认
+  # --tool-call-parser / --reasoning-parser 使用 minimax_m3；当前 DAY0 仅收编
+  # MiniMax-M3-MXFP8 + vLLM + Pro5000 场景，泛化 MiniMax-M3 和 vLLM-Ascend
+  # 未纳入本次适配范围，保持 null，避免把 MXFP8 证据扩散到未验证模型/引擎。
   - name: MiniMaxM3SparseForConditionalGeneration
     config: {}
     models:
-      MiniMax-M3:       {vllm: null, vllm_ascend: null}
-      MiniMax-M3-MXFP8: {vllm: minimax_m3, vllm_ascend: null}
+      MiniMax-M3:       {vllm: minimax_m3, vllm_ascend: minimax_m3}
+      MiniMax-M3-MXFP8: {vllm: minimax_m3, vllm_ascend: minimax_m3}
 
   - name: Qwen2ForCausalLM
     config: {}

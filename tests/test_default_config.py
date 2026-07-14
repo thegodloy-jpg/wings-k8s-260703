@@ -89,9 +89,6 @@ def test_special_nvidia_config_selector_preserves_all_card_branches():
     flash_scenario = config_loader._SpecialEngineScenario(
         deepseek_v4_flash_vllm_nvidia=True,
     )
-    minimax_scenario = config_loader._SpecialEngineScenario(
-        minimax_m27_vllm_nvidia=True,
-    )
 
     def selection(engine_key, scenario, h20_model="", card_model=""):
         return config_loader._SpecialNvidiaConfigSelection(
@@ -114,12 +111,6 @@ def test_special_nvidia_config_selector_preserves_all_card_branches():
     ) == {"selected": "pro5000"}
     assert config_loader._resolve_special_nvidia_engine_config(
         selection("vllm", flash_scenario, card_model="other")
-    ) == {"selected": "default"}
-    assert config_loader._resolve_special_nvidia_engine_config(
-        selection("vllm", minimax_scenario, card_model="rtx_pro_5000_72G")
-    ) == {"selected": "pro5000"}
-    assert config_loader._resolve_special_nvidia_engine_config(
-        selection("vllm", minimax_scenario, card_model="other")
     ) == {"selected": "default"}
 
 
@@ -347,6 +338,17 @@ def test_minimax_pro5000_reasoning_parser_exact_precision_models_are_loaded():
         },
         _FakeModelInfo("MiniMax-M3-MXFP8", "MiniMaxM3SparseForConditionalGeneration"),
     )
+    m3_base_config = config_loader._get_model_specific_config(
+        hardware,
+        {
+            "engine": "vllm",
+            "model_name": "MiniMax-M3",
+            "model_path": "/models/MiniMax-M3",
+            "model_type": "llm",
+            "enable_auto_think_choice": True,
+        },
+        _FakeModelInfo("MiniMax-M3", "MiniMaxM3SparseForConditionalGeneration"),
+    )
     m25_config = config_loader._get_model_specific_config(
         hardware,
         {
@@ -371,6 +373,7 @@ def test_minimax_pro5000_reasoning_parser_exact_precision_models_are_loaded():
     )
 
     assert m3_config["reasoning_parser"] == "minimax_m3"
+    assert "reasoning_parser" not in m3_base_config
     assert m25_config["reasoning_parser"] == "minimax_m2"
     assert m27_config["reasoning_parser"] == "minimax_m2"
 
@@ -1018,10 +1021,10 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
     )
 
     cases = [
-        ("Ascend910C", True, True),
-        ("Ascend910B_64G", False, False),
+        ("Ascend910C", True),
+        ("Ascend910B_64G", False),
     ]
-    for card_name, expect_eager, expect_kv_bytes in cases:
+    for card_name, expect_kv_bytes in cases:
         config = config_loader._match_model_engine_config(
             minimax_arch,
             "minimax/minimax-m2.7-w8a8-quarot",
@@ -1053,10 +1056,7 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
             "enable_flashcomm1": True,
             "weight_nz_mode": True,
         }
-        if expect_eager:
-            assert config["enforce_eager"] is True
-        else:
-            assert "enforce_eager" not in config
+        assert "enforce_eager" not in config
         assert ("kv_cache_memory_bytes" in config) is expect_kv_bytes
         assert "speculative_config" not in config
 
@@ -1162,6 +1162,9 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["card_tokens"] == [
         "rtxpro5000-72",
     ]
+    assert llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7"]["card_tokens"] == [
+        "rtxpro5000-72",
+    ]
     assert llm["MiniMaxM3SparseForConditionalGeneration"]["MiniMax-M3-MXFP8"]["card_tokens"] == [
         "rtxpro5000-72",
     ]
@@ -1231,9 +1234,10 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert minimax_m25["tool_call_parser"] == "minimax_m2"
     assert "speculative_config" not in minimax_m25
 
-    minimax_m27 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7"]["vllm"]["rtx_pro_5000_72G"]
+    minimax_m27 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7"]["vllm"]
     assert minimax_m27["kv_cache_dtype"] == "fp8"
     assert minimax_m27["moe_backend"] == "flashinfer_cutlass"
+    assert "rtx_pro_5000_72G" not in minimax_m27
     assert "speculative_config" not in minimax_m27
 
     minimax_m3 = llm["MiniMaxM3SparseForConditionalGeneration"]["MiniMax-M3-MXFP8"]["vllm"]

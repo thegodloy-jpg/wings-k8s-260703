@@ -690,14 +690,13 @@
           }
         },
         "MiniMax-M2.7": {
+          "card_tokens": ["rtxpro5000-72"],
           "vllm": {
-            "rtx_pro_5000_72G": {
-              "use_vllm_serve": true,
-              "trust_remote_code": true,
-              "kv_cache_dtype": "fp8",
-              "moe_backend": "flashinfer_cutlass",
-              "tool_call_parser": "minimax_m2"
-            }
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "kv_cache_dtype": "fp8",
+            "moe_backend": "flashinfer_cutlass",
+            "tool_call_parser": "minimax_m2"
           }
         }
       },
