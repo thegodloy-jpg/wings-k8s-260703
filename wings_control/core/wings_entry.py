@@ -83,8 +83,13 @@ _ENGINE_PATCH_KEY_MAP = {
     "vllm_ascend": "vllm_ascend",
 }
 
-# 高级特性环境变量 → features 名称映射（与 supported_features.json 中的 feature key 对齐）
-# 投机推理由 vLLM CLI 参数表达，不再通过 accel install.py 打补丁。
+# 高级特性环境变量 → features 名称映射（与 supported_features.json 中的 feature key 对齐）。
+# 这里刻意不再放 speculative_decode / ears：
+#   1. 当前投机策略由 vLLM ``--speculative-config`` 直接表达，MTP/DFlash/Eagle3/suffix
+#      的选择在 vllm_adapter 中完成，不需要额外安装 EARS runtime patch；
+#   2. 线上 install.py 已切换为 ``--config`` 必填，旧的 runtime-deps / ears 安装命令会
+#      失败并造成“看似启用补丁、实际未生效”的误判；
+#   3. 是否启用投机、失败后是否回退，由 advanced_features.json 和 fallback 启动脚本收口。
 _FEATURE_SWITCH_MAP: dict[str, str] = {
     # ENABLE_SPARSE 已从此映射移除，IndexCache 补丁通过动态 feature 聚合安装。
 }
@@ -93,10 +98,12 @@ _PATCH_FEATURE_STATUS_KEYS: dict[str, str] = {
     "indexcache": "sparse_kv",
 }
 
-# 引擎到 LMCache 安装目标的映射
-# 当 ENABLE_KV_OFFLOAD=true 时，Ascend 通过 install.py --config 安装固定版本包，
-# NVIDIA 暂时保留 install.py --lmcache-target <target> 安装方式；
-# DeepSeek-V4-Pro on vllm_ascend 不走此路径；DeepSeek-V4-Flash 0.21 需要安装 LMCache。
+# 引擎到 LMCache 安装目标的映射。
+# 注意：这只是“允许安装”的平台映射，不代表所有 ENABLE_KV_OFFLOAD=true 都会安装。
+# _resolve_lmcache_install_target 会先排除 native backend、MemCache、NVIDIA 镜像内置运行时、
+# auto 容量熔断等互斥路径；只有最终确认为 LMCache patch 承担卸载时才渲染安装片段。
+# Ascend 当前通过 install.py --config 安装固定包，NVIDIA/vLLM DAY0 场景则由镜像或 native
+# ``--kv-offloading-backend`` 承担，不再执行 nvidia-x86 LMCache patch 安装。
 _ENGINE_LMCACHE_TARGET_MAP = {
     "vllm": "nvidia-x86",
     "vllm_ascend": "ascend-arm",
@@ -523,7 +530,13 @@ def _collect_indexcache_patch_features(engine: str, merged: dict) -> list[str]:
 
 
 def _collect_required_patch_features(engine: str, merged: dict) -> list[str]:
-    """Collect all install.py --features entries that must be installed together."""
+    """收集仍需要走 ``install.py --features`` 的补丁特性。
+
+    目前自动聚合只保留 IndexCache 等真正需要 patch 的能力。投机解码不在这里：
+    DFlash/Eagle3/MTP/suffix 都由 vLLM 命令行参数表达；若未来某个投机能力确实需要
+    runtime patch，也必须先补齐 install.py 的新接口和失败回退语义，不能恢复旧的
+    EARS/runtime-deps 调用。
+    """
     features = []
     features.extend(_collect_enabled_features())
     features.extend(_collect_indexcache_patch_features(engine, merged))
@@ -591,9 +604,10 @@ def _build_accel_preamble(engine: str, merged: dict) -> str:
     """若 Accel 加速功能已开启，生成容错的 shell 安装片段；否则返回空字符串。
 
     安装策略（容错）：
-      1. LMCache KV 卸载（ENABLE_KV_OFFLOAD）使用平台对应命令独立安装
+      1. LMCache KV 卸载（ENABLE_KV_OFFLOAD）先经 _resolve_lmcache_install_target 判定
+         是否真的需要安装；native/MemCache/NVIDIA 镜像内置运行时等互斥路径会直接跳过
       2. IndexCache（KV 稀疏 + IndexCache 架构）使用 --features indexcache 安装
-      3. 其他高级特性继续走 --features 路径
+      3. 其他高级特性继续走 --features 路径；投机解码不走补丁安装
       4. 先尝试批量安装所有特性
       5. 若批量安装失败（install.py exit 非零），回退到逐特性安装
       6. 单个特性安装失败时记录警告并跳过，继续安装其余特性

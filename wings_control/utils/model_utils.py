@@ -66,7 +66,12 @@ def _as_lower_tuple(value) -> tuple[str, ...]:
 
 
 def _normalize_match_rows(rows) -> tuple[dict, ...]:
-    """Normalize model/card matching fields while retaining row metadata."""
+    """规整白名单匹配字段，同时保留整行元数据。
+
+    白名单里有些字段允许写成字符串或列表；统一小写 tuple 后，匹配逻辑才能做到
+    “用户传全大写/大小写混合模型名也能命中”。这里不改写原始元数据字段，例如
+    draft_method、mtp_num_speculative_tokens、backend 等仍保持原值，供下游渲染使用。
+    """
     normalized = []
     for row in rows or ():
         if not isinstance(row, dict):
@@ -125,7 +130,13 @@ def _model_source_text(source: Optional[dict]) -> str:
 
 
 def is_kimi_k26_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
-    """识别 Kimi-K2.6-W4A8，仅服务 vllm_ascend 0.21 DAY0 适配。"""
+    """识别 Kimi-K2.6-W4A8，仅服务 vllm_ascend 0.21 DAY0 适配。
+
+    匹配基于 ``model_name`` / ``model_path`` 的小写文本，因此用户传
+    ``KIMI-K2.6-W4A8``、``Kimi-K2.6-w4a8`` 或路径中包含该片段都能命中。
+    但这里刻意要求完整 ``k2.6-w4a8`` 后缀，不用更宽的 ``kimi-k2``，避免把
+    K2.5/K2.7 或非 W4A8 权重误带入 DFlash/MemCache DAY0 特例。
+    """
     if engine and engine != "vllm_ascend":
         return False
     text = _model_source_text(source)
@@ -133,7 +144,12 @@ def is_kimi_k26_family(source: Optional[dict], engine: Optional[str] = None) -> 
 
 
 def is_kimi_k27_code_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
-    """识别 Kimi-K2.7-Code-w4a8；该模型只允许 MemCache offload，不启用自动 spec。"""
+    """识别 Kimi-K2.7-Code-w4a8；该模型只允许 MemCache offload，不启用自动 spec。
+
+    这里同样使用大小写不敏感的完整后缀匹配。K2.7 Code 与普通 K2.7/K2.6 的
+    投机策略不同：即使页面打开 speculative decode，也不应走 suffix 兜底，
+    因此 SmartFeature 收口层会用这个 helper 明确关闭自动 spec。
+    """
     if engine and engine != "vllm_ascend":
         return False
     return "kimi-k2.7-code-w4a8" in _model_source_text(source)
@@ -606,6 +622,9 @@ def is_minimax_m3_rtx_pro_5000_vllm(source: Optional[dict], engine: Optional[str
 
     只命中官方模型名自带精度后缀的 ``MiniMax-M3-MXFP8``，不把泛化的
     MiniMax-M3 名称纳入，避免误用本场景的 native offload 与 suffix token。
+    这个 helper 同时被 defaults、reasoning parser gating、native offload、
+    spec whitelist 相关路径复用，目的是让“精确模型名 + 精确卡型 + 精确引擎”
+    这条边界只维护一处，后续不要在各文件中重新用字符串散写一遍。
     """
     src = source or {}
     eff_engine = engine or src.get("engine")

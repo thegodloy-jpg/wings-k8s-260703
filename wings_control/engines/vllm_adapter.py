@@ -3222,7 +3222,13 @@ def _build_vllm_cmd_parts(params: Dict[str, Any]) -> str:
 
 
 def _normalize_speculative_draft_path(value: Any) -> str:
-    """Return a real draft path, or empty string for no-draft sentinel values."""
+    """规整页面传入的 draft 路径，只把真实路径交给非 MTP/suffix 策略。
+
+    页面或环境变量可能把“未配置 draft”表达成 None、空串、"none"、"null"，
+    也可能带一层引号。这里统一折叠为空字符串，后续 DFlash/Eagle3 等 draft
+    方法看到空字符串时必须回落 suffix，不能因为模型命中了白名单就凭空渲染
+    ``method=dflash`` 或 ``method=eagle3``。
+    """
     if value is None:
         return ""
     raw = str(value).strip()
@@ -3239,7 +3245,13 @@ def _normalize_speculative_draft_path(value: Any) -> str:
 
 
 def _draft_path_has_positive_token(draft_path: str, token: str) -> bool:
-    """判断 draft path 是否包含正向独立 token，避免 NonDFlash 误触发。"""
+    """判断 draft path 是否包含正向独立 token，避免 NonDFlash 误触发。
+
+    DFlash 的能力来源是白名单，但最终是否渲染 dflash 还要看用户传入的 draft
+    路径是否真指向 DFlash 权重。这里按路径分隔符、点、下划线、短横线、空白切词，
+    并排除 ``non/not/no/without + dflash`` 这类负向命名，避免
+    ``NonDFlash``、``without-dflash`` 被误判成有效 DFlash draft。
+    """
     tokens = [
         item
         for item in re.split(r"[/\\._\-\s]+", draft_path.lower())
@@ -3255,7 +3267,13 @@ def _draft_path_has_positive_token(draft_path: str, token: str) -> bool:
 
 
 def _whitelist_draft_method(row: Optional[dict]) -> str:
-    """从白名单读取 draft 方法；未声明则不启用非 MTP/suffix 策略。"""
+    """从白名单读取 draft 方法；未声明则不启用非 MTP/suffix 策略。
+
+    ``smart_feature_whitelist.json`` 只声明“该模型/卡型允许某类 draft 能力”，
+    不能替代用户提供真实 draft 权重。MTP 和 suffix 不是外置 draft 权重路径，
+    因此这里会过滤掉它们，只把 DFlash/Eagle3 这类需要 draft path 的方法返回给
+    统一 draft resolver。
+    """
     if not row:
         return ""
     raw_method = row.get("draft_method")
@@ -3266,7 +3284,16 @@ def _whitelist_draft_method(row: Optional[dict]) -> str:
 
 
 def _resolve_whitelist_draft_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
-    """命中白名单 draft 配方且提供真实 draft path 时返回该行，否则走 suffix。"""
+    """命中白名单 draft 配方且提供真实 draft path 时返回该行，否则走 suffix。
+
+    这是 Kimi DFlash、MiniMax Eagle3 等非 MTP draft 策略的统一入口：
+    - 白名单未命中：说明当前模型/卡型没有被授权使用该 draft 方法；
+    - draft path 为空或是 none/null：说明用户没有提供真实草稿权重；
+    - DFlash path 未包含正向 dflash token：说明虽然传了路径，但与白名单 recipe 不符。
+
+    以上任一情况都返回 None，交给上层继续走 MTP 或 suffix，避免“白名单能力”
+    被误解成“无 draft 也必须渲染高级投机方法”。
+    """
     row = resolve_feature_whitelist_row_from_params(
         params,
         engine,
@@ -3295,7 +3322,11 @@ def _resolve_whitelist_draft_strategy(params: Dict[str, Any], engine: str) -> st
 
 
 def _resolve_whitelist_draft_tokens(row: dict, method: str) -> int:
-    """读取白名单 draft token；未配置时按方法给出保守默认值。"""
+    """读取白名单 draft token；未配置时按方法给出保守默认值。
+
+    token 数属于具体 draft recipe 的渲染细节，放在白名单行上；缺省时只给
+    保守值，避免因为新增一种 draft 方法时漏配 token 而生成无效 JSON。
+    """
     tokens = _safe_int(row.get("draft_num_speculative_tokens"))
     if tokens is not None and tokens > 0:
         return tokens
@@ -3303,7 +3334,13 @@ def _resolve_whitelist_draft_tokens(row: dict, method: str) -> int:
 
 
 def _build_whitelist_draft_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
-    """按白名单 draft 配方渲染 DFlash/Eagle3 等非 MTP/suffix 配置。"""
+    """按白名单 draft 配方渲染 DFlash/Eagle3 等非 MTP/suffix 配置。
+
+    此函数只处理“已确认有真实 draft 权重”的路径。DFlash 使用平台 recipe 的
+    紧凑 JSON 形态；Eagle3 等其它 draft 方法需要 ``draft_tensor_parallel_size=1``
+    和可选 ``enforce_eager``。如果未来再加非 MTP/suffix 的 draft 策略，也应先在
+    白名单声明 method/path/token，再复用这里，而不是在模型分支里再写一套。
+    """
     row = _resolve_whitelist_draft_row(params, engine)
     if not row:
         return ""
@@ -3437,7 +3474,18 @@ def _lmcache_requires_suffix_speculative_strategy(
     engine: str,
     model_info: ModelIdentifier,
 ) -> bool:
-    """Return True when effective LMCache offload should force suffix over MTP."""
+    """判断有效 LMCache offload 是否需要把 MTP 降级为 suffix。
+
+    历史上 LMCacheConnectorV1 与部分 MTP 路径不兼容，因此默认规则是：
+    “真正走 LMCache connector 的 offload 场景，把 MTP 降级到 suffix”。但近期 DAY0
+    适配里出现了几类不能简单降级的互斥/例外：
+    - native ``--kv-offloading-backend`` 与 MTP 共存，不经过 LMCache connector；
+    - DeepSeek-V4-Flash 的 AscendStore/LMCacheAscend 动态 connector 明确允许 MTP；
+    - MemCache Hybrid 使用 AscendStoreConnector，不是会触发 suffix 的 LMCacheConnector；
+    - auto 容量熔断时实际没有 offload 后端，也不能因为用户请求过 offload 就降级。
+
+    因此这里按“最终实际后端”判断，而不是只看 ENABLE_KV_OFFLOAD 原始开关。
+    """
     if not _is_kv_offload_requested(params):
         return False
     if not _is_offload_feature_effective(params, engine):
@@ -3503,7 +3551,12 @@ def _resolve_draft_speculative_strategy(
     params: Dict[str, Any],
     engine: str,
 ) -> str:
-    """仅在白名单声明 draft method 且传入真实 draft path 时返回策略。"""
+    """仅在白名单声明 draft method 且传入真实 draft path 时返回策略。
+
+    该函数是 ``resolve_speculative_strategy`` 的 draft 分支探针。返回空字符串不代表
+    投机关闭，只表示“没有可渲染的高级 draft 方法”，上层会继续尝试 MTP，最后再
+    回到 suffix。这样 Kimi DFlash/Eagle3 的适配不会破坏原有的 suffix 兜底语义。
+    """
     draft_path = params.get("speculative_decode_model_path")
     raw_lower = str(draft_path).strip().lower() if draft_path else ""
     logger.info(
@@ -3540,7 +3593,18 @@ def _spec_feature_is_allowed(params: Dict[str, Any], engine: str) -> bool:
 
 
 def resolve_speculative_strategy(params: Dict[str, Any], engine: str) -> str:
-    """Return the speculative decoding strategy selected for vLLM."""
+    """选择最终投机策略名称，按“精确能力优先，suffix 兜底”的顺序收口。
+
+    选择顺序必须保持稳定：
+    1. Kimi K2.6 先检查 DFlash 白名单 + 真实 draft path；无 draft 时明确回 suffix；
+    2. 白名单 MTP 覆盖逐场景 token / moe_backend 等细节；
+    3. DFlash/Eagle3 等 draft 白名单只有在 path 有效时才生效；
+    4. 架构级 MTP 仍受 SmartFeature spec/offload gating 约束；
+    5. 其它所有可投机场景统一 suffix 兜底。
+
+    这个顺序保证“白名单是能力来源”，但最终命令仍由用户是否提供 draft、是否开启
+    offload、是否命中 spec 有效状态共同决定。
+    """
     if engine not in ("vllm", "vllm_ascend"):
         return ""
 
@@ -3682,7 +3746,13 @@ def _build_mtp_speculative_cmd(
     model_info: ModelIdentifier,
     strategy: str,
 ) -> str:
-    """构建已经选定 MTP 策略后的 speculative-config。"""
+    """构建已经选定 MTP 策略后的 speculative-config。
+
+    MTP 有两类来源：白名单逐场景 recipe，以及架构级默认 MTP。白名单行优先，
+    因为它可以精确控制 ``num_speculative_tokens``、``moe_backend``、``enforce_eager``；
+    没有白名单行时才回到架构默认 token 规则。这里不处理 DFlash/Eagle3，
+    因为它们必须先验证真实 draft path。
+    """
     row = _mtp_whitelist_override_row(params, engine)
     if row:
         tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
@@ -3739,6 +3809,11 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     根据模型架构自动选择最优的推测解码策略：
     1. MTP 白名单逐场景覆盖；2. 白名单 draft 配方 → dflash/eagle3；
     3. 架构 MTP（受 spec/offload gate 约束）；4. 其他 → suffix。
+
+    注意：这里不再按模型名直接拼 DFlash/Eagle3。模型名和卡型只负责命中白名单，
+    是否真正渲染高级 draft 方法由 ``resolve_speculative_strategy`` 和
+    ``_build_whitelist_draft_speculative_cmd`` 二次确认。这样无 draft、错误 draft、
+    或未命中白名单的场景都会自然走 suffix，不需要每个模型单独写 fallback。
 
     Args:
         params: 参数字典

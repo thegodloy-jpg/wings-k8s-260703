@@ -1699,6 +1699,10 @@ def _set_kv_cache_config(params, ctx, model_info=None):
         lmcache_offload = "offload" in ctx.get("_smart_feats")
 
     if lmcache_offload and resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) == "native":
+        # native backend 是 vLLM CLI 层的 ``--kv-offloading-backend native``，
+        # 与 ``kv_transfer_config`` 里的 LMCacheConnector/MemCacheConnector 互斥。
+        # 这里早退是为了让白名单 backend=native 成为唯一能力来源；否则后续通用
+        # LMCache 分支会再注入 kv_transfer_config，最终命令同时带两套卸载后端。
         params.pop("kv_transfer_config", None)
         logger.info(
             "[KVCache Offload] offload whitelist uses native --kv-offloading-backend; "
@@ -1832,7 +1836,13 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 def _enforce_native_offload_no_kv_transfer_config(
     engine_config: Dict[str, Any], ctx: Dict[str, Any],
 ) -> None:
-    """Keep exact native whitelist rows mutually exclusive with LMCache connectors."""
+    """最终兜底：native 白名单场景必须和 LMCache/MemCache connector 互斥。
+
+    ``_set_kv_cache_config`` 会在标准流程里避免注入 connector，但用户 config、
+    默认配置或历史字段仍可能在更早阶段带入 ``kv_transfer_config``。这里在
+    engine_config 合并后再清一次，确保 backend=native 场景最终只通过
+    ``vllm_adapter._build_kv_offload_cmd`` 生成 CLI，不会残留 connector JSON。
+    """
     if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) != "native":
         return
     smart_feats = ctx.get("_smart_feats")
@@ -2808,76 +2818,121 @@ def _resolve_smart_feature_matches(
     return feats, forced_feats
 
 
+@dataclass
+class _SmartFeatureEffectContext:
+    """SmartFeature 生效阶段的共享上下文。
+
+    这组字段在 spec / sparse / offload 三个 helper 中必须保持同源：
+    - ``p`` 是最终会继续向下游传递的 merged params，helper 会原地回写有效开关；
+    - ``feats`` / ``forced_feats`` 来自同一次白名单解析，不能在各 helper 内重复查询，
+      否则可能因环境变量或硬件解析时机不同导致三类特性看到的能力边界不一致；
+    - ``effective_feats`` 是最终写入 ``p["_smart_feats"]`` 的集合，也是后续 adapter、
+      startup status、KV offload env/CLI 判断的有效状态来源；
+    - ``engine`` / ``card`` 只用于一致的日志和少量模型特例判断。
+
+    用一个具名 context 收束这些强相关参数，既满足静态规则对参数个数的要求，
+    也避免把三类特性的判定拆成彼此独立、容易漂移的局部状态。
+    """
+
+    p: Dict[str, Any]
+    effective_feats: set
+    feats: set
+    forced_feats: set
+    engine: str
+    card: str
+
+
 def _apply_sparse_feature_effect(
-    p: Dict[str, Any],
-    feats: set,
-    forced_feats: set,
-    effective_feats: set,
-    engine: str,
-    card: str,
+    context: _SmartFeatureEffectContext,
 ) -> Tuple[bool, bool]:
+    """收口 sparse/indexcache 的有效开关。
+
+    sparse 是严格的“白名单收窄”特性：页面请求必须命中 whitelist，或 forced
+    白名单显式打开，才会回写为有效。未命中时要同步把环境变量置 false，
+    防止下游仅凭 ENABLE_SPARSE/SPARSE_ENABLE 绕过 SmartFeature 收口。
+    """
+    p = context.p
+    feats = context.feats
+    forced_feats = context.forced_feats
     sparse_req = bool(p.get("enable_sparse"))
     sparse_eff = (sparse_req and "sparse" in feats) or "sparse" in forced_feats
     p["enable_sparse"] = sparse_eff
     os.environ["ENABLE_SPARSE"] = os.environ["SPARSE_ENABLE"] = "true" if sparse_eff else "false"
     if sparse_eff:
-        effective_feats.add("sparse")
+        context.effective_feats.add("sparse")
     if sparse_req and not sparse_eff:
         logger.info(
             "[SmartFeature] sparse requested but not in whitelist (engine=%s card=%s) "
             "-> suppressed (ENABLE_SPARSE=false)",
-            engine, card or "(empty)",
+            context.engine, context.card or "(empty)",
         )
     return sparse_req, sparse_eff
 
 
 def _apply_offload_feature_effect(
-    feats: set,
-    forced_feats: set,
-    effective_feats: set,
-    engine: str,
-    card: str,
+    context: _SmartFeatureEffectContext,
 ) -> Tuple[bool, bool]:
+    """收口 KV offload 的有效开关。
+
+    offload 的请求源仍来自历史环境变量入口 ``get_lmcache_env()``，但最终是否生效
+    以 whitelist/forced whitelist 为准。这里同步维护 ENABLE_KV_OFFLOAD 和
+    LMCACHE_OFFLOAD，是为了让后续 native、LMCache、MemCache 三条路径只消费同一个
+    已收口状态，而不是各自重新解释页面开关。
+    """
+    feats = context.feats
+    forced_feats = context.forced_feats
     offload_req = get_lmcache_env()
     offload_eff = (offload_req and "offload" in feats) or "offload" in forced_feats
     if offload_eff:
         os.environ["ENABLE_KV_OFFLOAD"] = "true"
         os.environ["LMCACHE_OFFLOAD"] = "true"
-        effective_feats.add("offload")
+        context.effective_feats.add("offload")
     elif offload_req and "offload" not in feats:
         os.environ["ENABLE_KV_OFFLOAD"] = "false"
         os.environ["LMCACHE_OFFLOAD"] = "false"
         logger.info(
             "[SmartFeature] offload requested but not in whitelist (engine=%s card=%s) "
             "-> suppressed (ENABLE_KV_OFFLOAD=false)",
-            engine, card or "(empty)",
+            context.engine, context.card or "(empty)",
         )
     return offload_req, offload_eff
 
 
 def _apply_spec_feature_effect(
-    p: Dict[str, Any],
-    feats: set,
-    forced_feats: set,
-    effective_feats: set,
-    engine: str,
-    card: str,
+    context: _SmartFeatureEffectContext,
 ) -> Tuple[bool, bool, bool]:
+    """收口 speculative decode 的有效开关。
+
+    spec 与 sparse/offload 不完全相同：用户请求了投机但未命中 MTP/DFlash/Eagle 等
+    精确白名单时，仍允许 ENABLE_SPECULATIVE_DECODE=true 继续向下游传递，由
+    vllm_adapter 的统一策略回落到 suffix。这样可以保留“未命中高级投机能力时仍可
+    用 suffix 兜底”的产品语义，同时只有真正命中白名单的场景才写入 ``_smart_feats``。
+
+    Kimi K2.7 Code 是例外：当前 DAY0 规则明确不做自动投机，因此即便页面请求了 spec，
+    这里也会在收口层关闭，避免后续 suffix fallback 误把它当成可投机场景。
+    """
+    p = context.p
+    feats = context.feats
+    forced_feats = context.forced_feats
     spec_req = bool(p.get("enable_speculative_decode"))
     spec_whitelisted = "spec" in feats or "spec" in forced_feats
     spec_eff = spec_req or "spec" in forced_feats
-    if engine == "vllm_ascend" and is_kimi_k27_code_family(p, engine) and spec_eff:
+    if (
+        context.engine == "vllm_ascend"
+        and is_kimi_k27_code_family(p, context.engine)
+        and spec_eff
+    ):
         logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
         spec_eff = False
     p["enable_speculative_decode"] = spec_eff
     os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
     if spec_eff and spec_whitelisted:
-        effective_feats.add("spec")
+        context.effective_feats.add("spec")
     if spec_req and not spec_whitelisted:
         logger.info(
             "[SmartFeature] spec requested but not in whitelist (engine=%s card=%s) "
             "-> suffix fallback (ENABLE_SPECULATIVE_DECODE=true)",
-            engine, card or "(empty)",
+            context.engine, context.card or "(empty)",
         )
     return spec_req, spec_eff, spec_whitelisted
 
@@ -2909,16 +2964,21 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     _warn_unresolved_ascend_smart_card(engine, card)
     feats, forced_feats = _resolve_smart_feature_matches(p, engine, card)
     effective_feats = set()
+    # 三类特性的判定必须共享同一批白名单结果和同一个 effective 集合：
+    # sparse/offload/spec 的差异在各 helper 内处理，但最终状态统一沉淀到
+    # p["_smart_feats"]，供 adapter、advanced_features.json 和 dry-run verifier 消费。
+    feature_context = _SmartFeatureEffectContext(
+        p=p,
+        effective_feats=effective_feats,
+        feats=feats,
+        forced_feats=forced_feats,
+        engine=engine,
+        card=card,
+    )
 
-    sparse_req, sparse_eff = _apply_sparse_feature_effect(
-        p, feats, forced_feats, effective_feats, engine, card,
-    )
-    offload_req, offload_eff = _apply_offload_feature_effect(
-        feats, forced_feats, effective_feats, engine, card,
-    )
-    spec_req, _, spec_whitelisted = _apply_spec_feature_effect(
-        p, feats, forced_feats, effective_feats, engine, card,
-    )
+    sparse_req, sparse_eff = _apply_sparse_feature_effect(feature_context)
+    offload_req, offload_eff = _apply_offload_feature_effect(feature_context)
+    spec_req, _, spec_whitelisted = _apply_spec_feature_effect(feature_context)
     p["_smart_feats"] = sorted(effective_feats)
 
     logger.info(
