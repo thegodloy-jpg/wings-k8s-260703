@@ -2030,43 +2030,11 @@ def _build_glm5_model_env(params: Dict[str, Any], arch: str) -> List[str]:
     return env_commands
 
 
-def _build_model_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
-    """构建模型架构特定的环境变量命令（支持 NVIDIA 和 Ascend）。
-
-    根据模型架构注入引擎官方文档推荐的环境变量。
-
-    已覆盖的 Ascend 架构:
-    - Glm4MoeForCausalLM (GLM-4.7): TOPK 优化, FlashComm, Fused MC2
-    - GlmMoeDsaForCausalLM (GLM-5/5.1): DSA MTP 基础运行时变量
-    - Qwen3_5ForConditionalGeneration (Qwen3.5-27B): TASK_QUEUE_ENABLE
-    - Qwen3_5MoeForConditionalGeneration (Qwen3.5-397B): TASK_QUEUE_ENABLE
-    - MiniMaxM2ForCausalLM (MiniMax-M2.5): FlashComm
-    - DeepseekV32ForCausalLM (DeepSeek V3.2): MLAPO, FlashComm, VLLM_USE_V1
-    - LlamaForCausalLM (LLaMA3.1-70B): 基础 NPU 内存/线程优化
-
-    Args:
-        params: 参数字典
-        engine: 引擎类型
-
-    Returns:
-        List[str]: 环境变量导出命令列表
-    """
-    if engine not in ("vllm", "vllm_ascend"):
-        return []
-
-    model_path = params.get("model_path")
-    if not model_path:
-        return []
-
-    model_info = ModelIdentifier(
-        params.get("model_name"),
-        params.get("model_path"),
-        params.get("model_type")
-    )
-    arch = model_info.model_architecture
-
-    # [Qwen3.5-397B-A17B-NVFP4] 运行时配方：注入全部四个 env
-    # 这些 env 必须在 vllm 进程启动前 export，故写入 start_command.sh 的 env 段。
+def _build_nvidia_model_env_commands(
+    params: Dict[str, Any],
+    engine: str,
+    arch: str,
+) -> Optional[List[str]]:
     if is_qwen3_5_397b_nvfp4_vllm(params, engine):
         logger.info("[NVFP4] inject FP4 runtime env (deep_gemm/flashinfer_moe) for %s on vllm", arch)
         return [
@@ -2075,53 +2043,67 @@ def _build_model_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
             'export VLLM_FLASHINFER_MOE_BACKEND=latency',
             'export VLLM_USE_FLASHINFER_MOE_FP4=1',
         ]
-
-    # [MiniMax-M2.7 + RTX-PRO-5000] 运行时配方：注入 LMCache env 集
-    # （LMCACHE_* / VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS 等，与 minimax-2.7-zyy.txt 对齐）。
-    # 这些 env 必须在 vllm 进程启动前 export，故写入 start_command.sh 的 env 段；
-    # _build_cache_env_commands 的通用 LMCache 流程已对本场景跳过，由本分支接管。
     if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
         logger.info("[MiniMax-M2.7] inject LMCache runtime env for %s on vllm (RTX-PRO-5000)", arch)
         return _build_minimax_m27_rtx_pro_5000_env_commands(params)
-
-    # MiniMax-M3-MXFP8 是 Pro 5000 native offload 场景：这里只注入官方启动
-    # 所需的 vLLM V1/PYTHONHASHSEED env，pip/arctic-inference 属于镜像前置，
-    # LMCache env 与补丁安装均不得套用 MiniMax-M2.7 的 LMCache 配方。
     if is_minimax_m3_rtx_pro_5000_vllm(params, engine):
         logger.info("[MiniMax-M3] inject native-offload runtime env for %s on vllm (RTX-PRO-5000)", arch)
         return [
             "export VLLM_USE_V1=1",
             "export PYTHONHASHSEED=0",
         ]
+    return None
 
-    if engine == "vllm_ascend" and _is_deepseek_v4_flash_params(params, model_info):
-        return _build_deepseek_v4_flash_env(params)
-    if engine == "vllm_ascend" and is_deepseek_v4_pro_adapted_scope(params, model_info):
-        return _build_deepseek_v4_pro_env(params)
 
-    if engine == "vllm_ascend":
-        _arch_env_builders = {
-            "Glm4MoeForCausalLM": _build_glm4moe_ascend_env,
-            "GlmMoeDsaForCausalLM": _build_glm5_ascend_env,
-            "Qwen3ForCausalLM": _build_qwen3_ascend_env,
-            "Qwen3_5ForConditionalGeneration": _build_qwen35_ascend_env,
-            "Qwen3_5MoeForConditionalGeneration": _build_qwen35moe_ascend_env,
-            "MiniMaxM2ForCausalLM": _build_minimaxm2_ascend_env,
-            "DeepseekV32ForCausalLM": _build_deepseekv32_ascend_env,
-            "LlamaForCausalLM": _build_llama_ascend_env,
-            "KimiK25ForConditionalGeneration": _build_kimik25_ascend_env,
-        }
-    else:
-        _arch_env_builders = {}
-
-    builder = _arch_env_builders.get(arch)
+def _build_ascend_arch_model_env_commands(params: Dict[str, Any], arch: str) -> List[str]:
+    builders = {
+        "Glm4MoeForCausalLM": _build_glm4moe_ascend_env,
+        "GlmMoeDsaForCausalLM": _build_glm5_ascend_env,
+        "Qwen3ForCausalLM": _build_qwen3_ascend_env,
+        "Qwen3_5ForConditionalGeneration": _build_qwen35_ascend_env,
+        "Qwen3_5MoeForConditionalGeneration": _build_qwen35moe_ascend_env,
+        "MiniMaxM2ForCausalLM": _build_minimaxm2_ascend_env,
+        "DeepseekV32ForCausalLM": _build_deepseekv32_ascend_env,
+        "LlamaForCausalLM": _build_llama_ascend_env,
+        "KimiK25ForConditionalGeneration": _build_kimik25_ascend_env,
+    }
+    builder = builders.get(arch)
     if not builder:
         return []
-    # GLM-5 (GlmMoeDsaForCausalLM) 在 A3 上需要追加 VLLM_ASCEND_ENABLE_MLAPO=1，
-    # 与 vllm-ascend W8A8 官方双机命令对齐；其它架构构造器签名不变。
-    if engine == "vllm_ascend" and arch == "GlmMoeDsaForCausalLM":
+    if arch == "GlmMoeDsaForCausalLM":
         return _build_glm5_model_env(params, arch)
     return builder(arch)
+
+
+def _build_ascend_model_env_commands(
+    params: Dict[str, Any],
+    model_info: ModelIdentifier,
+    arch: str,
+) -> List[str]:
+    if _is_deepseek_v4_flash_params(params, model_info):
+        return _build_deepseek_v4_flash_env(params)
+    if is_deepseek_v4_pro_adapted_scope(params, model_info):
+        return _build_deepseek_v4_pro_env(params)
+    return _build_ascend_arch_model_env_commands(params, arch)
+
+
+def _build_model_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
+    """Build model-specific environment exports for vLLM and vLLM-Ascend."""
+    if engine not in ("vllm", "vllm_ascend") or not params.get("model_path"):
+        return []
+
+    model_info = ModelIdentifier(
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("model_type"),
+    )
+    arch = model_info.model_architecture
+    nvidia_env = _build_nvidia_model_env_commands(params, engine, arch)
+    if nvidia_env is not None:
+        return nvidia_env
+    if engine != "vllm_ascend":
+        return []
+    return _build_ascend_model_env_commands(params, model_info, arch)
 
 
 def _build_env_commands(params: Dict[str, Any], current_ip: str, network_interface: str, root: str) -> List[str]:
@@ -3259,7 +3241,8 @@ def _normalize_speculative_draft_path(value: Any) -> str:
 def _draft_path_has_positive_token(draft_path: str, token: str) -> bool:
     """判断 draft path 是否包含正向独立 token，避免 NonDFlash 误触发。"""
     tokens = [
-        item for item in re.split(r"[/\\._\-\s]+", draft_path.lower())
+        item
+        for item in re.split(r"[/\\._\-\s]+", draft_path.lower())
         if item
     ]
     expected = token.lower()

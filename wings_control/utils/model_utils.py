@@ -55,6 +55,7 @@ _SMART_WHITELIST_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "smart_feature_whitelist.json"
 )
 
+
 def _as_lower_tuple(value) -> tuple[str, ...]:
     """将白名单中的字符串/列表字段统一规整为小写 tuple。"""
     if value is None:
@@ -62,6 +63,7 @@ def _as_lower_tuple(value) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value.lower(),)
     return tuple(str(item).lower() for item in value)
+
 
 def _normalize_match_rows(rows) -> tuple[dict, ...]:
     """Normalize model/card matching fields while retaining row metadata."""

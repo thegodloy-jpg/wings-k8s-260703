@@ -2760,6 +2760,126 @@ def _apply_engine_runtime_flags(cmd_known_params: Dict[str, Any]) -> None:
     _set_metrics_config(cmd_known_params)
 
 
+_SMART_PD_VETO_ENVS = (
+    "ENABLE_SPARSE",
+    "SPARSE_ENABLE",
+    "ENABLE_SPECULATIVE_DECODE",
+    "SD_ENABLE",
+    "ENABLE_KV_OFFLOAD",
+    "LMCACHE_OFFLOAD",
+)
+
+
+def _apply_smart_feature_pd_veto(p: Dict[str, Any]) -> bool:
+    """Disable smart features in PD mode and report whether the veto applied."""
+    if not get_pd_role_env():
+        return False
+    p["enable_sparse"] = False
+    p["enable_speculative_decode"] = False
+    p["_allowed_smart_feats"] = []
+    p["_smart_feats"] = []
+    p["_forced_smart_feats"] = []
+    for env_name in _SMART_PD_VETO_ENVS:
+        os.environ[env_name] = "false"
+    logger.info("[SmartFeature] PD role detected -> veto: spec/sparse/offload all disabled")
+    return True
+
+
+def _warn_unresolved_ascend_smart_card(engine: str, card: str) -> None:
+    if engine != "vllm_ascend" or card:
+        return
+    logger.warning(
+        "[SmartFeature] card_token unresolved on Ascend; Smart whitelist (910b/910c rows) "
+        "will all miss -> spec/sparse/offload suppressed. Set hardware_info.json "
+        "details[0].name or ENGINE_VERSION platform suffix (需求一 §0.1#2 / §C.5)."
+    )
+
+
+def _resolve_smart_feature_matches(
+    p: Dict[str, Any],
+    engine: str,
+    card: str,
+) -> Tuple[set, set]:
+    name, path = p.get("model_name"), p.get("model_path")
+    feats = resolve_feature_whitelist(engine, name, path, card)
+    forced_feats = resolve_forced_feature_whitelist(engine, name, path, card)
+    p["_allowed_smart_feats"] = sorted(feats)
+    p["_forced_smart_feats"] = sorted(forced_feats)
+    return feats, forced_feats
+
+
+def _apply_sparse_feature_effect(
+    p: Dict[str, Any],
+    feats: set,
+    forced_feats: set,
+    effective_feats: set,
+    engine: str,
+    card: str,
+) -> Tuple[bool, bool]:
+    sparse_req = bool(p.get("enable_sparse"))
+    sparse_eff = (sparse_req and "sparse" in feats) or "sparse" in forced_feats
+    p["enable_sparse"] = sparse_eff
+    os.environ["ENABLE_SPARSE"] = os.environ["SPARSE_ENABLE"] = "true" if sparse_eff else "false"
+    if sparse_eff:
+        effective_feats.add("sparse")
+    if sparse_req and not sparse_eff:
+        logger.info(
+            "[SmartFeature] sparse requested but not in whitelist (engine=%s card=%s) "
+            "-> suppressed (ENABLE_SPARSE=false)",
+            engine, card or "(empty)",
+        )
+    return sparse_req, sparse_eff
+
+
+def _apply_offload_feature_effect(
+    feats: set,
+    forced_feats: set,
+    effective_feats: set,
+    engine: str,
+    card: str,
+) -> Tuple[bool, bool]:
+    offload_req = get_lmcache_env()
+    offload_eff = (offload_req and "offload" in feats) or "offload" in forced_feats
+    if offload_eff:
+        os.environ["ENABLE_KV_OFFLOAD"] = "true"
+        os.environ["LMCACHE_OFFLOAD"] = "true"
+        effective_feats.add("offload")
+    elif offload_req and "offload" not in feats:
+        os.environ["ENABLE_KV_OFFLOAD"] = "false"
+        os.environ["LMCACHE_OFFLOAD"] = "false"
+        logger.info(
+            "[SmartFeature] offload requested but not in whitelist (engine=%s card=%s) "
+            "-> suppressed (ENABLE_KV_OFFLOAD=false)",
+            engine, card or "(empty)",
+        )
+    return offload_req, offload_eff
+
+
+def _apply_spec_feature_effect(
+    p: Dict[str, Any],
+    feats: set,
+    forced_feats: set,
+    effective_feats: set,
+    engine: str,
+    card: str,
+) -> Tuple[bool, bool, bool]:
+    spec_req = bool(p.get("enable_speculative_decode"))
+    spec_whitelisted = "spec" in feats or "spec" in forced_feats
+    spec_eff = spec_req or "spec" in forced_feats
+    if engine == "vllm_ascend" and is_kimi_k27_code_family(p, engine) and spec_eff:
+        logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
+        spec_eff = False
+    p["enable_speculative_decode"] = spec_eff
+    os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
+    if spec_eff and spec_whitelisted:
+        effective_feats.add("spec")
+    if spec_req and not spec_whitelisted:
+        logger.info(
+            "[SmartFeature] spec requested but not in whitelist (engine=%s card=%s) "
+            "-> suffix fallback (ENABLE_SPECULATIVE_DECODE=true)",
+            engine, card or "(empty)",
+        )
+    return spec_req, spec_eff, spec_whitelisted
 
 
 def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str, Any]) -> None:
@@ -2782,85 +2902,23 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     engine = p.get("engine", "")
     card = resolve_card_token(hardware_env)
     p["_smart_card_token"] = card
-    name, path = p.get("model_name"), p.get("model_path")
 
-    # C6 PD 一票否决：三特性全关，仅留 PD connector（US646 暂不支持 PD×高级特性共存）
-    if get_pd_role_env():
-        p["enable_sparse"] = False
-        p["enable_speculative_decode"] = False
-        p["_allowed_smart_feats"] = []
-        p["_smart_feats"] = []
-        p["_forced_smart_feats"] = []
-        for env_name in ("ENABLE_SPARSE", "SPARSE_ENABLE",
-                         "ENABLE_SPECULATIVE_DECODE", "SD_ENABLE",
-                         "ENABLE_KV_OFFLOAD", "LMCACHE_OFFLOAD"):
-            os.environ[env_name] = "false"
-        logger.info("[SmartFeature] PD role detected -> veto: spec/sparse/offload all disabled")
+    if _apply_smart_feature_pd_veto(p):
         return
 
-    # 🔴 Ascend 卡型解析失败 → 整条 910b/910c 白名单必 miss（需求一 §0.1#2 / §C.5 最硬的静默失败点）。
-    #    NV 用 "*" 卡型不受影响，故仅对 vllm_ascend 告警，避免噪音。
-    if engine == "vllm_ascend" and not card:
-        logger.warning(
-            "[SmartFeature] card_token unresolved on Ascend; Smart whitelist (910b/910c rows) "
-            "will all miss -> spec/sparse/offload suppressed. Set hardware_info.json "
-            "details[0].name or ENGINE_VERSION platform suffix (需求一 §0.1#2 / §C.5)."
-        )
-
-    feats = resolve_feature_whitelist(engine, name, path, card)
-    forced_feats = resolve_forced_feature_whitelist(engine, name, path, card)
-    # stash 供产出口（§2.3 resolve_speculative_strategy / LMCache env / connector）复用：
-    # _allowed_smart_feats 记录白名单能力；_smart_feats 记录页面开关+白名单后的有效开启项。
-    p["_allowed_smart_feats"] = sorted(feats)
-    p["_forced_smart_feats"] = sorted(forced_feats)
-
-    # 记录「请求开关」原值，供收口 req->eff 对照日志（排障白名单收窄结果，需求一 §4 状态监控）。
-    sparse_req = bool(p.get("enable_sparse"))
-    spec_req = bool(p.get("enable_speculative_decode"))
-    offload_req = get_lmcache_env()
-
+    _warn_unresolved_ascend_smart_card(engine, card)
+    feats, forced_feats = _resolve_smart_feature_matches(p, engine, card)
     effective_feats = set()
 
-    # 稀疏：有效 = 开关 on AND 命中白名单（无 forced）
-    sparse_eff = (sparse_req and "sparse" in feats) or "sparse" in forced_feats
-    p["enable_sparse"] = sparse_eff
-    os.environ["ENABLE_SPARSE"] = os.environ["SPARSE_ENABLE"] = "true" if sparse_eff else "false"
-    if sparse_eff:
-        effective_feats.add("sparse")
-    if sparse_req and not sparse_eff:
-        logger.info("[SmartFeature] sparse requested but not in whitelist (engine=%s card=%s) "
-                    "-> suppressed (ENABLE_SPARSE=false)", engine, card or "(empty)")
-
-    # 卸载：白名单外收口为关（容量 auto/custom 仍由产出口 _build_cache_env_commands 处理）
-    offload_eff = (offload_req and "offload" in feats) or "offload" in forced_feats
-    if offload_eff:
-        os.environ["ENABLE_KV_OFFLOAD"] = "true"
-        os.environ["LMCACHE_OFFLOAD"] = "true"
-        effective_feats.add("offload")
-    elif offload_req and "offload" not in feats:
-        os.environ["ENABLE_KV_OFFLOAD"] = "false"
-        os.environ["LMCACHE_OFFLOAD"] = "false"   # 过渡期兼容旧 ENV 名
-        logger.info("[SmartFeature] offload requested but not in whitelist (engine=%s card=%s) "
-                    "-> suppressed (ENABLE_KV_OFFLOAD=false)", engine, card or "(empty)")
-
-    # 投机：请求开关控制是否产出 speculative_config；白名单只控制是否允许模型专属 MTP。
-    # miss 时保留 enable_speculative_decode=True，让 adapter 通过 _smart_feats 缺少
-    # "spec" 回落到 suffix 地板，而不是在收口层直接关闭投机。
-    spec_whitelisted = "spec" in feats or "spec" in forced_feats
-    spec_eff = spec_req or "spec" in forced_feats
-    # Kimi-K2.7-Code-w4a8 的 DAY0 证据只包含 MemCache 卸载；即使页面打开投机开关，
-    # 也不能回落到 suffix 或 dflash，避免把 Kimi-K2.6-W4A8 的能力扩散到 Code 变体。
-    if engine == "vllm_ascend" and is_kimi_k27_code_family(p, engine) and spec_eff:
-        logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
-        spec_eff = False
-    p["enable_speculative_decode"] = spec_eff
-    os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
-    if spec_eff and spec_whitelisted:
-        effective_feats.add("spec")
-    if spec_req and not spec_whitelisted:
-        logger.info("[SmartFeature] spec requested but not in whitelist (engine=%s card=%s) "
-                    "-> suffix fallback (ENABLE_SPECULATIVE_DECODE=true)", engine, card or "(empty)")
-
+    sparse_req, sparse_eff = _apply_sparse_feature_effect(
+        p, feats, forced_feats, effective_feats, engine, card,
+    )
+    offload_req, offload_eff = _apply_offload_feature_effect(
+        feats, forced_feats, effective_feats, engine, card,
+    )
+    spec_req, _, spec_whitelisted = _apply_spec_feature_effect(
+        p, feats, forced_feats, effective_feats, engine, card,
+    )
     p["_smart_feats"] = sorted(effective_feats)
 
     logger.info(

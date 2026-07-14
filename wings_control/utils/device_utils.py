@@ -277,6 +277,59 @@ def is_h20_gpu(total_memory: float, tolerance_gb: float = 10.0) -> str:
     return ""
 
 
+def _is_generic_device_name(value: str) -> bool:
+    normalized = (value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+    return normalized in {
+        "",
+        "ascend",
+        "npu",
+        "huawei",
+        "huaweiascend",
+        "nvidia",
+        "gpu",
+        "cuda",
+        "unknown",
+    }
+
+
+def _resolve_hardware_card_name(hardware_env: Dict[str, Any]) -> str:
+    """Prefer concrete details[0].name, then hardware_family."""
+    if not hardware_env:
+        return ""
+    details = hardware_env.get("details") or []
+    if details and isinstance(details[0], dict):
+        detail_name = str(details[0].get("name", "")).strip()
+        if not _is_generic_device_name(detail_name):
+            return detail_name
+    # K8s sidecar may miss count/details but still provide hardware_family.
+    return str(hardware_env.get("hardware_family", "")).strip()
+
+
+def _resolve_nvidia_card_token(name: str) -> str:
+    compact = re.sub(r"[^a-z0-9]+", "", name)
+    if "h20" in compact and "141" in compact:
+        return "h20-141"
+    if "h20" in compact and "96" in compact:
+        return "h20-96"
+    if "rtxpro5000" in compact and "72" in compact:
+        return "rtxpro5000-72"
+    if "rtxpro5000" in compact and "48" in compact:
+        return "rtxpro5000-48"
+    if "rtxpro5000" in compact:
+        return "rtxpro5000-72"
+    return ""
+
+
+def _resolve_platform_card_token() -> str:
+    from core.version_util import engine_version_platform
+    platform = engine_version_platform() or ""
+    if platform == "a3":
+        return "ascend910c"
+    if platform == "a2":
+        return "ascend910b"
+    return ""
+
+
 def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     """返回小写卡型标识，用于 Smart 三特性白名单匹配。
 
@@ -298,48 +351,13 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     Returns:
         str: 小写卡型标识子串，未知返回 ""。
     """
-    def _is_generic_device_name(value: str) -> bool:
-        normalized = (value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
-        return normalized in {"", "ascend", "npu", "huawei", "huaweiascend", "nvidia", "gpu", "cuda", "unknown"}
-
     if hardware_env is None:
         hardware_env = _get_hardware_info()
 
-    name = ""
-    if hardware_env:
-        details = hardware_env.get("details") or []
-        if details and isinstance(details[0], dict):
-            detail_name = str(details[0].get("name", "")).strip()
-            if not _is_generic_device_name(detail_name):
-                name = detail_name
-        # ── 兜底：hardware_info.json 的 hardware_family 字段 ──
-        # K8s sidecar 模式下 hardware_info.json 常缺少 count/details，
-        # 但包含 hardware_family（如 "Ascend910B_64G" → 含 "910b"）。
-        if not name:
-            hw_family = str(hardware_env.get("hardware_family", "")).strip()
-            if hw_family:
-                name = hw_family.lower()
-    name = (name or "").strip().lower()
+    name = _resolve_hardware_card_name(hardware_env).strip().lower()
     if str((hardware_env or {}).get("device") or "").lower() == "nvidia":
-        compact = re.sub(r"[^a-z0-9]+", "", name)
-        if "h20" in compact and "141" in compact:
-            return "h20-141"
-        if "h20" in compact and "96" in compact:
-            return "h20-96"
-        if "rtxpro5000" in compact and "72" in compact:
-            return "rtxpro5000-72"
-        if "rtxpro5000" in compact and "48" in compact:
-            return "rtxpro5000-48"
-        if "rtxpro5000" in compact:
-            return "rtxpro5000-72"
-    if not name:
-        from core.version_util import engine_version_platform
-        platform = engine_version_platform() or ""
-        if platform == "a3":
-            return "ascend910c"
-        if platform == "a2":
-            return "ascend910b"
-    return name
+        return _resolve_nvidia_card_token(name) or name
+    return name or _resolve_platform_card_token()
 
 # ── PCIe 设备检测（lspci，不依赖 torch） ─────────────────────────────────────
 
