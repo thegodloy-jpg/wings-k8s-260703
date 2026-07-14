@@ -246,6 +246,16 @@ def resolve_offload_whitelist_backend(
     返回值只用于区分 ``native`` / ``lmcache`` / ``memcache`` 这类互斥后端。
     不要在这里扩展内存、端口、协议等动态字段；这些值应由对应后端自己的
     resolver 读取页面/env 或代码侧场景默认。
+
+    该函数只在 offload 特性已通过 effective gating 时返回后端：
+    ``require_enabled=True`` 会把页面开关、白名单命中和 ``_smart_feats`` 的
+    最终结果一起纳入判断。这样白名单行负责声明“允许走哪个后端”，但不会
+    绕过页面侧是否启用 offload 的决策。
+
+    对 NVIDIA Day0 native 场景，尤其 Qwen3.5 NVFP4 / Pro 5000 行，这里只返回
+    ``native``。容量大小、auto 公式、legacy env 是否兼容等策略不能放进
+    ``smart_feature_whitelist.json``，应留给 vLLM adapter 的 native resolver，
+    以免静态白名单变成第二套参数解析器。
     """
     row = resolve_feature_whitelist_row_from_params(
         params,

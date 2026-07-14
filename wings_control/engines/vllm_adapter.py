@@ -711,9 +711,19 @@ def _is_glm51_nvidia_vllm_params(params: Optional[Dict[str, Any]], engine: str,
 def _resolve_native_backend_offload_gb(params: Dict[str, Any], engine: str) -> int:
     """解析 native backend 的节点级 offload 容量。
 
+    背景：NVIDIA Day0 native offload 收编后，Qwen3.5 NVFP4 等模型不再维护
+    独立容量解析函数。旧模型专属函数的职责被拆开：
+
+      * 场景命中和后端选择：由 ``smart_feature_whitelist.json`` 的
+        ``backend=native`` 行与 ``resolve_offload_whitelist_backend`` 负责；
+      * LMCache/native 互斥：由 ``_resolve_offload_backend`` 和
+        ``_build_cache_env_commands`` 共用的后端判定负责；
+      * 容量解析：统一落到本函数和 ``_resolve_native_offload_gb``。
+
     这里复用已有 ``_resolve_native_offload_gb``，保持页面输入、auto 公式、
     floor 熔断和日志口径一致。白名单行只提供 ``backend=native``，不提供
-    fallback、env 名称或动态容量来源；这些属于运行时策略。
+    fallback、env 名称或动态容量来源；这些属于运行时策略，避免把页面参数
+    或历史兼容入口写进静态白名单。
 
     所有 native backend 统一只读取页面/上层下发的 ``KV_MEM_OFFLOAD_SIZE``：
     未填、非法或内存卸载开关未开时直接丢弃，不再保留模型级容量缺省或
@@ -762,6 +772,11 @@ def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str
 
     返回 ``_OFFLOAD_*`` 之一；``_OFFLOAD_NATIVE_NONE`` 表示无特例、应走 LMCache 通用路径。
     三特例均与 LMCache 互斥（强制关 / V4 走 native 后端）。
+
+    注意：白名单已经声明 ``backend=native`` 的场景必须返回
+    ``_OFFLOAD_NATIVE_NONE``，让它们进入通用 backend 分支。这样 Qwen3.5 NVFP4
+    这类模型只在白名单表达“走 native”，不会再通过模型名硬编码一条并行
+    special case，避免 CLI、variant、LMCache env skip 三处再次分叉。
     """
     if resolve_offload_whitelist_backend(params, engine) == "native":
         return _OFFLOAD_NATIVE_NONE
@@ -917,6 +932,12 @@ def _resolve_offload_backend(params: Optional[Dict[str, Any]], engine: str = "")
 
     backend ∈ {native_kv_offloading_backend, lmcache_cpu_disk, lmcache_cpu, lmcache_disk, disabled}；
     cpu_mode ∈ {auto, custom, ""}（auto 即反向预算容量模式）。
+
+    后端选择只回答“本次 offload 由哪个互斥后端承接”。当白名单行声明
+    ``backend=native`` 时，这里直接返回 native 标记，容量是否有效交给
+    ``_resolve_native_backend_offload_gb`` 判断；当未命中 native 时，才按
+    CPU/Disk env 推导 LMCache 后端。这个分层保证 Qwen3.5 NVFP4 等 native
+    场景不会同时落入 LMCache env 导出。
     """
     if resolve_offload_whitelist_backend(params, engine) == "native":
         return _OFFLOAD_NATIVE_BACKEND_VARIANT, "native"
@@ -1141,6 +1162,8 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     # LMCache 路径：CPU(auto/custom) / Disk / 分层（后端选择见 _resolve_offload_backend）
     backend, cpu_mode = _resolve_offload_backend(params, engine)
     if backend == _OFFLOAD_NATIVE_BACKEND_VARIANT:
+        # 与 _build_kv_offload_cmd 使用同一个 size resolver：
+        # size<=0 时状态上也视为禁用/熔断，避免 status JSON 报 active 而 CLI 未下发。
         size_gb = _resolve_native_backend_offload_gb(params or {}, engine)
         if size_gb <= 0:
             if _native_backend_auto_requested(params or {}, engine):
@@ -2794,7 +2817,18 @@ def _resolve_native_offload_gb(
     *,
     log_context: str = "KVCache Offload",
 ) -> int:
-    """Resolve the node-level native KV offload size from the page-owned env."""
+    """Resolve the node-level native KV offload size from the page-owned env.
+
+    Native vLLM 的 ``--kv-offloading-size`` 接收整节点 GB 值，不像 LMCache
+    ``LMCACHE_MAX_LOCAL_CPU_SIZE`` 那样按卡数拆成 per-rank/per-card 容量。
+    因此 ``KV_MEM_OFFLOAD_SIZE=auto`` 只复用同一套反向预算公式得到
+    ``M_offload``，但这里不会除以 ``device_count``。
+
+    当前容量入口已统一为页面/上层拥有的 ``KV_MEM_OFFLOAD_SIZE``，并要求
+    ``ENABLE_KV_MEM_OFFLOAD=true``。缺失、非法、非正数或 auto 无法计算时
+    返回 0，由调用方统一跳过 native CLI 并把 variant/status 置为 disabled
+    或 ``+auto+floor_disabled``。
+    """
     if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
         logger.info("[%s] native memory offload switch is disabled.", log_context)
         return 0
@@ -3951,11 +3985,13 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
 def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     """构建 NVIDIA/vLLM native KV 卸载 CLI 片段。
 
-    - 仅 ``engine == "vllm"`` 且模型命中特例时生效（Ascend 0.21 走 LMCache dynamic）。
+    - 仅 ``engine == "vllm"`` 且 effective offload 已开启时生效
+      （Ascend 0.21 走 LMCache/MemCache 路径）。
     - 复用 ``ENABLE_KV_OFFLOAD`` 总开关（get_lmcache_env）作为触发条件。
     - Pro 5000 新增场景优先读白名单 backend：Qwen / MiniMax-M2.5 / MiniMax-M3
       命中 native，MiniMax-M2.7 命中 lmcache，不在这里生成 native CLI。
-    - size 按模型复用对应 native 容量解析器。
+    - 白名单 native 场景统一用 ``_resolve_native_backend_offload_gb`` 解析 size；
+      仍未白名单化的 DeepSeek-V4-Flash 特例继续走自己的兼容 resolver。
     - 与 LMCache env 路径互斥：命中时 ``_build_cache_env_commands`` 跳过 LMCache 导出。
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。
     """
@@ -3970,6 +4006,9 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     if not _is_kv_offload_requested(params):
         return ""
 
+    # 白名单 native 分支优先，承接 Qwen3.5 NVFP4 等 Day0 收编场景。
+    # 这类场景不再写模型专属 ``elif is_qwen...``，避免 native backend 的能力边界
+    # 同时散落在白名单和 adapter 硬编码中。
     if _resolve_offload_backend(params, engine)[0] == _OFFLOAD_NATIVE_BACKEND_VARIANT:
         size_gb = _resolve_native_backend_offload_gb(params, engine)
         logger.info("[KV Offload] whitelist backend native -> --kv-offloading-size=%dGB", size_gb)
