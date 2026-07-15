@@ -1209,7 +1209,6 @@
             "trust_remote_code": true,
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
-            "load_format": "dummy",
             "async_scheduling": true,
             "additional_config": {
               "enable_cpu_binding": true,
@@ -1222,7 +1221,6 @@
             "max_model_len": 40690,
             "max_num_batched_tokens": 16384,
             "gpu_memory_utilization": 0.9,
-            "kv_cache_memory_bytes": "4G",
             "tool_call_parser": "minimax_m2"
           },
           "vllm_ascend_distributed": {
@@ -1230,7 +1228,6 @@
             "trust_remote_code": true,
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
-            "load_format": "dummy",
             "async_scheduling": true,
             "additional_config": {
               "enable_cpu_binding": true,
@@ -1243,7 +1240,6 @@
             "max_model_len": 40690,
             "max_num_batched_tokens": 16384,
             "gpu_memory_utilization": 0.9,
-            "kv_cache_memory_bytes": "4G",
             "tool_call_parser": "minimax_m2"
           }
         },
@@ -1253,7 +1249,6 @@
             "trust_remote_code": true,
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
-            "load_format": "dummy",
             "async_scheduling": true,
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"
@@ -1276,7 +1271,6 @@
             "trust_remote_code": true,
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
-            "load_format": "dummy",
             "async_scheduling": true,
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"

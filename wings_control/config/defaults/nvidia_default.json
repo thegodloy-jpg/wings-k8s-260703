@@ -482,15 +482,13 @@
             "trust_remote_code": true,
             "max_model_len": 4096,
             "task": "generate",
-            "tool_call_parser": "qwen3_coder",
-            "enable_expert_parallel": true
+            "tool_call_parser": "qwen3_coder"
           },
           "vllm_distributed": {
             "trust_remote_code": true,
             "max_model_len": 4096,
             "task": "generate",
-            "tool_call_parser": "qwen3_coder",
-            "enable_expert_parallel": true
+            "tool_call_parser": "qwen3_coder"
           },
           "sglang": {
             "trust_remote_code": true,
