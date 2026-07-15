@@ -1721,6 +1721,92 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
     assert should_install is False
 
 
+def test_deepseek_v4_flash_pro5000_installs_packages_without_feature_enablement(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+    params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": [],
+    }
+
+    should_install = wings_entry._should_install_deepseek_v4_flash_pro5000_packages(
+        "vllm", params
+    )
+    snippet = wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+        "vllm", params
+    )
+    accel_preamble = wings_entry._build_accel_preamble("vllm", params)
+
+    assert should_install is True
+    assert accel_preamble == snippet
+    assert 'cd "/accel-volume"' in snippet
+    assert (
+        "python3 install.py --config "
+        '\'{"engine": {"name": "vllm", "version": "v0.23.0"}, '
+        '"packages": ["deepgemm:nv_dev_a6b593d", "flashinfer:v0.6.12"]}\''
+    ) in snippet
+
+
+def test_deepseek_v4_flash_pro5000_install_payload_uses_upstream_engine_version(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.23.1-rtxpro5000")
+    params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": [],
+    }
+
+    snippet = wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+        "vllm", params
+    )
+
+    assert '"name": "vllm"' in snippet
+    assert '"version": "v0.23.1"' in snippet
+    assert '"version": "v0.23.0"' not in snippet
+
+
+def test_deepseek_v4_flash_pro5000_install_skips_without_upstream_engine_version(monkeypatch):
+    monkeypatch.delenv("ENGINE_VERSION", raising=False)
+    params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": [],
+    }
+
+    assert (
+        wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+            "vllm", params
+        )
+        == ""
+    )
+
+
+def test_qwen35_nvfp4_pro5000_skips_deepseek_package_install():
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.5-397B-A17B-NVFP4",
+        "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["spec", "offload"],
+    }
+
+    assert (
+        wings_entry._should_install_deepseek_v4_flash_pro5000_packages("vllm", params)
+        is False
+    )
+    assert (
+        wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+            "vllm", params
+        )
+        == ""
+    )
+
+
 def test_deepseek_v4_flash_pro5000_without_offload_whitelist_omits_native_kv_offload_cli(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)

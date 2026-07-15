@@ -788,9 +788,10 @@ def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypat
     }
 
 
-def test_pro5000_spec_models_do_not_emit_ears_env_or_patch(monkeypatch):
+def test_pro5000_spec_models_do_not_emit_ears_env_or_runtime_deps(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
 
     scenarios = [
         {
@@ -801,7 +802,9 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_patch(monkeypatch):
             "enable_speculative_decode": True,
             "enable_sparse": True,
             "speculative_decode_model_path": "none",
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "sparse"],
+            "installs_deepseek_packages": True,
         },
         {
             "engine": "vllm",
@@ -811,7 +814,9 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_patch(monkeypatch):
             "enable_speculative_decode": True,
             "enable_sparse": False,
             "speculative_decode_model_path": "none",
+            "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
+            "installs_deepseek_packages": False,
         },
     ]
 
@@ -820,10 +825,15 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_patch(monkeypatch):
         accel_preamble = wings_entry._build_accel_preamble("vllm", params)
 
         assert env_commands == []
-        assert "install.py" not in accel_preamble
         assert "install-runtime-deps" not in accel_preamble
         assert '"ears"' not in accel_preamble
         assert "VLLM_EARS_TOLERANCE" not in accel_preamble
+        if params["installs_deepseek_packages"]:
+            assert "python3 install.py --config" in accel_preamble
+            assert "deepgemm:nv_dev_a6b593d" in accel_preamble
+            assert "flashinfer:v0.6.12" in accel_preamble
+        else:
+            assert "install.py" not in accel_preamble
 
 
 def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):

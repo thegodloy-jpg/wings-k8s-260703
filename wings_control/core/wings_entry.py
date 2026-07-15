@@ -51,13 +51,19 @@ from utils.model_utils import (
     ModelIdentifier,
     INDEXCACHE_ARCHS,
     feature_allowed,
+    is_deepseek_v4_flash_rtx_pro_5000,
 )
 
 logger = logging.getLogger(__name__)
 
-# Only DeepSeek-V4-Flash on vllm_ascend still executes install.py, using the
-# current --config contract. Legacy patch installers are intentionally removed.
+# Only explicitly supported DeepSeek-V4-Flash scenes execute install.py, using
+# the current --config contract. Legacy patch installers are intentionally removed.
 _LMCACHE_ASCEND_PACKAGE_CONFIG = '{"packages": ["lmcache-ascend:v0.4.5"]}'
+_DEEPSEEK_V4_FLASH_PRO5000_PACKAGES = [
+    "deepgemm:nv_dev_a6b593d",
+    "flashinfer:v0.6.12",
+]
+_ENGINE_VERSION_FOR_INSTALL_RE = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?", re.IGNORECASE)
 
 
 def _shell_escape_single_quote(value: str) -> str:
@@ -226,6 +232,98 @@ def _should_install_deepseek_v4_flash_ascend_lmcache(
     return True
 
 
+def _should_install_deepseek_v4_flash_pro5000_packages(
+    engine: str,
+    merged: dict | None,
+) -> bool:
+    """Return True for DeepSeek-V4-Flash RTX PRO 5000 vLLM package install."""
+    return is_deepseek_v4_flash_rtx_pro_5000(merged, engine)
+
+
+def _resolve_engine_version_for_install(merged: dict | None = None) -> str:
+    """Resolve the upstream engine version for install.py package config."""
+    candidates = []
+    if isinstance(merged, dict):
+        engine_config = merged.get("engine")
+        candidates.extend(
+            [
+                merged.get("engine_version"),
+                engine_config.get("version") if isinstance(engine_config, dict) else None,
+            ]
+        )
+    candidates.append(os.getenv("ENGINE_VERSION", ""))
+
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        match = _ENGINE_VERSION_FOR_INSTALL_RE.search(text)
+        if not match:
+            continue
+        major, minor, patch = match.groups()
+        return f"v{int(major)}.{int(minor)}.{int(patch or 0)}"
+    return ""
+
+
+def _build_deepseek_v4_flash_pro5000_package_config(
+    engine: str,
+    merged: dict | None = None,
+) -> str:
+    version = _resolve_engine_version_for_install(merged)
+    if not version:
+        return ""
+    return json.dumps(
+        {
+            "engine": {
+                "name": engine,
+                "version": version,
+            },
+            "packages": _DEEPSEEK_V4_FLASH_PRO5000_PACKAGES,
+        }
+    )
+
+
+def _render_deepseek_v4_flash_pro5000_package_install_snippet(package_config: str) -> str:
+    """Render the fixed RTX PRO 5000 package install before feature hooks."""
+    accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
+    return (
+        "# --- wings-accel: install DeepSeek-V4-Flash RTX PRO 5000 packages (fault-tolerant) ---\n"
+        f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
+        "    echo '[wings-accel] Installing DeepSeek-V4-Flash RTX PRO 5000 packages...'\n"
+        "    set +e\n"
+        f"    (cd \"{accel_dir}\" && python3 install.py --config "
+        f"'{_shell_escape_single_quote(package_config)}')\n"
+        "    PRO5000_RC=$?\n"
+        "    set -e\n"
+        "    if [ $PRO5000_RC -ne 0 ]; then\n"
+        '        echo "[wings-accel] WARNING: DeepSeek-V4-Flash RTX PRO 5000 package install failed'
+        ' (exit=$PRO5000_RC), skipping. Service will continue without RTX PRO 5000 package install."\n'
+        "    else\n"
+        "        echo '[wings-accel] DeepSeek-V4-Flash RTX PRO 5000 packages installed successfully.'\n"
+        "    fi\n"
+        "else\n"
+        f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, "
+        "skipping DeepSeek-V4-Flash RTX PRO 5000 package install.'\n"
+        "fi\n"
+    )
+
+
+def _build_deepseek_v4_flash_pro5000_package_install_snippet(
+    engine: str,
+    merged: dict | None = None,
+) -> str:
+    if not _should_install_deepseek_v4_flash_pro5000_packages(engine, merged):
+        return ""
+    package_config = _build_deepseek_v4_flash_pro5000_package_config(engine, merged)
+    if not package_config:
+        logger.warning(
+            "ENGINE_VERSION is missing or unrecognized; skipping DeepSeek-V4-Flash "
+            "RTX PRO 5000 package install."
+        )
+        return ""
+    return _render_deepseek_v4_flash_pro5000_package_install_snippet(package_config)
+
+
 def _render_deepseek_v4_flash_ascend_lmcache_install_snippet() -> str:
     """Render the only remaining install.py snippet: Ascend LMCache package config."""
     accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
@@ -263,17 +361,27 @@ def _build_deepseek_v4_flash_ascend_lmcache_install_snippet(
 
 
 def _build_accel_preamble(engine: str, merged: dict) -> str:
-    """Generate the only remaining install.py preamble, when explicitly supported."""
+    """Generate supported install.py preambles."""
     if not settings.ENABLE_ACCEL:
         logger.debug(
-            "Accel disabled: skipping DeepSeek-V4-Flash Ascend LMCache package install"
+            "Accel disabled: skipping DeepSeek-V4-Flash package installs"
         )
         return ""
 
-    snippet = _build_deepseek_v4_flash_ascend_lmcache_install_snippet(engine, merged)
-    if snippet:
+    install_pro5000 = _should_install_deepseek_v4_flash_pro5000_packages(engine, merged)
+    install_ascend_lmcache = _should_install_deepseek_v4_flash_ascend_lmcache(engine, merged)
+    snippets = []
+    if install_pro5000:
+        pro5000_snippet = _build_deepseek_v4_flash_pro5000_package_install_snippet(
+            engine, merged
+        )
+        if pro5000_snippet:
+            snippets.append(pro5000_snippet)
+            logger.info("Accel: injecting DeepSeek-V4-Flash RTX PRO 5000 package install")
+    if install_ascend_lmcache:
+        snippets.append(_render_deepseek_v4_flash_ascend_lmcache_install_snippet())
         logger.info("Accel: injecting DeepSeek-V4-Flash Ascend LMCache package install")
-    return snippet
+    return "".join(snippets)
 
 def _is_env_override_file(path: Path) -> bool:
     """Return True if *path* is a valid env-override file (not hidden, not README)."""
