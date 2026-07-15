@@ -357,18 +357,19 @@ async def get_startup_accel():
 
     单一真相源是 advanced_features.json（settings.ADVANCED_FEATURES_FILE）：
     由 wings_entry 在脚本生成阶段写入；shell 层在补丁失败时回写。
-    data 字段保持 advanced_features.json 的 engine/features/variants 结构。
+    data 字段保持 advanced_features.json 的完整对象；接口只补齐缺省标准字段，
+    不裁剪未来新增的顶层状态字段。
 
     Returns:
         JSONResponse: 包含加速特性信息的响应
     """
     try:
-        engine, features, variants, others = _read_advanced_features_state(settings.ADVANCED_FEATURES_FILE)
-        accel_data = _build_accel_data(engine, features, variants, others)
+        state = _read_advanced_features_state(settings.ADVANCED_FEATURES_FILE)
+        accel_data = _build_accel_data(state)
         return _build_accel_response(accel_data)
     except Exception as e:
         _logger.error(f"Failed to get acceleration feature info: {e}")
-        accel_data = _build_accel_data("", {}, {})
+        accel_data = _build_accel_data({})
         return _build_accel_response(accel_data, f"Failed to get acceleration feature info: {str(e)}")
 
 
@@ -424,50 +425,49 @@ async def proxy_engine_monitor_request(path: str, request: Request):
         return _create_generic_error_response(e)
 
 
-def _read_advanced_features_state(file_path: str) -> tuple[str, dict, dict, dict]:
+def _read_advanced_features_state(file_path: str) -> dict:
     """读取 advanced_features.json（页面状态汇报文件，使能真相源）。
 
-    该文件是单个 JSON 对象：``{"engine", "features": {bool}, "variants": {str|null}, "others": {...}}``，
-    由 wings_entry 在脚本生成阶段写入、shell 层在补丁失败时回写。
+    该文件是单个 JSON 对象，当前标准字段为 ``engine/features/variants/others``。
+    接口层返回完整对象，避免后续新增顶层字段后被健康接口静默丢弃。
 
     Args:
         file_path: advanced_features.json 路径
 
     Returns:
-        tuple[str, dict, dict]: (engine, features_dict, variants_dict)；
-            文件缺失或损坏时返回空值，不抛异常。
+        dict: advanced_features.json 的完整对象；文件缺失、损坏或非对象时返回空字典。
     """
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         _logger.debug("advanced_features.json unavailable: %s", exc)
-        return "", {}, {}, {}
+        return {}
     if not isinstance(data, dict):
-        return "", {}, {}, {}
-    features = data.get("features") if isinstance(data.get("features"), dict) else {}
-    variants = data.get("variants") if isinstance(data.get("variants"), dict) else {}
-    others = data.get("others") if isinstance(data.get("others"), dict) else {}
-    return data.get("engine", ""), features, variants, others
+        return {}
+    return data
 
 
-def _build_accel_data(engine: str, features: dict, variants: dict, others: dict | None = None) -> dict:
+def _build_accel_data(state: dict | None = None) -> dict:
     """构建加速特性响应数据。
 
     Args:
-        engine: 引擎名（来自 advanced_features.json，缺省回退 ENGINE 环境变量）
-        features: advanced_features.json 中的 features 对象
-        variants: advanced_features.json 中的 variants 对象
+        state: advanced_features.json 的完整对象
 
     Returns:
         dict: 加速特性数据
     """
-    return {
-        "engine": engine or os.getenv("ENGINE", "vllm"),
-        "features": features,
-        "variants": variants,
-        "others": others or {},
-    }
+    data = dict(state) if isinstance(state, dict) else {}
+    # 保持老消费者依赖的四个标准字段稳定，同时不删除 advanced_features.json
+    # 中未来新增的顶层字段，例如请求态、回退原因或诊断信息。
+    data["engine"] = data.get("engine") or os.getenv("ENGINE", "vllm")
+    if not isinstance(data.get("features"), dict):
+        data["features"] = {}
+    if not isinstance(data.get("variants"), dict):
+        data["variants"] = {}
+    if not isinstance(data.get("others"), dict):
+        data["others"] = {}
+    return data
 
 
 def _build_accel_response(accel_data: dict, message: str = "") -> JSONResponse:

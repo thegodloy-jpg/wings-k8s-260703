@@ -27,6 +27,9 @@ def test_startup_accel_route_is_served_before_proxy_catch_all(monkeypatch, tmp_p
                 "others": {
                     "kv_mem_offload_size": 40,
                 },
+                "diagnostics": {
+                    "fallback_reason": "none",
+                },
             }
         ),
         encoding="utf-8",
@@ -52,6 +55,9 @@ def test_startup_accel_route_is_served_before_proxy_catch_all(monkeypatch, tmp_p
             },
             "others": {
                 "kv_mem_offload_size": 40,
+            },
+            "diagnostics": {
+                "fallback_reason": "none",
             },
         },
     }
