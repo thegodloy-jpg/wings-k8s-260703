@@ -447,12 +447,16 @@ def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch,
         "_smart_feats": ["offload"],
     }
 
-    target = wings_entry._resolve_lmcache_install_target("vllm_ascend", params)
-    snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
+    should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
+        "vllm_ascend", params
+    )
+    snippet = wings_entry._build_deepseek_v4_flash_ascend_lmcache_install_snippet(
+        "vllm_ascend", params
+    )
     wings_entry._write_advanced_features_json("vllm_ascend", params)
 
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
-    assert target is None
+    assert should_install is False
     assert snippet == ""
     assert data["features"]["kv_offload"] is False
     assert data["variants"]["kv_offload"] == "lmcache_cpu+auto+floor_disabled"
@@ -663,10 +667,12 @@ def test_lmcache_auto_floor_with_disk_keeps_patch_and_disk_variant(monkeypatch):
         "_smart_feats": ["offload"],
     }
 
-    target = wings_entry._resolve_lmcache_install_target("vllm_ascend", params)
+    should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
+        "vllm_ascend", params
+    )
     variant = vllm_adapter.resolve_offload_variant(params, "vllm_ascend")
 
-    assert target == "ascend-arm"
+    assert should_install is True
     assert variant == "lmcache_disk+cpu_auto_floor_disabled"
 
 
@@ -771,16 +777,19 @@ def test_deepseek_v4_flash_ascend_v021_uses_lmcache_package_config(monkeypatch):
     for engine_version in ("v0.21.0-a2", "v0.21.0-a3"):
         monkeypatch.setenv("ENGINE_VERSION", engine_version)
 
-        target = wings_entry._resolve_lmcache_install_target("vllm_ascend", params)
-        snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
+        should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
+            "vllm_ascend", params
+        )
+        snippet = wings_entry._build_deepseek_v4_flash_ascend_lmcache_install_snippet(
+            "vllm_ascend", params
+        )
 
-        assert target == "ascend-arm"
+        assert should_install is True
         assert (
             "python install.py --config "
             "'{\"packages\": [\"lmcache-ascend:v0.4.5\"]}'"
         ) in snippet
         assert 'cd "/accel-volume"' in snippet
-        assert "--lmcache-target ascend-arm" not in snippet
 
 
 def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkeypatch):
@@ -794,15 +803,16 @@ def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkey
         "model_type": "llm",
         "_smart_feats": ["offload"],
     }
-    target = wings_entry._resolve_lmcache_install_target(
+    should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
         "vllm_ascend",
         params,
     )
-    snippet = wings_entry._build_lmcache_install_snippet("vllm_ascend", params)
+    snippet = wings_entry._build_deepseek_v4_flash_ascend_lmcache_install_snippet(
+        "vllm_ascend", params
+    )
 
-    assert target == "ascend-arm"
+    assert should_install is True
     assert "lmcache-ascend:v0.4.5" in snippet
-    assert "--lmcache-target ascend-arm" not in snippet
 
 
 def test_deepseek_v4_flash_lmcache_legacy_env_alias_enables_patch(monkeypatch):
@@ -824,7 +834,12 @@ def test_deepseek_v4_flash_lmcache_legacy_env_alias_enables_patch(monkeypatch):
     assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
     assert params["_allowed_smart_feats"] == ["offload", "spec"]
     assert params["_smart_feats"] == ["offload"]
-    assert wings_entry._resolve_lmcache_install_target("vllm_ascend", params) == "ascend-arm"
+    assert (
+        wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
+            "vllm_ascend", params
+        )
+        is True
+    )
 
 
 def test_lmcache_patch_uses_effective_smart_feats_when_env_not_synced(monkeypatch):
@@ -839,7 +854,12 @@ def test_lmcache_patch_uses_effective_smart_feats_when_env_not_synced(monkeypatc
         "_smart_feats": ["offload"],
     }
 
-    assert wings_entry._resolve_lmcache_install_target("vllm_ascend", params) == "ascend-arm"
+    assert (
+        wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
+            "vllm_ascend", params
+        )
+        is True
+    )
 
 
 def test_lmcache_env_exports_use_effective_smart_feats_when_env_not_synced(monkeypatch):
@@ -950,18 +970,8 @@ def test_fallback_uses_effective_smart_feats_for_kv_offload(monkeypatch):
     assert captured["_wings_fallback_no_kv_offload"] is True
 
 
-def test_nvidia_lmcache_keeps_target_install_command():
-    snippet = wings_entry._render_lmcache_install_snippet("nvidia-x86")
-
-    assert (
-        "python3 /accel-volume/install.py --lmcache-target nvidia-x86"
-        in snippet
-    )
-    assert "lmcache-ascend:v0.4.5" not in snippet
-
-
 def test_nvidia_vllm_lmcache_skips_patch_install_target():
-    target = wings_entry._resolve_lmcache_install_target(
+    should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
         "vllm",
         {
             "engine": "vllm",
@@ -973,13 +983,13 @@ def test_nvidia_vllm_lmcache_skips_patch_install_target():
         },
     )
 
-    assert target is None
+    assert should_install is False
 
 
 def test_kimi_k27_code_memcache_skips_lmcache_patch(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
 
-    target = wings_entry._resolve_lmcache_install_target(
+    should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
@@ -990,7 +1000,7 @@ def test_kimi_k27_code_memcache_skips_lmcache_patch(monkeypatch):
         },
     )
 
-    assert target is None
+    assert should_install is False
 
 
 def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
@@ -1697,7 +1707,7 @@ def test_deepseek_v4_flash_native_offload_auto_reuses_formula_floor(monkeypatch)
 def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
 
-    target = wings_entry._resolve_lmcache_install_target(
+    should_install = wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
         "vllm",
         {
             "engine": "vllm",
@@ -1708,7 +1718,7 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
         },
     )
 
-    assert target is None
+    assert should_install is False
 
 
 def test_deepseek_v4_flash_pro5000_without_offload_whitelist_omits_native_kv_offload_cli(monkeypatch):

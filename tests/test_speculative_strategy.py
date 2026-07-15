@@ -820,7 +820,7 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_patch(monkeypatch):
         accel_preamble = wings_entry._build_accel_preamble("vllm", params)
 
         assert env_commands == []
-        assert "ears" not in wings_entry._collect_required_patch_features("vllm", params)
+        assert "install.py" not in accel_preamble
         assert "install-runtime-deps" not in accel_preamble
         assert '"ears"' not in accel_preamble
         assert "VLLM_EARS_TOLERANCE" not in accel_preamble

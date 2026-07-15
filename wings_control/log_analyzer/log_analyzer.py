@@ -120,57 +120,36 @@ class BaseLogPatternPlugin:
         return []
 
     def get_accel_patterns(self) -> List[Dict]:
-        """返回加速特性日志模式。
-
-        匹配 wings-accel 注入脚本产生的日志行，检测各特性的安装状态。
-        默认实现覆盖所有引擎通用的 wings-accel 模式。子类可覆盖以添加
-        引擎特有的模式。
-
-        Returns:
-            加速特性模式列表
-        """
+        """Return log patterns for the remaining DeepSeek-V4-Flash Ascend LMCache install."""
         logger.debug(
             "Using base accel patterns for engine=%s mode=%s",
             self.engine, self.deployment_mode,
         )
         return [
             {
-                "pattern": r"\[wings-accel\] Feature '(?P<feature>[^']+)' installed successfully",
+                "pattern": r"\[wings-accel\] DeepSeek-V4-Flash Ascend LMCache package installed successfully",
+                "feature": "deepseek_v4_flash_ascend_lmcache",
                 "status": "success",
                 "progress": 100,
-                "message": "Feature installed successfully",
+                "message": "DeepSeek-V4-Flash Ascend LMCache package installed successfully",
             },
             {
                 "pattern": (
-                    r"\[wings-accel\] WARNING: Feature '(?P<feature>[^']+)'"
-                    r" install failed \(exit=(?P<error_msg>\d+)\)"
+                    r"\[wings-accel\] WARNING: DeepSeek-V4-Flash Ascend LMCache package "
+                    r"install failed \(exit=(?P<error_msg>\d+)\)"
                 ),
+                "feature": "deepseek_v4_flash_ascend_lmcache",
                 "status": "failed",
                 "progress": 100,
                 "error_type": "InstallFailed",
-                "message": "Feature install failed",
-            },
-            {
-                "pattern": r"\[wings-accel\] All patches installed successfully",
-                "feature": "all_patches",
-                "status": "success",
-                "progress": 100,
-                "message": "All patches installed successfully",
-            },
-            {
-                "pattern": r"\[wings-accel\] WARNING: Batch install failed \(exit=(?P<error_msg>\d+)\)",
-                "feature": "batch_install",
-                "status": "failed",
-                "progress": 100,
-                "error_type": "BatchInstallFailed",
-                "message": "Batch install failed, falling back to per-feature",
+                "message": "DeepSeek-V4-Flash Ascend LMCache package install failed",
             },
             {
                 "pattern": r"\[wings-accel\] WARNING: .+/install\.py not found",
-                "feature": "accel_volume",
+                "feature": "deepseek_v4_flash_ascend_lmcache",
                 "status": "skipped",
                 "progress": 0,
-                "message": "Accel volume not mounted, patches skipped",
+                "message": "Accel volume not mounted, package install skipped",
             },
         ]
 
@@ -347,64 +326,34 @@ class LogAnalyzer:
 
     @staticmethod
     def _get_accel_injection_patterns() -> List[Dict]:
-        """返回加速特性安装启动/检测阶段的日志模式列表。"""
+        """Return progress patterns for the remaining accel install step."""
         return [
             {
-                "pattern": r"\[wings-accel\] Installing for engine '.*?' \(extras: \[.*?\]\) \.\.\.",
+                "pattern": r"\[wings-accel\] Installing DeepSeek-V4-Flash Ascend LMCache package\.\.\.",
                 "phase_code": "accel_enabling",
-                "progress_calc": 10
-            },
-            {
-                "pattern": r"\[wings-accel\] Checking .*?@\d+\.\d+\.\d+ features: .*?",
-                "phase_code": "accel_enabling",
-                "progress_calc": 12
-            },
-            {
-                "pattern": r"\[wings-accel\] ✅ wings_engine_patch installed",
-                "phase_code": "accel_enabling",
-                "progress_calc": 13
-            },
-            {
-                "pattern": r"\[wings-accel\] ✅ Engine '.*?' registered in patch registry",
-                "phase_code": "accel_enabling",
-                "progress_calc": 14
-            },
-            {
-                "pattern": r"\[wings-accel\] ✅ Version '.*?' found",
-                "phase_code": "accel_enabling",
-                "progress_calc": 15
+                "progress_calc": 10,
             },
         ]
 
     @staticmethod
     def _get_accel_status_patterns() -> List[Dict]:
-        """返回加速特性声明/完成状态的日志模式列表。"""
+        """Return completion patterns for the remaining accel install step."""
         return [
             {
-                "pattern": r"\[wings-accel\] ✅ Feature '.*?' declared",
+                "pattern": r"\[wings-accel\] DeepSeek-V4-Flash Ascend LMCache package installed successfully",
                 "phase_code": "accel_enabling",
-                "progress_calc": 16
+                "progress_calc": 20,
             },
             {
-                "pattern": r"\[wings-accel\] ✅ Done\. To enable patches at runtime, set:",
+                "pattern": r"\[wings-accel\] WARNING: DeepSeek-V4-Flash Ascend LMCache package install failed",
                 "phase_code": "accel_enabling",
-                "progress_calc": 18
-            },
-            {
-                "pattern": r"\[wings-accel\] Installing patches from /accel-volume",
-                "phase_code": "accel_enabling",
-                "progress_calc": 10
-            },
-            {
-                "pattern": r"\[wings-accel\] Patch installation complete",
-                "phase_code": "accel_enabling",
-                "progress_calc": 20
+                "progress_calc": 20,
             },
             {
                 "pattern": r"\[wings-accel\] WARNING: /accel-volume/install.py not found",
                 "phase_code": "accel_enabling",
-                "progress_calc": 20
-            }
+                "progress_calc": 20,
+            },
         ]
 
     def run(self):

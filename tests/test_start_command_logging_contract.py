@@ -20,24 +20,6 @@ def test_wings_cmd_echo_keeps_long_command_complete():
     assert command.strip() in script
 
 
-def test_wings_cmd_echo_includes_accel_install_command():
-    script = (
-        "export WINGS_ENGINE_PATCH_OPTIONS='{\"vllm\":{\"features\":[\"sparse\"]}}'\n"
-        'python3 /accel-volume/install.py --features "$WINGS_ENGINE_PATCH_OPTIONS"\n'
-    )
-
-    rendered = vllm_adapter._inject_env_echo(script)
-
-    assert (
-        'echo "[wings-env] export WINGS_ENGINE_PATCH_OPTIONS='
-        '${WINGS_ENGINE_PATCH_OPTIONS:-}"'
-    ) in rendered
-    assert (
-        "echo '[wings-cmd] >>> python3 /accel-volume/install.py "
-        "--features \"$WINGS_ENGINE_PATCH_OPTIONS\"'"
-    ) in rendered
-
-
 def test_wings_cmd_echo_includes_cwd_accel_install_command():
     script = "(cd \"/accel-volume\" && python install.py --config '/tmp/lmcache.json')\n"
 

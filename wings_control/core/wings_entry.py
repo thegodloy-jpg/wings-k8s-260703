@@ -26,7 +26,6 @@ from core.engine_manager import start_engine_service
 from core.hardware_detect import detect_hardware
 from core.port_plan import PortPlan
 from core.start_args_compat import LaunchArgs
-from core.version_util import normalize_engine_version
 from engines.vllm_adapter import (
     resolve_speculative_strategy,
     resolve_sparse_variant,
@@ -41,7 +40,6 @@ from engines.vllm_adapter import (
 )
 from features.kv_offload.memcache import (
     build_memcache_hybrid_fragment,
-    is_memcache_hybrid_params,
 )
 from utils.vllm_helpers import (
     build_modelslim_quarot_patch_preamble,
@@ -52,63 +50,13 @@ from utils.device_utils import resolve_card_token
 from utils.model_utils import (
     ModelIdentifier,
     INDEXCACHE_ARCHS,
-    is_glm_moe_dsa_glm51,
     feature_allowed,
-    resolve_offload_whitelist_backend,
-    is_qwen3_5_397b_nvfp4_vllm,
 )
 
 logger = logging.getLogger(__name__)
 
-# ── Accel 加速包补丁选项 ────────────────────────────────────────────────────
-# 当 ENABLE_ACCEL=true 时，sidecar 会向 start_command.sh 注入：
-#   1. export WINGS_ENGINE_PATCH_OPTIONS='{...}'
-#   2. python3 $WINGS_ACCEL_DIR/install.py --features "$WINGS_ENGINE_PATCH_OPTIONS"
-# WINGS_ACCEL_DIR 由 settings.WINGS_ACCEL_DIR 决定（默认 /accel-volume，可通过环境变量覆盖）
-#
-# features 列表由以下高级特性环境变量决定（名称与 supported_features.json 对齐）：
-#   ENABLE_SPARSE → indexcache（仅 IndexCache 架构，通过独立安装片段处理）
-#
-# ENABLE_KV_OFFLOAD installs LMCache by target; DeepSeek-V4-Flash 0.21 uses LMCache dynamic.
-#
-# 可通过 WINGS_ENGINE_PATCH_OPTIONS 环境变量直接覆盖（JSON 字符串），
-# 此时直接使用用户提供的值，不再按特性开关自动生成。
-# ────────────────────────────────────────────────────────────────────────────
-
-# 引擎名到 patch options key 的映射。
-# 仅包含 supported_features.json 中实际注册的引擎；vllm_ascend 必须保持原始 key，
-# 避免把页面/配置中最终选定的 vllm_ascend 改写为 vllm。
-_ENGINE_PATCH_KEY_MAP = {
-    "vllm": "vllm",
-    "vllm_ascend": "vllm_ascend",
-}
-
-# 高级特性环境变量 → features 名称映射（与 supported_features.json 中的 feature key 对齐）。
-# 这里刻意不再放 speculative_decode / ears：
-#   1. 当前投机策略由 vLLM ``--speculative-config`` 直接表达，MTP/DFlash/Eagle3/suffix
-#      的选择在 vllm_adapter 中完成，不需要额外安装 EARS runtime patch；
-#   2. 线上 install.py 已切换为 ``--config`` 必填，旧的 runtime-deps / ears 安装命令会
-#      失败并造成“看似启用补丁、实际未生效”的误判；
-#   3. 是否启用投机、失败后是否回退，由 advanced_features.json 和 fallback 启动脚本收口。
-_FEATURE_SWITCH_MAP: dict[str, str] = {
-    # ENABLE_SPARSE 已从此映射移除，IndexCache 补丁通过动态 feature 聚合安装。
-}
-
-_PATCH_FEATURE_STATUS_KEYS: dict[str, str] = {
-    "indexcache": "sparse_kv",
-}
-
-# 引擎到 LMCache 安装目标的映射。
-# 注意：这只是“允许安装”的平台映射，不代表所有 ENABLE_KV_OFFLOAD=true 都会安装。
-# _resolve_lmcache_install_target 会先排除 native backend、MemCache、NVIDIA 镜像内置运行时、
-# auto 容量熔断等互斥路径；只有最终确认为 LMCache patch 承担卸载时才渲染安装片段。
-# Ascend 当前通过 install.py --config 安装固定包，NVIDIA/vLLM DAY0 场景则由镜像或 native
-# ``--kv-offloading-backend`` 承担，不再执行 nvidia-x86 LMCache patch 安装。
-_ENGINE_LMCACHE_TARGET_MAP = {
-    "vllm": "nvidia-x86",
-    "vllm_ascend": "ascend-arm",
-}
-
+# Only DeepSeek-V4-Flash on vllm_ascend still executes install.py, using the
+# current --config contract. Legacy patch installers are intentionally removed.
 _LMCACHE_ASCEND_PACKAGE_CONFIG = '{"packages": ["lmcache-ascend:v0.4.5"]}'
 
 
@@ -235,111 +183,6 @@ def _prepare_merged_params(launch_args: LaunchArgs, port_plan: PortPlan, hardwar
     return merged
 
 
-def _validate_accel_user_override() -> str:
-    """Return the cleaned WINGS_ENGINE_PATCH_OPTIONS override, or '' if invalid."""
-    user_override = os.getenv("WINGS_ENGINE_PATCH_OPTIONS", "").strip()
-    if not user_override:
-        return ""
-    try:
-        parsed = json.loads(user_override)
-        if not isinstance(parsed, dict):
-            user_override = ""
-    except json.JSONDecodeError:
-        user_override = ""
-    return user_override
-
-
-def _build_accel_user_override_snippet(safe_value: str) -> str:
-    """Build the fault-tolerant accel install shell snippet for user-override path."""
-    accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
-    return (
-        "# --- wings-accel: install patches (user override, fault-tolerant) ---\n"
-        f"export WINGS_ENGINE_PATCH_OPTIONS='{safe_value}'\n"
-        + f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
-        "    echo '[wings-accel] Installing patches (user override)...'\n"
-        "    set +e\n"
-        f"    python3 {accel_dir}/install.py --features \"$WINGS_ENGINE_PATCH_OPTIONS\"\n"
-        "    ACCEL_RC=$?\n"
-        "    set -e\n"
-        "    if [ $ACCEL_RC -ne 0 ]; then\n"
-        "        echo \"[wings-accel] WARNING: Patch install failed"
-        " (exit=$ACCEL_RC), skipping. Service will continue without patches.\"\n"
-        "    else\n"
-        "        echo '[wings-accel] Patches installed successfully.'\n"
-        "    fi\n"
-        "else\n"
-        f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, skipping.'\n"
-        "fi\n"
-    )
-
-
-def _dedupe_features(features: list[str]) -> list[str]:
-    """Return features in first-seen order without duplicates."""
-    result: list[str] = []
-    seen: set[str] = set()
-    for feature in features:
-        if not feature or feature in seen:
-            continue
-        seen.add(feature)
-        result.append(feature)
-    return result
-
-
-def _merge_patch_options(raw_options: str, patch_key: str, engine_version: str, features: list[str]) -> str:
-    """Merge required features into a WINGS_ENGINE_PATCH_OPTIONS JSON string."""
-    try:
-        options = json.loads(raw_options) if raw_options else {}
-    except json.JSONDecodeError:
-        options = {}
-    if not isinstance(options, dict):
-        options = {}
-
-    engine_options = options.get(patch_key)
-    if not isinstance(engine_options, dict):
-        engine_options = {}
-        options[patch_key] = engine_options
-
-    existing_features = engine_options.get("features")
-    if not isinstance(existing_features, list):
-        existing_features = []
-    engine_options["features"] = _dedupe_features(
-        [str(feature) for feature in existing_features] + features
-    )
-    engine_options["version"] = str(engine_options.get("version") or engine_version)
-    return json.dumps(options)
-
-
-def _collect_enabled_features() -> list[str]:
-    """Return the list of accel feature names whose environment switches are enabled.
-
-    投机推理（ENABLE_SPECULATIVE_DECODE）只影响 vLLM CLI，不再触发 accel patch。
-    """
-    features = []
-    for env_key, feat_name in _FEATURE_SWITCH_MAP.items():
-        if os.getenv(env_key, "").strip().lower() != "true":
-            continue
-        features.append(feat_name)
-    return features
-
-
-def _is_glm51_nvidia_vllm_merged(engine: str, merged: dict | None) -> bool:
-    """Return True when merged params describe GLM-5.1 on NVIDIA vLLM."""
-    if engine != "vllm" or not merged:
-        return False
-    try:
-        model_info = ModelIdentifier(
-            merged.get("model_name"), merged.get("model_path"), merged.get("model_type"),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[GLM-5.1 NV] Skip variant detection, ModelIdentifier failed: %s", exc)
-        return False
-    return is_glm_moe_dsa_glm51(
-        model_info,
-        model_name=merged.get("model_name"),
-        model_path=merged.get("model_path"),
-    )
-
-
 def _is_lmcache_offload_allowed(engine: str, merged: dict | None) -> bool:
     """返回当前模型是否通过 offload 白名单门控。"""
     if not merged:
@@ -356,314 +199,81 @@ def _is_lmcache_offload_allowed(engine: str, merged: dict | None) -> bool:
     )
 
 
-def _uses_non_lmcache_offload_backend(engine: str, merged: dict | None) -> bool:
-    """识别已由 MemCache 或 native backend 承担卸载的互斥场景。
-
-    这些场景的最终命令已经通过 ``kv_transfer_config``、MemCache 片段或
-    ``--kv-offloading-backend native`` 表达卸载能力，不需要也不能再安装
-    LMCache patch，否则会把两套互斥 backend 混在同一个启动脚本里。
-    """
-    if is_memcache_hybrid_params(merged, engine):
-        logger.info("[MemCache] Model uses official MemCache; skipping LMCache patch install.")
-        return True
-    if not merged or engine != "vllm":
+def _should_install_deepseek_v4_flash_ascend_lmcache(
+    engine: str,
+    merged: dict | None,
+) -> bool:
+    """Return True only for the supported DeepSeek-V4-Flash Ascend LMCache install."""
+    if engine != "vllm_ascend":
         return False
-    if resolve_offload_whitelist_backend(merged, engine) == "native":
-        logger.info(
-            "[KVCache Offload] offload whitelist uses native KV offload; "
-            "skipping LMCache patch install."
-        )
-        return True
-    if _is_deepseek_v4_flash_params(merged):
-        logger.info(
-            "[KVCache Offload] DeepSeek-V4-Flash (NV) uses native "
-            "--kv-offloading-backend; skipping LMCache patch install despite "
-            "ENABLE_KV_OFFLOAD=true."
-        )
-        return True
-    if is_qwen3_5_397b_nvfp4_vllm(merged, engine):
-        logger.info(
-            "[KVCache Offload] Qwen3.5-397B-A17B-NVFP4 (NV) uses native "
-            "--kv-offloading-backend; skipping LMCache patch install despite "
-            "ENABLE_KV_OFFLOAD=true."
-        )
-        return True
-    if _is_glm51_nvidia_vllm_merged(engine, merged):
-        logger.warning(
-            "[KVCache Offload] Forced disabled for GLM-5.1 on NVIDIA/vLLM; "
-            "skipping LMCache patch install despite ENABLE_KV_OFFLOAD=true."
-        )
-        return True
-    return False
-
-
-def _resolve_lmcache_install_target(engine: str, merged: dict | None) -> str | None:
-    """决定是否安装 LMCache 补丁，并返回目标平台（vllm_ascend→ascend-arm）。
-
-    命中下列任一情况返回 None（跳过安装）：
-      * ``ENABLE_KV_OFFLOAD`` 未开启；
-      * NVIDIA/vLLM → 使用镜像内运行时，不安装 LMCache patch；
-      * whitelist backend 为 native 的 NV/vllm 场景 → 用 native ``--kv-offloading-backend``；
-      * V4-Flash on NV/vllm → 用 native ``--kv-offloading-backend``（历史特例兜底）；
-      * GLM-5.1 on NV/vllm → 强制关闭 LMCache；
-      * 引擎无已知 lmcache-target 映射。
-    """
+    if not merged or not _is_deepseek_v4_flash_params(merged):
+        return False
     if not _is_kv_offload_requested(merged):
-        return None
-
+        return False
     if not _is_lmcache_offload_allowed(engine, merged):
         logger.info(
-            "[SmartFeature] offload suppressed by whitelist in "
-            "_resolve_lmcache_install_target — skipping LMCache patch install."
+            "[SmartFeature] offload suppressed by whitelist; "
+            "skipping DeepSeek-V4-Flash Ascend LMCache package install."
         )
-        return None
-
+        return False
     if lmcache_auto_floor_disables_all_backends(merged):
         logger.info(
             "[KVCache Offload] auto memory offload capacity below floor and no "
-            "disk/QAT/cold-start backend is active; skipping LMCache patch install."
+            "disk/QAT/cold-start backend is active; skipping DeepSeek-V4-Flash "
+            "Ascend LMCache package install."
         )
-        return None
-
-    if _uses_non_lmcache_offload_backend(engine, merged):
-        return None
-
-    if engine == "vllm":
-        # 本轮明确 NV 场景的 LMCache 运行时由镜像提供；启动脚本只负责
-        # native CLI 或已有 LMCache env，不再执行 install.py --lmcache-target nvidia-x86。
-        logger.info(
-            "[LMCache] NVIDIA/vLLM LMCache uses image-provided runtime; "
-            "skipping LMCache patch install."
-        )
-        return None
-
-    target = _ENGINE_LMCACHE_TARGET_MAP.get(engine)
-    if not target:
-        logger.warning(
-            "[LMCache] Engine '%s' has no known lmcache-target mapping; "
-            "skipping LMCache patch install.", engine,
-        )
-        return None
-    return target
+        return False
+    return True
 
 
-def _render_lmcache_install_snippet(target: str) -> str:
-    """渲染 LMCache 补丁安装的容错 shell 片段（目标平台已由调用方确定）。"""
+def _render_deepseek_v4_flash_ascend_lmcache_install_snippet() -> str:
+    """Render the only remaining install.py snippet: Ascend LMCache package config."""
     accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
     update_json = _shell_update_feature_json("kv_offload", False)
-    if target == "ascend-arm":
-        install_command = (
-            f"    (cd \"{accel_dir}\" && python install.py --config "
-            f"'{_LMCACHE_ASCEND_PACKAGE_CONFIG}')\n"
-        )
-    else:
-        install_command = (
-            f"    python3 {accel_dir}/install.py --lmcache-target {target}\n"
-        )
     return (
-        "# --- wings-accel: install LMCache patches (fault-tolerant) ---\n"
+        "# --- wings-accel: install DeepSeek-V4-Flash Ascend LMCache package (fault-tolerant) ---\n"
         f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
-        f"    echo '[wings-accel] Installing LMCache patches (target: {target})...'\n"
+        "    echo '[wings-accel] Installing DeepSeek-V4-Flash Ascend LMCache package...'\n"
         "    set +e\n"
-        + install_command
-        + "    LMCACHE_RC=$?\n"
+        f"    (cd \"{accel_dir}\" && python install.py --config "
+        f"'{_LMCACHE_ASCEND_PACKAGE_CONFIG}')\n"
+        "    LMCACHE_RC=$?\n"
         "    set -e\n"
         "    if [ $LMCACHE_RC -ne 0 ]; then\n"
-        '        echo "[wings-accel] WARNING: LMCache patch install failed'
-        ' (exit=$LMCACHE_RC), skipping. Service will continue without LMCache patches."\n'
+        '        echo "[wings-accel] WARNING: DeepSeek-V4-Flash Ascend LMCache package install failed'
+        ' (exit=$LMCACHE_RC), skipping. Service will continue without LMCache package install."\n'
         + update_json
         + "    else\n"
-        "        echo '[wings-accel] LMCache patches installed successfully.'\n"
+        "        echo '[wings-accel] DeepSeek-V4-Flash Ascend LMCache package installed successfully.'\n"
         "    fi\n"
         "else\n"
         f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, "
-        "skipping LMCache patch install.'\n"
+        "skipping DeepSeek-V4-Flash Ascend LMCache package install.'\n"
         "fi\n"
     )
 
 
-def _build_lmcache_install_snippet(engine: str, merged: dict | None = None) -> str:
-    """为 LMCache KV 卸载生成平台对应的容错安装 shell 片段。
-
-    安装决策（含 native 卸载等互斥/豁免路径）由 ``_resolve_lmcache_install_target``
-    收口；命中跳过条件时返回空字符串，否则渲染安装片段。
-
-    Returns:
-        str: shell 脚本片段；跳过安装时返回空字符串。
-    """
-    target = _resolve_lmcache_install_target(engine, merged)
-    if not target:
+def _build_deepseek_v4_flash_ascend_lmcache_install_snippet(
+    engine: str,
+    merged: dict | None = None,
+) -> str:
+    if not _should_install_deepseek_v4_flash_ascend_lmcache(engine, merged):
         return ""
-    return _render_lmcache_install_snippet(target)
-
-
-def _collect_indexcache_patch_features(engine: str, merged: dict) -> list[str]:
-    """Return IndexCache accel features required by the current config.
-
-    当 ENABLE_SPARSE=true 且模型架构属于 IndexCache 支持列表时，
-    需要通过 install.py --features 安装 indexcache 补丁。
-    非 IndexCache 架构使用 FP8 KV CACHE，无需 accel 补丁。
-
-    [GLM5.1-Ascend-Tmp] engine 门控只接 "vllm"，因此 vllm_ascend 路径天然不会
-    触发 indexcache 补丁安装；vllm_ascend + GLM-5.1 仅通过 --hf-overrides 启用
-    IndexCache（参见 vllm_adapter._build_kv_sparse_cmd）。当 vllm-ascend 支持
-    补丁安装后，把这里的 engine 集合扩成 ("vllm", "vllm_ascend") 即可。
-    """
-    if not merged.get("enable_sparse"):
-        return []
-    if engine not in ("vllm",):
-        return []
-
-    model_info = ModelIdentifier(
-        merged.get("model_name"), merged.get("model_path"), merged.get("model_type"),
-    )
-    arch = model_info.model_architecture
-    if arch not in INDEXCACHE_ARCHS:
-        logger.info(
-            "[IndexCache] Architecture %s not in IndexCache list; "
-            "FP8 KV CACHE path needs no accel patch.", arch,
-        )
-        return []
-
-    logger.info("[IndexCache] Architecture %s requires indexcache patch", arch)
-    return ["indexcache"]
-
-
-def _collect_required_patch_features(engine: str, merged: dict) -> list[str]:
-    """收集仍需要走 ``install.py --features`` 的补丁特性。
-
-    目前自动聚合只保留 IndexCache 等真正需要 patch 的能力。投机解码不在这里：
-    DFlash/Eagle3/MTP/suffix 都由 vLLM 命令行参数表达；若未来某个投机能力确实需要
-    runtime patch，也必须先补齐 install.py 的新接口和失败回退语义，不能恢复旧的
-    EARS/runtime-deps 调用。
-    """
-    features = []
-    features.extend(_collect_enabled_features())
-    features.extend(_collect_indexcache_patch_features(engine, merged))
-    return _dedupe_features(features)
-
-
-def _build_per_feature_fallback_code(patch_key: str, engine_version: str, features: list[str]) -> str:
-    """Build per-feature fallback shell code block for fault-tolerant accel install."""
-    accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
-    blocks = []
-    for feat in features:
-        single_options = json.dumps({patch_key: {"version": engine_version, "features": [feat]}})
-        status_key = _PATCH_FEATURE_STATUS_KEYS.get(feat, feat)
-        update_json = _shell_update_feature_json(status_key, False).lstrip()
-        blocks.append(
-            f"        echo \"[wings-accel] Trying feature: {feat}\"\n"
-            f"        set +e\n"
-            f"        python3 {accel_dir}/install.py --features '{single_options}'\n"
-            f"        FEAT_RC=$?\n"
-            f"        set -e\n"
-            f"        if [ $FEAT_RC -ne 0 ]; then\n"
-            f"            echo \"[wings-accel] WARNING: Feature '{feat}' install failed (exit=$FEAT_RC), skipping.\"\n"
-            f"            {update_json}"
-            f"        else\n"
-            f"            echo \"[wings-accel] Feature '{feat}' installed successfully.\"\n"
-            f"        fi\n"
-        )
-    return "".join(blocks)
-
-
-def _build_accel_auto_snippet(patch_key: str, features: list[str]) -> str:
-    """Build the fault-tolerant accel install shell snippet for auto-generated path.
-
-    版本策略：从 ENGINE_VERSION 环境变量解析，由上层（K8s Deployment）传入。
-    install.py 内部有 future_fallback 逻辑，即使传入的版本号不在
-    supported_features.json 中也会自动回退到默认版本。
-    """
-    accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
-    engine_version = normalize_engine_version()
-    all_options = json.dumps({patch_key: {"version": engine_version, "features": features}})
-    per_feature_code = _build_per_feature_fallback_code(patch_key, engine_version, features)
-    return (
-        f"export WINGS_ENGINE_PATCH_OPTIONS='{all_options}'\n"
-        f"echo \"[wings-accel] Patch version: {engine_version} (from ENGINE_VERSION)\"\n"
-        + f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
-        "    echo '[wings-accel] Installing all patches...'\n"
-        "    set +e\n"
-        f"    python3 {accel_dir}/install.py --features \"$WINGS_ENGINE_PATCH_OPTIONS\"\n"
-        "    ACCEL_RC=$?\n"
-        "    set -e\n"
-        "    if [ $ACCEL_RC -ne 0 ]; then\n"
-        "        echo \"[wings-accel] WARNING: "
-        "Batch install failed (exit=$ACCEL_RC), trying per-feature fallback...\"\n"
-        + per_feature_code
-        + "    else\n"
-        "        echo '[wings-accel] All patches installed successfully.'\n"
-        "    fi\n"
-        "else\n"
-        f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, skipping patch install.'\n"
-        "fi\n"
-    )
+    return _render_deepseek_v4_flash_ascend_lmcache_install_snippet()
 
 
 def _build_accel_preamble(engine: str, merged: dict) -> str:
-    """若 Accel 加速功能已开启，生成容错的 shell 安装片段；否则返回空字符串。
-
-    安装策略（容错）：
-      1. LMCache KV 卸载（ENABLE_KV_OFFLOAD）先经 _resolve_lmcache_install_target 判定
-         是否真的需要安装；native/MemCache/NVIDIA 镜像内置运行时等互斥路径会直接跳过
-      2. IndexCache（KV 稀疏 + IndexCache 架构）使用 --features indexcache 安装
-      3. 其他高级特性继续走 --features 路径；投机解码不走补丁安装
-      4. 先尝试批量安装所有特性
-      5. 若批量安装失败（install.py exit 非零），回退到逐特性安装
-      6. 单个特性安装失败时记录警告并跳过，继续安装其余特性
-      7. 无论安装结果如何，始终继续拉起引擎服务
-    """
+    """Generate the only remaining install.py preamble, when explicitly supported."""
     if not settings.ENABLE_ACCEL:
-        logger.debug("Accel disabled: skipping WINGS_ENGINE_PATCH_OPTIONS injection")
+        logger.debug(
+            "Accel disabled: skipping DeepSeek-V4-Flash Ascend LMCache package install"
+        )
         return ""
 
-    preamble_parts: list[str] = []
-
-    # ── LMCache KV 卸载：独立使用平台对应安装命令 ──
-    lmcache_snippet = _build_lmcache_install_snippet(engine, merged)
-    if lmcache_snippet:
-        logger.info("Accel: injecting LMCache package install")
-        preamble_parts.append(lmcache_snippet)
-
-    patch_key = _ENGINE_PATCH_KEY_MAP.get(engine)
-    required_features = _collect_required_patch_features(engine, merged)
-
-    # ── 路径 A：用户直接通过环境变量覆盖；动态必需 features 会合并进去 ──
-    user_override = _validate_accel_user_override()
-    if user_override:
-        logger.info("Accel: using user-provided WINGS_ENGINE_PATCH_OPTIONS (fault-tolerant)")
-        if patch_key and required_features:
-            engine_version = normalize_engine_version()
-            user_override = _merge_patch_options(
-                user_override, patch_key, engine_version, required_features,
-            )
-            logger.info(
-                "Accel: merged required features into user override: %s",
-                ", ".join(required_features),
-            )
-        preamble_parts.append(
-            _build_accel_user_override_snippet(_shell_escape_single_quote(user_override))
-        )
-        return "\n".join(preamble_parts) if preamble_parts else ""
-
-    # ── 路径 B：根据特性开关和动态策略自动构建 --features ──
-    if not patch_key:
-        if not preamble_parts:
-            logger.warning("Engine '%s' has no known accel patch mapping; skipping.", engine)
-        return "\n".join(preamble_parts) if preamble_parts else ""
-
-    if not required_features:
-        if not preamble_parts:
-            logger.info("Accel enabled but no advanced features active; skipping patch injection")
-        return "\n".join(preamble_parts) if preamble_parts else ""
-
-    logger.info(
-        "Accel enabled (fault-tolerant): injecting %d features for engine '%s'",
-        len(required_features), engine,
-    )
-    preamble_parts.append(_build_accel_auto_snippet(patch_key, required_features))
-    return "\n".join(preamble_parts)
-
+    snippet = _build_deepseek_v4_flash_ascend_lmcache_install_snippet(engine, merged)
+    if snippet:
+        logger.info("Accel: injecting DeepSeek-V4-Flash Ascend LMCache package install")
+    return snippet
 
 def _is_env_override_file(path: Path) -> bool:
     """Return True if *path* is a valid env-override file (not hidden, not README)."""
@@ -1184,10 +794,6 @@ else
   pkill -9 -f 'vllm.*EngineCore' 2>/dev/null || true
   pkill -9 -f 'vllm.*WorkerProc' 2>/dev/null || true
   pkill -9 -f 'multiproc_executor' 2>/dev/null || true
-  # 一刀切：unset 所有补丁/加速层使能环境变量，退到最基本的启动命令
-  # （不动 VLLM_ASCEND_ENABLE_* / VLLM_USE_V1 等常规性能 flag，它们不是补丁）
-  echo "[Engine] Unsetting patch/accel env vars for retry: WINGS_ENGINE_PATCH_OPTIONS"
-  unset WINGS_ENGINE_PATCH_OPTIONS
   echo "[Engine] Waiting 5s for port release before retry..."
   sleep 5
   ENGINE_START_EPOCH=$(date +%s)
@@ -1272,10 +878,6 @@ FEATURES_EOF
   pkill -9 -f 'vllm.*EngineCore' 2>/dev/null || true
   pkill -9 -f 'vllm.*WorkerProc' 2>/dev/null || true
   pkill -9 -f 'multiproc_executor' 2>/dev/null || true
-  # 一刀切：unset 所有补丁/加速层使能环境变量，退到最基本的启动命令
-  # （不动 VLLM_ASCEND_ENABLE_* / VLLM_USE_V1 等常规性能 flag，它们不是补丁）
-  echo "[AdvFeature] Unsetting patch/accel env vars for fallback: WINGS_ENGINE_PATCH_OPTIONS"
-  unset WINGS_ENGINE_PATCH_OPTIONS
   echo "[Engine] Waiting 5s for port release before restart..."
   sleep 5
   ENGINE_START_EPOCH=$(date +%s)

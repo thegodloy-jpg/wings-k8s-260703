@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     SERVICE_CLUSTER_IP: str = ""  # K8s Service ClusterIP（可选）
     NODE_PORT: str = "30483"  # K8s NodePort 端口号
     NODE_IP: str = ""  # 当前宿主机 IP
-    ENABLE_ACCEL: bool = True  # 是否启用 Accel 加速包（注入 WINGS_ENGINE_PATCH_OPTIONS）
+    ENABLE_ACCEL: bool = True  # 是否启用 Accel 加速包安装片段
     WINGS_ACCEL_DIR: str = "/accel-volume"  # Accel 加速包运行时目录（initContainer 从镜像 /opt/packages 拷贝到此处）
 
     # ---- 全局 HTTP 超时配置 ----
