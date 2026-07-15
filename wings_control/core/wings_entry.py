@@ -56,13 +56,20 @@ from utils.model_utils import (
 
 logger = logging.getLogger(__name__)
 
-# Only explicitly supported DeepSeek-V4-Flash scenes execute install.py, using
-# the current --config contract. Legacy patch installers are intentionally removed.
+# install.py 现在只服务于明确登记的少数场景。这里保留两个边界：
+# 1) Ascend LMCache：仍然跟随 offload 的有效状态，失败时还要回写 kv_offload=false；
+# 2) RTX PRO 5000 + DeepSeek-V4-Flash：属于运行时依赖补齐，和 spec/sparse/offload
+#    等高级特性开关解耦，只要模型与芯片命中就应在 engine 启动前先执行。
+# 旧的通用 patch/features 入口已经删除，后续新增场景也必须在这里显式登记。
 _LMCACHE_ASCEND_PACKAGE_CONFIG = '{"packages": ["lmcache-ascend:v0.4.5"]}'
+# Pro5000 场景只有 packages 固定；engine.name/version 必须从本次启动上下文动态生成，
+# 避免 launcher 升级后仍向 install.py 传递过期的 vLLM 版本。
 _DEEPSEEK_V4_FLASH_PRO5000_PACKAGES = [
     "deepgemm:nv_dev_a6b593d",
     "flashinfer:v0.6.12",
 ]
+# 上层的 ENGINE_VERSION 可能带 v 前缀、镜像后缀或卡型后缀，例如
+# "v0.23.0" / "0.23.1-rtxpro5000"。install.py 只需要规范的 vX.Y.Z。
 _ENGINE_VERSION_FOR_INSTALL_RE = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?", re.IGNORECASE)
 
 
@@ -209,7 +216,7 @@ def _should_install_deepseek_v4_flash_ascend_lmcache(
     engine: str,
     merged: dict | None,
 ) -> bool:
-    """Return True only for the supported DeepSeek-V4-Flash Ascend LMCache install."""
+    """仅在 Ascend DeepSeek-V4-Flash 真正启用 LMCache/offload 时安装 LMCache 包。"""
     if engine != "vllm_ascend":
         return False
     if not merged or not _is_deepseek_v4_flash_params(merged):
@@ -236,12 +243,20 @@ def _should_install_deepseek_v4_flash_pro5000_packages(
     engine: str,
     merged: dict | None,
 ) -> bool:
-    """Return True for DeepSeek-V4-Flash RTX PRO 5000 vLLM package install."""
+    """RTX PRO 5000 补丁只看模型/芯片/引擎身份，不读取高级特性开关。"""
     return is_deepseek_v4_flash_rtx_pro_5000(merged, engine)
 
 
 def _resolve_engine_version_for_install(merged: dict | None = None) -> str:
-    """Resolve the upstream engine version for install.py package config."""
+    """解析传给 install.py 的 vLLM 版本。
+
+    版本来源优先级：
+    - merged["engine_version"]：预留给未来显式透传；
+    - merged["engine"]["version"]：兼容上层若把 engine 当结构体透传的形态；
+    - ENGINE_VERSION：当前标准化校验与 K8s 环境实际使用的入口。
+
+    找不到版本时返回空字符串，由调用方跳过安装，避免退回硬编码版本。
+    """
     candidates = []
     if isinstance(merged, dict):
         engine_config = merged.get("engine")
@@ -269,6 +284,11 @@ def _build_deepseek_v4_flash_pro5000_package_config(
     engine: str,
     merged: dict | None = None,
 ) -> str:
+    """构造 Pro5000 install.py 的 JSON payload。
+
+    packages 固定来自适配需求；engine.name/version 必须跟随本次启动参数。
+    这里用 json.dumps 生成 JSON，避免手写字符串在版本联动后变成隐性拼接错误。
+    """
     version = _resolve_engine_version_for_install(merged)
     if not version:
         return ""
@@ -284,7 +304,11 @@ def _build_deepseek_v4_flash_pro5000_package_config(
 
 
 def _render_deepseek_v4_flash_pro5000_package_install_snippet(package_config: str) -> str:
-    """Render the fixed RTX PRO 5000 package install before feature hooks."""
+    """渲染 Pro5000 运行时依赖安装片段。
+
+    片段仍固定在 WINGS_ACCEL_DIR 下执行，和 Ascend LMCache 片段保持同一安装位置。
+    set +e 保证补丁安装失败不会阻断主服务启动；这类依赖只影响加速能力。
+    """
     accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
     return (
         "# --- wings-accel: install DeepSeek-V4-Flash RTX PRO 5000 packages (fault-tolerant) ---\n"
@@ -312,6 +336,11 @@ def _build_deepseek_v4_flash_pro5000_package_install_snippet(
     engine: str,
     merged: dict | None = None,
 ) -> str:
+    """按场景构建 Pro5000 安装片段。
+
+    先判断模型/芯片身份，再判断上层是否给出可解析的 ENGINE_VERSION。
+    这样既满足“命中场景就先安装”，又避免在版本未知时向 install.py 传过期版本。
+    """
     if not _should_install_deepseek_v4_flash_pro5000_packages(engine, merged):
         return ""
     package_config = _build_deepseek_v4_flash_pro5000_package_config(engine, merged)
@@ -325,7 +354,11 @@ def _build_deepseek_v4_flash_pro5000_package_install_snippet(
 
 
 def _render_deepseek_v4_flash_ascend_lmcache_install_snippet() -> str:
-    """Render the only remaining install.py snippet: Ascend LMCache package config."""
+    """渲染 Ascend LMCache 包安装片段。
+
+    该片段和 Pro5000 片段不同：它属于 offload 能力的一部分，失败后需要同步把
+    advanced_features.json 中的 kv_offload 标记为 false，避免页面继续展示已启用。
+    """
     accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
     update_json = _shell_update_feature_json("kv_offload", False)
     return (
@@ -361,7 +394,14 @@ def _build_deepseek_v4_flash_ascend_lmcache_install_snippet(
 
 
 def _build_accel_preamble(engine: str, merged: dict) -> str:
-    """Generate supported install.py preambles."""
+    """生成所有受支持的 install.py 前置片段。
+
+    顺序有业务含义：
+    - Pro5000 依赖补丁是基础运行时补齐，只要命中场景就先执行；
+    - Ascend LMCache 安装仍跟随 offload 的有效启用状态。
+
+    两者都位于 engine 启动脚本之前，保持补丁位置固定。
+    """
     if not settings.ENABLE_ACCEL:
         logger.debug(
             "Accel disabled: skipping DeepSeek-V4-Flash package installs"

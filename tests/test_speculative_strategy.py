@@ -789,6 +789,9 @@ def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypat
 
 
 def test_pro5000_spec_models_do_not_emit_ears_env_or_runtime_deps(monkeypatch):
+    # 这个测试同时保护两条边界：
+    # - 旧的 EARS/install-runtime-deps 补丁不能借 spec 场景回流；
+    # - DeepSeek-V4-Flash + Pro5000 的新依赖安装独立于 spec/sparse/offload，命中即生成。
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")

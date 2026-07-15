@@ -1722,6 +1722,8 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
 
 
 def test_deepseek_v4_flash_pro5000_installs_packages_without_feature_enablement(monkeypatch):
+    # Pro5000 的 deepgemm/flashinfer 安装是运行时依赖补齐，不是 spec/sparse/offload
+    # 任一高级特性的副作用。因此 _smart_feats 为空时仍必须生成 accel preamble。
     monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
     params = {
         "engine": "vllm",
@@ -1750,6 +1752,8 @@ def test_deepseek_v4_flash_pro5000_installs_packages_without_feature_enablement(
 
 
 def test_deepseek_v4_flash_pro5000_install_payload_uses_upstream_engine_version(monkeypatch):
+    # 上层通过 ENGINE_VERSION 传递当前 vLLM 镜像版本；install.py payload 必须跟随它，
+    # 不能回退到旧的硬编码 v0.23.0，否则镜像升级后会安装错误版本的依赖包。
     monkeypatch.setenv("ENGINE_VERSION", "0.23.1-rtxpro5000")
     params = {
         "engine": "vllm",
@@ -1769,6 +1773,8 @@ def test_deepseek_v4_flash_pro5000_install_payload_uses_upstream_engine_version(
 
 
 def test_deepseek_v4_flash_pro5000_install_skips_without_upstream_engine_version(monkeypatch):
+    # 版本不可解析时宁可跳过安装，也不要猜测版本。这个回归用例保护
+    # “版本由上层联动传入”的契约，避免后续又引入隐式默认版本。
     monkeypatch.delenv("ENGINE_VERSION", raising=False)
     params = {
         "engine": "vllm",
@@ -1787,6 +1793,8 @@ def test_deepseek_v4_flash_pro5000_install_skips_without_upstream_engine_version
 
 
 def test_qwen35_nvfp4_pro5000_skips_deepseek_package_install():
+    # 芯片命中 Pro5000 不等于所有模型都要安装 DSV4 专属包；
+    # 模型身份仍是触发条件的一部分，Qwen 路径必须保持无 install.py 片段。
     params = {
         "engine": "vllm",
         "model_name": "Qwen3.5-397B-A17B-NVFP4",
