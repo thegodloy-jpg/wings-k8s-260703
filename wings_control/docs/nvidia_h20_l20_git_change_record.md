@@ -17,6 +17,54 @@ smart_feature_whitelist.json
 
 最终效果：H20/L20 场景通过数据配置表达，命令生成继续复用现有 resolver，避免重复分支和隐式默认值。
 
+## 触发链路示例
+
+以 `Qwen3.6-35B-A3B + L20 + vLLM` 为例，页面同时请求投机解码和 KV offload，并下发 `KV_MEM_OFFLOAD_SIZE=40`（这里只是示例输入，不是系统默认值）：
+
+```text
+输入条件
+  engine = vllm
+  model_name / model_path 包含 qwen3.6-35b-a3b
+  hardware_env.details[0].name 可解析出 card_token = l20
+  enable_speculative_decode = true
+  ENABLE_KV_OFFLOAD = true
+  KV_MEM_OFFLOAD_SIZE = 40
+
+1. 普通 defaults 选择
+  config_loader._match_model_engine_config()
+    -> 命中 nvidia_default.json 中的 Qwen3.6-35B-A3B
+    -> card_tokens = ["l20", "h20-96", "h20-141"] 包含当前 l20
+    -> 合入 vllm defaults：
+       use_vllm_serve / trust_remote_code / tool_call_parser=qwen3_xml /
+       mm_encoder_tp_mode=data / enable_prefix_caching / kv_cache_dtype=fp8
+
+2. smart feature 授权收口
+  config_loader.apply_effective_feature_enablement()
+    -> resolve_feature_whitelist(engine, model_name, model_path, card_token)
+    -> spec 表命中：
+       mtp_method=mtp, mtp_num_speculative_tokens=3, mtp_moe_backend=triton
+    -> offload 表命中：
+       backend=native
+    -> 页面请求与白名单取交集：
+       _allowed_smart_feats = ["offload", "spec"]
+       _smart_feats = ["offload", "spec"]
+
+3. vLLM 命令渲染
+  vllm_adapter._build_vllm_single_script()
+    -> _build_speculative_cmd() 读取 spec 白名单行，生成：
+       --speculative-config '{"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}'
+    -> _build_kv_offload_cmd() 读取 offload backend=native 和 KV_MEM_OFFLOAD_SIZE，生成：
+       --kv-offloading-backend native --kv-offloading-size 40
+
+4. 状态展示
+  wings_entry._write_advanced_features_json()
+    -> speculative_decode=true, variant=mtp
+    -> kv_offload=true, variant=native_kv_offloading_backend
+    -> /v1/startup/accel 读取 advanced_features.json 展示最终有效状态
+```
+
+如果同样的模型名运行在 A100、B200、RTX Pro 等未命中 `card_tokens` 的 NVIDIA 卡上，第 1 步 exact defaults 会被跳过；smart whitelist 也会因为 `card_token` 不匹配而无法产出同一套 H20/L20 Day0 能力。
+
 ## 修改摘要
 
 | 改动点 | 修改了什么 | 为什么修改 | 修改后的效果 |
