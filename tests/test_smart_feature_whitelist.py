@@ -174,12 +174,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         for entry in nv023_glm_rows
         if not any("fp8" in token for token in entry["name_tokens"])
     ]
-    assert all(
-        len(entry["name_tokens"]) == 2
-        and entry["name_tokens"][0].startswith("zai-org/")
-        and entry["name_tokens"][1] == entry["name_tokens"][0].split("/", 1)[1]
-        for entry in nv023_glm_base_rows
-    )
+    assert nv023_glm_base_rows == []
     assert {
         token
         for entry in nv023_glm_rows
@@ -311,7 +306,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "zai-org/GLM-5.1",
         "/models/zai-org/GLM-5.1",
         "h20-141",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3-Embedding-0.6B",
@@ -461,16 +456,14 @@ def test_nvidia_day0_l20_smart_features_inherit_to_h20(
         assert spec_row.get("mtp_moe_backend") == mtp_moe_backend
 
 
-@pytest.mark.parametrize(
-    "model_name",
-    ["zai-org/GLM-5", "zai-org/GLM-4.7", "zai-org/GLM-5.1"],
-)
-def test_nvidia_day0_h20_only_smart_features_do_not_inherit_to_l20(model_name):
+@pytest.mark.parametrize("card_token", ["l20", "h20-96", "h20-141"])
+@pytest.mark.parametrize("model_name", ["zai-org/GLM-5", "zai-org/GLM-4.7", "zai-org/GLM-5.1"])
+def test_nvidia_day0_base_glm_names_have_no_smart_features(model_name, card_token):
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         model_name,
         f"/models/{model_name}",
-        "l20",
+        card_token,
     ) == frozenset()
 
 
@@ -1164,7 +1157,7 @@ def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
         ("vllm", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", 32),
         ("vllm", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", 10),
-        ("vllm", "zai-org/GLM-4.7", "/models/zai-org/GLM-4.7", "h20-141", 1),
+        ("vllm", "GLM-4.7-FP8", "/models/zai-org/GLM-4.7", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
