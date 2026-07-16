@@ -1,6 +1,6 @@
 {
   "_comment_card_tokens": [
-    "card_tokens 是 NVIDIA exact model defaults 的可选芯片门禁元数据，只限制当前模型条目是否可被选中，不属于任何 engine 参数，也不会进入 vLLM CLI。",
+    "card_tokens 是 NVIDIA exact model defaults 的可选芯片门禁元数据，只限制当前模型条目是否可被选中，不属于任何 engine 参数，也不会进入 CLI。",
     "config_loader 在模型名命中后、读取 vllm/vllm_distributed 等子配置前，用 resolve_card_token(hardware_env) 解析当前芯片，并与 card_tokens 做标准化匹配；未配置 card_tokens 的历史条目保持原行为。",
     "如果当前芯片未知或不在 card_tokens 内，该 exact model defaults 会被跳过并回退到架构 default，避免 L20/H20 Day0 参数误触到 A100、B200、RTX Pro 等其它 NVIDIA 场景。",
     "本批 Day0 规则：GLM-4.7/GLM-5/GLM-5.1 只允许 h20-96、h20-141；Qwen3.6、Qwen3-Embedding、BGE 的 L20 场景可单向覆盖到 h20-96、h20-141，但 H20-only 场景不反向派生到 L20。",
@@ -57,6 +57,38 @@
             "tool_call_parser": "deepseekv3"
           }
         },
+        "DeepSeek-R1-H20-96G": {
+          "card_tokens": ["h20-96"],
+          "sglang": {
+            "trust_remote_code": true,
+            "context_length": 4096,
+            "mem_fraction_static": 0.9,
+            "grammar_backend": "xgrammar",
+            "tool_call_parser": "deepseekv3"
+          }
+        },
+        "DeepSeek-R1-H20-141G": {
+          "card_tokens": ["h20-141"],
+          "sglang": {
+            "dp": 8,
+            "trust_remote_code": true,
+            "context_length": 4096,
+            "mem_fraction_static": 0.95,
+            "grammar_backend": "xgrammar",
+            "max_running_requests": 256,
+            "enable_dp_attention": true,
+            "enable_mixed_chunk": true,
+            "chunked_prefill_size": 2048,
+            "max_prefill_tokens": 4096,
+            "attention_backend": "flashinfer",
+            "flashinfer_mla_disable_ragged": true,
+            "enable_nccl_nvls": true,
+            "show_time_cost": true,
+            "enable_torch_compile": true,
+            "torch_compile_max_bs": 32,
+            "tool_call_parser": "deepseekv3"
+          }
+        },
         "DeepSeek-R1": {
           "vllm": {
             "trust_remote_code": true,
@@ -70,38 +102,42 @@
             "tool_call_parser": "deepseek_v3",
             "enable_expert_parallel": true
           },
-          "sglang": {
-            "H20-96G": {
-              "trust_remote_code": true,
-              "context_length": 4096,
-              "mem_fraction_static": 0.9,
-              "grammar_backend": "xgrammar",
-              "tool_call_parser": "deepseekv3"
-            },
-            "H20-141G": {
-              "dp": 8,
-              "trust_remote_code": true,
-              "context_length": 4096,
-              "mem_fraction_static": 0.95,
-              "grammar_backend": "xgrammar",
-              "max_running_requests": 256,
-              "enable_dp_attention": true,
-              "enable_mixed_chunk": true,
-              "chunked_prefill_size": 2048,
-              "max_prefill_tokens": 4096,
-              "attention_backend": "flashinfer",
-              "flashinfer_mla_disable_ragged": true,
-              "enable_nccl_nvls": true,
-              "show_time_cost": true,
-              "enable_torch_compile": true,
-              "torch_compile_max_bs": 32,
-              "tool_call_parser": "deepseekv3"
-            }
-          },
           "sglang_distributed": {
             "trust_remote_code": true,
             "context_length": 4096,
             "tool_call_parser": "deepseekv3"
+          }
+        },
+        "DeepSeek-V3.1-H20-96G": {
+          "card_tokens": ["h20-96"],
+          "sglang": {
+            "trust_remote_code": true,
+            "context_length": 4096,
+            "mem_fraction_static": 0.9,
+            "grammar_backend": "xgrammar",
+            "tool_call_parser": "deepseekv31"
+          }
+        },
+        "DeepSeek-V3.1-H20-141G": {
+          "card_tokens": ["h20-141"],
+          "sglang": {
+            "dp": 8,
+            "trust_remote_code": true,
+            "context_length": 4096,
+            "mem_fraction_static": 0.95,
+            "grammar_backend": "xgrammar",
+            "max_running_requests": 256,
+            "enable_dp_attention": true,
+            "enable_mixed_chunk": true,
+            "chunked_prefill_size": 2048,
+            "max_prefill_tokens": 4096,
+            "attention_backend": "flashinfer",
+            "flashinfer_mla_disable_ragged": true,
+            "enable_nccl_nvls": true,
+            "show_time_cost": true,
+            "enable_torch_compile": true,
+            "torch_compile_max_bs": 32,
+            "tool_call_parser": "deepseekv31"
           }
         },
         "DeepSeek-V3.1": {
@@ -116,34 +152,6 @@
             "max_model_len": 4096,
             "tool_call_parser": "deepseek_v31",
             "enable_expert_parallel": true
-          },
-          "sglang": {
-            "H20-96G": {
-              "trust_remote_code": true,
-              "context_length": 4096,
-              "mem_fraction_static": 0.9,
-              "grammar_backend": "xgrammar",
-              "tool_call_parser": "deepseekv31"
-            },
-            "H20-141G": {
-              "dp": 8,
-              "trust_remote_code": true,
-              "context_length": 4096,
-              "mem_fraction_static": 0.95,
-              "grammar_backend": "xgrammar",
-              "max_running_requests": 256,
-              "enable_dp_attention": true,
-              "enable_mixed_chunk": true,
-              "chunked_prefill_size": 2048,
-              "max_prefill_tokens": 4096,
-              "attention_backend": "flashinfer",
-              "flashinfer_mla_disable_ragged": true,
-              "enable_nccl_nvls": true,
-              "show_time_cost": true,
-              "enable_torch_compile": true,
-              "torch_compile_max_bs": 32,
-              "tool_call_parser": "deepseekv31"
-            }
           },
           "sglang_distributed": {
             "trust_remote_code": true,

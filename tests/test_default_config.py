@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from core import config_loader  # noqa: E402
-from engines import vllm_adapter  # noqa: E402
+from engines import sglang_adapter, vllm_adapter  # noqa: E402
 
 
 class _FakeDeepSeekV4Info:
@@ -72,46 +72,88 @@ def test_deepseek_v4_flash_repo_name_selects_pro5000_vllm_defaults():
     assert "rtx_pro_5000_72G" not in config
 
 
-def test_special_nvidia_config_selector_preserves_all_card_branches():
-    config = {
-        "sglang": {
-            "engine_marker": True,
-            "H20-96G": {"selected": "h20"},
+def test_model_card_profile_key_reuses_model_name_and_card_tokens():
+    arch_dict = {
+        "Model-H20-96G": {
+            "card_tokens": ["h20-96"],
+            "sglang": {"selected": "h20"},
         },
-        "vllm": {
-            "default": {"selected": "default"},
-            "rtx_pro_5000_72G": {"selected": "pro5000"},
+        "Model": {
+            "vllm": {"selected": "base"},
         },
     }
-    sglang_scenario = config_loader._SpecialEngineScenario(
-        deepseek_sglang_nvidia=True,
-    )
-    flash_scenario = config_loader._SpecialEngineScenario(
-        deepseek_v4_flash_vllm_nvidia=True,
-    )
 
-    def selection(engine_key, scenario, h20_model="", card_model=""):
-        return config_loader._SpecialNvidiaConfigSelection(
-            model="model",
-            config=config,
-            engine_key=engine_key,
-            scenario=scenario,
-            h20_model=h20_model,
-            card_model=card_model,
-        )
-
-    assert config_loader._resolve_special_nvidia_engine_config(
-        selection("sglang", sglang_scenario, h20_model="H20-96G")
+    assert config_loader._match_model_engine_config(
+        arch_dict,
+        "model",
+        "sglang",
+        config_loader._SpecialEngineScenario(),
+        _FakeModelInfo("Model", "Arch"),
+        {"device": "nvidia", "details": [{"name": "NVIDIA H20 96GB"}]},
     ) == {"selected": "h20"}
-    assert config_loader._resolve_special_nvidia_engine_config(
-        selection("sglang", sglang_scenario)
-    ) == config["sglang"]
-    assert config_loader._resolve_special_nvidia_engine_config(
-        selection("vllm", flash_scenario, card_model="rtx_pro_5000_72G")
-    ) == {"selected": "pro5000"}
-    assert config_loader._resolve_special_nvidia_engine_config(
-        selection("vllm", flash_scenario, card_model="other")
-    ) == {"selected": "default"}
+    assert config_loader._match_model_engine_config(
+        arch_dict,
+        "model",
+        "sglang",
+        config_loader._SpecialEngineScenario(),
+        _FakeModelInfo("Model", "Arch"),
+        {"device": "nvidia", "details": [{"name": "NVIDIA A100 80GB"}]},
+    ) == {}
+
+
+def test_deepseek_sglang_h20_defaults_follow_detected_hardware(monkeypatch):
+    monkeypatch.setenv("WINGS_H20_MODEL", "H20-96G")
+    arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV3ForCausalLM"]
+    scenario = config_loader._SpecialEngineScenario()
+    cases = [
+        (
+            {"device": "nvidia", "details": [{"name": "NVIDIA H20 96GB"}]},
+            0.9,
+            None,
+        ),
+        (
+            {
+                "device": "nvidia",
+                "details": [{"name": "NH02(141GB) / G8600 V7", "total_memory": 141}],
+            },
+            0.95,
+            8,
+        ),
+    ]
+
+    for hardware, expected_memory_fraction, expected_dp in cases:
+        config = config_loader._match_model_engine_config(
+            arch_dict,
+            "deepseek-v3.1",
+            "sglang",
+            scenario,
+            _FakeModelInfo("DeepSeek-V3.1", "DeepseekV3ForCausalLM"),
+            hardware,
+        )
+        cmd = sglang_adapter._build_sglang_cmd_parts({"engine_config": config})
+
+        assert config["mem_fraction_static"] == expected_memory_fraction
+        assert config.get("dp") == expected_dp
+        assert "card_tokens" not in config
+        assert "--H20-96G" not in cmd
+        assert "--H20-141G" not in cmd
+        assert "--card-tokens" not in cmd
+        assert "--tool-call-parser deepseekv31" in cmd
+
+
+def test_deepseek_sglang_unknown_card_does_not_emit_h20_profile_args(monkeypatch):
+    monkeypatch.delenv("WINGS_H20_MODEL", raising=False)
+    arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV3ForCausalLM"]
+    config = config_loader._match_model_engine_config(
+        arch_dict,
+        "deepseek-v3.1",
+        "sglang",
+        config_loader._SpecialEngineScenario(),
+        _FakeModelInfo("DeepSeek-V3.1", "DeepseekV3ForCausalLM"),
+        {"device": "nvidia", "details": [{"name": "NVIDIA A100 80GB"}]},
+    )
+
+    assert config == {}
 
 
 def test_deepseek_v4_flash_repo_name_gets_pro5000_defaults_through_real_selector():
@@ -1132,6 +1174,12 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]
 
+    deepseek_v3 = llm["DeepseekV3ForCausalLM"]
+    for model_key in ("DeepSeek-R1", "DeepSeek-V3.1"):
+        assert deepseek_v3[f"{model_key}-H20-96G"]["card_tokens"] == ["h20-96"]
+        assert deepseek_v3[f"{model_key}-H20-96G"]["sglang"]["mem_fraction_static"] == 0.9
+        assert deepseek_v3[f"{model_key}-H20-141G"]["card_tokens"] == ["h20-141"]
+        assert deepseek_v3[f"{model_key}-H20-141G"]["sglang"]["dp"] == 8
     assert llm["Glm4MoeForCausalLM"]["GLM-4.7"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["Glm4MoeForCausalLM"]["GLM-4.7-FP8"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["Glm4MoeForCausalLM"]["GLM4.7"]["card_tokens"] == ["h20-96", "h20-141"]

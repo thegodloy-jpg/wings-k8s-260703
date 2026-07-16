@@ -50,7 +50,7 @@ from utils.model_utils import (ModelIdentifier,
                                is_qwen3_5_397b_nvfp4_vllm,
                                is_kimi_k27_code_family,
                                THINKING_ALWAYS_ON, THINKING_HYBRID, THINKING_NONE)
-from utils.device_utils import check_pcie_cards, resolve_card_token
+from utils.device_utils import check_pcie_cards, is_h20_gpu, resolve_card_token
 try:
     from wings_control.core.version_util import resolve_card_model
 except ImportError:
@@ -3400,6 +3400,20 @@ def _model_config_key_matches_lookup_names(config_key_lower: str, lookup_names: 
     )
 
 
+def _model_profile_key_matches_lookup_names(
+    config_key_lower: str,
+    lookup_names: list,
+    config: Dict[str, Any],
+) -> bool:
+    """支持带 card_tokens 的模型 profile key 复用同一模型名匹配。"""
+    if not config.get("card_tokens"):
+        return False
+    return any(
+        name and _model_name_contains_config_token(config_key_lower, name)
+        for name in lookup_names
+    )
+
+
 def _normalize_card_token_for_match(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -3416,14 +3430,28 @@ def _model_config_card_tokens_match(
     if not isinstance(card_tokens, (list, tuple, set)):
         return False
 
-    current_card = _normalize_card_token_for_match(resolve_card_token(hardware_env))
-    if not current_card:
+    current_cards = [
+        _normalize_card_token_for_match(resolve_card_token(hardware_env))
+    ]
+    # 复用已有 H20 显存判断，兼容 NH02/G8600 这类名称里不含 H20 的硬件描述。
+    details = (hardware_env or {}).get("details") or []
+    if details and isinstance(details[0], dict):
+        total_memory = details[0].get("total_memory")
+        try:
+            current_cards.append(_normalize_card_token_for_match(is_h20_gpu(float(total_memory))))
+        except (TypeError, ValueError):
+            pass
+    current_cards = [token for token in current_cards if token]
+    if not current_cards:
         return False
 
     for candidate in card_tokens:
         token = _normalize_card_token_for_match(candidate)
-        if token and token in current_card:
-            return True
+        if not token:
+            continue
+        for current_card in current_cards:
+            if token in current_card or current_card in token:
+                return True
     return False
 
 
@@ -3605,7 +3633,9 @@ def _resolve_special_nvidia_engine_config(
     engine_key = selection.engine_key
     config = selection.config
     engine_config = config.get(engine_key, {})
-    if scenario.deepseek_sglang_nvidia:
+    if scenario.deepseek_sglang_nvidia and (
+        "H20-96G" in engine_config or "H20-141G" in engine_config
+    ):
         dedicated_h20 = h20_model in ("H20-96G", "H20-141G")
         if dedicated_h20:
             logger.info("Using dedicated config for model '%s' on %s", model, h20_model)
@@ -3639,12 +3669,11 @@ def _match_model_engine_config(
     hardware_env: Dict[str, Any] | None = None,
     model_path_lower: str = "",
 ) -> Dict[str, Any]:
-    """在架构配置字典中按模型名查找引擎参数，支持 H20 卡型适配。
+    """在架构配置字典中按模型名查找引擎参数，支持 model-level card_tokens 适配。
 
     遍历 arch_dict 中的模型条目，找到名称匹配项后返回对应的引擎参数。
-    DeepSeek+SGLang+NVIDIA 场景下额外检测 H20 GPU 型号以选用专属配置。
-    DeepSeek-V4-Flash+vLLM+NVIDIA 场景下额外检测 NVIDIA GPU 型号以选用
-    rtx_pro_5000_72G 专属配置子块。
+    带 card_tokens 的模型 profile 可在模型名后追加卡型后缀；当前芯片不匹配时
+    继续查找下一个候选，避免提前回退到架构默认。
     匿名模型可通过 ``model_info`` 提供的架构 + 量化指纹补充查找名（如 w4a8
     DeepseekV4 → ``deepseek-v4-pro``），以匹配 JSON 中的对应条目。
 
@@ -3673,7 +3702,26 @@ def _match_model_engine_config(
     card_model = resolve_card_model(hardware_env)
 
     for model, config in arch_dict.items():
-        if not _model_config_key_matches_lookup_names(model.lower(), lookup_names):
+        model_key = model.lower()
+        if not (
+            _model_config_key_matches_lookup_names(model_key, lookup_names)
+            or _model_profile_key_matches_lookup_names(model_key, lookup_names, config)
+        ):
+            continue
+        if not _model_config_card_tokens_match(config, hardware_env):
+            logger.info(
+                "Skipping engine config for model '%s' because current card does not match card_tokens=%s",
+                model,
+                config.get("card_tokens"),
+            )
+            continue
+        engine_config = config.get(engine_key, {})
+        if not engine_config:
+            logger.info(
+                "Skipping engine config for model '%s' because engine_key=%s is not configured",
+                model,
+                engine_key,
+            )
             continue
         special_config = _resolve_special_nvidia_engine_config(
             _SpecialNvidiaConfigSelection(
@@ -3687,15 +3735,8 @@ def _match_model_engine_config(
         )
         if special_config is not None:
             return special_config
-        if not _model_config_card_tokens_match(config, hardware_env):
-            logger.info(
-                "Skipping engine config for model '%s' because current card does not match card_tokens=%s",
-                model,
-                config.get("card_tokens"),
-            )
-            return {}
         logger.info("Using engine config for model '%s' (engine_key=%s)", model, engine_key)
-        return config.get(engine_key, {})
+        return engine_config
 
     return {}
 
@@ -3847,7 +3888,7 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
     """获取并合并模型专属的默认部署配置（按查找链路逐级回退）。
 
     查找链路: 精确模型名 → 架构级默认 → 模型类型默认 → 引擎兜底默认。
-    DeepSeek+SGLang+NVIDIA 场景支持按 H20 卡型选配（H20-96G / H20-141G）。
+    带 card_tokens 的模型条目会复用统一芯片匹配逻辑。
 
     Args:
         hardware_env:     硬件环境信息（device, gpu_memory 等）。
@@ -3869,7 +3910,6 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
 
     if model_architecture in models_dict:
         model_architecture_dict = models_dict[model_architecture]
-
         is_deepseek_sglang_nvidia = (
             model_architecture == "DeepseekV3ForCausalLM"
             and hardware_env.get("device") == "nvidia"
