@@ -1,4 +1,6 @@
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -858,6 +860,133 @@ def test_spec_request_without_whitelist_generates_suffix_config(monkeypatch):
 
     assert '"method" : "suffix"' in command
     assert '"num_speculative_tokens": 5' in command
+
+
+def test_async_scheduling_auto_suffix_disables_spec_and_keeps_scheduling(
+    monkeypatch, caplog,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen2Identifier)
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("SD_ENABLE", "true")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-R1-Distill-Qwen-1.5B",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": [],
+        "engine_config": {
+            "async_scheduling": True,
+            "scheduling_policy": "priority",
+        },
+    }
+
+    with caplog.at_level(logging.INFO):
+        script = vllm_adapter.build_start_script(params)
+
+    assert "--async-scheduling" in script
+    assert "--scheduling-policy priority" in script
+    assert "--speculative-config" not in script
+    assert params["enable_speculative_decode"] is False
+    assert params["_smart_feats"] == []
+    assert params["engine_config"]["async_scheduling"] is True
+    assert "speculative_config" not in params["engine_config"]
+    assert "Keeping scheduling enabled, disabling speculative decoding" in caplog.text
+    assert "Async/suffix conflict guard applied" in caplog.text
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["SD_ENABLE"] == "false"
+
+
+def test_async_scheduling_explicit_suffix_config_is_removed(monkeypatch, caplog):
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("SD_ENABLE", "true")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen3.6-27B-w8a8",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_feats": ["spec"],
+        "engine_config": {
+            "async_scheduling": True,
+            "speculative_config": {
+                "method": "suffix",
+                "num_speculative_tokens": 5,
+            },
+        },
+    }
+
+    with caplog.at_level(logging.INFO):
+        engine_config = vllm_adapter._prepare_engine_config(params)
+
+    assert engine_config["async_scheduling"] is True
+    assert "speculative_config" not in engine_config
+    assert "speculative_config" not in params["engine_config"]
+    assert params["enable_speculative_decode"] is False
+    assert params["_smart_feats"] == []
+    assert "source=engine_config.speculative_config" in caplog.text
+    assert "removed_speculative_config" in caplog.text
+
+
+def test_async_scheduling_mtp_speculative_config_is_kept():
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen3.6-27B-w8a8",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_feats": ["spec"],
+        "engine_config": {
+            "async_scheduling": True,
+            "speculative_config": {
+                "method": "qwen3_5_mtp",
+                "num_speculative_tokens": 3,
+            },
+        },
+    }
+
+    engine_config = vllm_adapter._prepare_engine_config(params)
+
+    assert engine_config["speculative_config"] == {
+        "method": "qwen3_5_mtp",
+        "num_speculative_tokens": 3,
+    }
+    assert params["enable_speculative_decode"] is True
+    assert params["_smart_feats"] == ["spec"]
+
+
+def test_async_suffix_veto_updates_startup_accel_status(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen2Identifier)
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-R1-Distill-Qwen-1.5B",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": [],
+        "engine_config": {
+            "async_scheduling": "true",
+        },
+    }
+
+    vllm_adapter.prepare_params_for_startup_status(params)
+    wings_entry._write_advanced_features_json("vllm_ascend", params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["speculative_decode"] is False
+    assert data["variants"]["speculative_decode"] is None
+    assert data["others"]["speculative_decode"] is None
+    assert wings_entry._collect_active_feature_names(params, "vllm_ascend") == []
 
 
 @pytest.mark.parametrize("draft_path", ["none", "None", " none ", '"none"', "'none'", "null"])

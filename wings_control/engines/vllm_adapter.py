@@ -2340,6 +2340,116 @@ def _force_vllm_error_stack_logging(
     engine_config["log_error_stack"] = True
 
 
+def _is_truthy_engine_config_value(value: Any) -> bool:
+    """Return whether an engine_config value enables a boolean-like switch."""
+    # engine_config 的布尔字段来源很多：默认 JSON 里通常是 bool，
+    # 页面/config-file/环境透传时可能变成 "true" / "1" 字符串。
+    # 这里集中做一次宽松判断，避免每个冲突保护点各自解析。
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _speculative_config_method(value: Any) -> str:
+    """Extract speculative_config.method from dict or dict-like string values."""
+    # speculative_config 可能已经是 dict，也可能是上游配置文件带来的 JSON 字符串。
+    # 复用现有 _parse_dict_like_config，避免手写字符串拆分造成格式漂移。
+    parsed = _parse_dict_like_config(value)
+    if not parsed:
+        return ""
+    return str(parsed.get("method") or "").strip().lower()
+
+
+def _remove_effective_spec_feature(params: Dict[str, Any]) -> None:
+    """Remove spec from effective smart-feature state after a final conflict veto."""
+    # _smart_feats 是 advanced_features.json、fallback 日志和下游 feature 判断的
+    # 有效状态来源。关闭投机时必须同步移除 spec，否则命令已无投机但页面/日志仍会显示启用。
+    smart_feats = params.get("_smart_feats")
+    if smart_feats is None:
+        return
+    if isinstance(smart_feats, str):
+        smart_feats = [smart_feats]
+    params["_smart_feats"] = [
+        feat for feat in list(smart_feats) if str(feat).strip().lower() != "spec"
+    ]
+
+
+def _disable_speculative_decode_for_async_suffix_conflict(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+) -> None:
+    """Keep async scheduling and disable suffix speculative decoding.
+
+    vLLM rejects ``async_scheduling + speculative_config.method=suffix`` during
+    VllmConfig validation.  This final guard is intentionally narrow: MTP,
+    draft-model, EAGLE and other non-suffix methods are preserved.
+    """
+    if not _is_truthy_engine_config_value(engine_config.get("async_scheduling")):
+        return
+
+    # 只处理 suffix 冲突：
+    # 1. 显式 engine_config.speculative_config.method=suffix；
+    # 2. 上层只打开 enable_speculative_decode，launcher 会自动回落 suffix。
+    # MTP / draft_model / EAGLE 等 vLLM 明确允许的 async-scheduling 组合不受影响。
+    explicit_spec_config = engine_config.get("speculative_config")
+    explicit_method = _speculative_config_method(explicit_spec_config)
+    source = ""
+    if explicit_method:
+        if explicit_method != "suffix":
+            return
+        source = "engine_config.speculative_config"
+    elif params.get("enable_speculative_decode"):
+        strategy = (resolve_speculative_strategy(params, params.get("engine", "")) or "").lower()
+        if strategy != "suffix":
+            return
+        source = "launcher auto suffix fallback"
+    else:
+        return
+
+    # 策略裁定：保留调度，关闭投机。原因是用户明确要求 scheduling 优先，
+    # 且 vLLM 的校验错误只针对 suffix speculative_config，不针对调度本身。
+    # 这里原地回写 params，使最终 CLI、advanced_features.json、特性日志和 fallback 标签同源。
+    engine = params.get("engine", "")
+    model_name = params.get("model_name") or params.get("served_model_name") or "(unknown)"
+    card = params.get("_smart_card_token") or "(unknown)"
+    scheduling_policy = engine_config.get("scheduling_policy", "(not set)")
+    logger.warning(
+        "[AdvFeature-SpecDecode] Incompatible vLLM options detected: "
+        "async_scheduling=true, scheduling_policy=%s, speculative_method=suffix. "
+        "Keeping scheduling enabled, disabling speculative decoding, and removing "
+        "--speculative-config. source=%s, engine=%s, model=%s, card=%s",
+        scheduling_policy,
+        source,
+        engine,
+        model_name,
+        card,
+    )
+
+    removed = engine_config.pop("speculative_config", None)
+    params_engine_config = params.get("engine_config")
+    if isinstance(params_engine_config, dict):
+        if removed is None:
+            removed = params_engine_config.pop("speculative_config", None)
+        params_engine_config.pop("speculative_config", None)
+    params["enable_speculative_decode"] = False
+    os.environ["ENABLE_SPECULATIVE_DECODE"] = "false"
+    os.environ["SD_ENABLE"] = "false"
+    _remove_effective_spec_feature(params)
+    logger.info(
+        "[AdvFeature-SpecDecode] Async/suffix conflict guard applied: "
+        "async_scheduling=%s kept, scheduling_policy=%s kept, "
+        "enable_speculative_decode=false, _smart_feats=%s, removed_speculative_config=%s",
+        engine_config.get("async_scheduling"),
+        scheduling_policy,
+        params.get("_smart_feats"),
+        removed,
+    )
+
+
 def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     """准备最终传给 ``_build_vllm_cmd_parts`` 的 engine_config。
 
@@ -2420,6 +2530,7 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         engine_config.setdefault("runner", "pooling")
 
     _force_vllm_error_stack_logging(params, engine_config)
+    _disable_speculative_decode_for_async_suffix_conflict(params, engine_config)
     _writeback_dp_topology_to_params(params, engine_config)
     # 同步 speculative_config 回 params，阻止 _should_append_auto_speculative_config 重复合成
     if "speculative_config" in engine_config:
