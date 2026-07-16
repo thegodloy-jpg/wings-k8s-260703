@@ -86,20 +86,20 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
         "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
         "910c",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
         "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
         "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
         "910b",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
 
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
         "/models/deepseek-ai/DeepSeek-V4-Flash",
         "h20-141",
-    ) == frozenset({"spec"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
@@ -252,7 +252,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "ZhipuAI/GLM-4.7-FP8",
         "/models/ZhipuAI/GLM-4.7-FP8",
         "h20-141",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "ZhipuAI/GLM-4.7-FP8",
@@ -264,7 +264,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "MiniMax/MiniMax-M2.7-NVFP4",
         "/models/MiniMax/MiniMax-M2.7-NVFP4",
         "rtxpro5000-72",
-    ) == frozenset({"spec", "sparse", "offload"})
+    ) == frozenset({"spec", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "MiniMax/MiniMax-M3-MXFP8",
@@ -288,7 +288,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "ZhipuAI/GLM-5.1-FP8",
         "/models/ZhipuAI/GLM-5.1-FP8",
         "h20-141",
-    ) == frozenset({"sparse"})
+    ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "zai-org/GLM-5.1",
@@ -300,19 +300,19 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Qwen3-Embedding-0.6B",
         "/models/Qwen3-Embedding-0.6B",
         "l20",
-    ) == frozenset({"offload"})
+    ) == frozenset({"sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.6-27B",
         "/models/Qwen3.6-27B",
         "l20",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.6-35B-A3B",
         "/usr/local/serving/models/",
         "l20",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "bge-large-zh-v1.5",
@@ -393,11 +393,11 @@ def test_default_smart_feature_whitelist_file_is_loaded():
 @pytest.mark.parametrize(
     ("model_name", "expected_features", "mtp_tokens", "mtp_moe_backend"),
     [
-        ("Qwen/Qwen3-Embedding-0.6B", frozenset({"offload"}), None, None),
-        ("Qwen/Qwen3.6-27B", frozenset({"spec", "offload"}), 1, None),
+        ("Qwen/Qwen3-Embedding-0.6B", frozenset({"sparse", "offload"}), None, None),
+        ("Qwen/Qwen3.6-27B", frozenset({"spec", "sparse", "offload"}), 1, None),
         (
             "Qwen/Qwen3.6-35B-A3B",
-            frozenset({"spec", "offload"}),
+            frozenset({"spec", "sparse", "offload"}),
             3,
             "triton",
         ),
@@ -543,7 +543,7 @@ def test_qwen36_35b_l20_open_source_name_enables_spec(monkeypatch):
 
     config_loader.apply_effective_feature_enablement(params, hardware)
 
-    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
     assert params["_smart_feats"] == ["spec"]
     assert params["enable_speculative_decode"] is True
 
@@ -628,7 +628,7 @@ def test_deepseek_v4_flash_a3_respects_upper_smart_feature_switches_when_disable
         {"device": "ascend", "details": [{"name": "Ascend910C"}]},
     )
 
-    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
     assert params["_smart_feats"] == []
     assert params["_forced_smart_feats"] == []
     assert params["enable_speculative_decode"] is False
@@ -1148,7 +1148,6 @@ def test_qwen_day0_910b_reference_scripts_do_not_bypass_offload_policy():
         ("vllm", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "zai-org/GLM-4.7", "/models/zai-org/GLM-4.7", "h20-141", 1),
-        ("vllm", "ZhipuAI/GLM-4.7-FP8", "/models/ZhipuAI/GLM-4.7-FP8", "h20-141", 3),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
@@ -1273,7 +1272,6 @@ def test_minimax_pro5000_offload_backend_stays_model_specific(
         ("spec", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("offload", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("spec", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
-        ("sparse", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("offload", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("spec", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("offload", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "vllm-0.23"),

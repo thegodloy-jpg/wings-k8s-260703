@@ -3771,6 +3771,9 @@ def _build_mtp_speculative_cmd(
         moe_backend = row.get("mtp_moe_backend")
         if moe_backend:
             config.append(f'"moe_backend":"{moe_backend}"')
+        token_range = str(row.get("speculative_token_range") or "").strip()
+        if token_range:
+            config.append(f'"speculative_token_range":"{token_range}"')
         return _format_speculative_result(config, compact=True)
 
     strategy, is_v4_flash, is_v4_flash_pro5000, is_qwen35_nvfp4_native = (
@@ -3897,6 +3900,8 @@ def resolve_effective_speculative_details(
         "num_speculative_tokens": tokens,
         "moe_backend": row.get("mtp_moe_backend"),
     }
+    if row.get("speculative_token_range"):
+        details["speculative_token_range"] = row.get("speculative_token_range")
     if row.get("enforce_eager") is True:
         details["enforce_eager"] = True
     return details
@@ -3964,6 +3969,8 @@ def _resolve_kv_sparse_plan(
     if sparse_row and sparse_row.get("strategy") == "indexcache":
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return "whitelist_indexcache", topk, arch, sparse_level
+    if sparse_row and sparse_row.get("strategy") == "fp8":
+        return "fp8", None, arch, sparse_level
     if engine == "vllm_ascend":
         if is_glm51_ascend_kvsparse_tmp_scope(
             model_info, engine,
@@ -4019,7 +4026,6 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
     logger.info("[KV Sparse] Architecture %s → FP8 KV CACHE strategy (kv_cache_dtype=fp8)", arch)
     engine_config = params.setdefault("engine_config", {})
     engine_config["kv_cache_dtype"] = "fp8"
-    engine_config["calculate_kv_scales"] = True
     return ""
 
 

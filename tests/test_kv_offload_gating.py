@@ -832,7 +832,7 @@ def test_deepseek_v4_flash_lmcache_legacy_env_alias_enables_patch(monkeypatch):
     )
 
     assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
-    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
     assert params["_smart_feats"] == ["offload"]
     assert (
         wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(

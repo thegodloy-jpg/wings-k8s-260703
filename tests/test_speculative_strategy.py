@@ -575,12 +575,12 @@ def test_ascend_glm47_mtp_only_does_not_fall_back_to_suffix(monkeypatch):
         "_smart_feats": ["spec"],
     }
 
-    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "glm4_moe_mtp"
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "mtp"
     command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
     assert command == (
         " --speculative-config "
-        "'{\"method\": \"mtp\", \"num_speculative_tokens\": 3, "
-        "\"speculative_token_range\": \"256,512\"}'"
+        "'{\"method\":\"mtp\",\"num_speculative_tokens\":3,"
+        "\"speculative_token_range\":\"256,512\"}'"
     )
 
 
@@ -1102,7 +1102,6 @@ def test_sparse_fp8_variant_is_pure_while_command_applies_shared_plan(monkeypatc
     assert vllm_adapter._build_kv_sparse_cmd(params, "vllm") == ""
     assert params["engine_config"] == {
         "kv_cache_dtype": "fp8",
-        "calculate_kv_scales": True,
     }
 
 

@@ -1020,11 +1020,8 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
         "MiniMaxM2ForCausalLM",
     )
 
-    cases = [
-        ("Ascend910C", True),
-        ("Ascend910B_64G", False),
-    ]
-    for card_name, expect_kv_bytes in cases:
+    cases = ["Ascend910C", "Ascend910B_64G"]
+    for card_name in cases:
         config = config_loader._match_model_engine_config(
             minimax_arch,
             "minimax/minimax-m2.7-w8a8-quarot",
@@ -1038,7 +1035,7 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
         assert config["use_vllm_serve"] is True
         assert config["trust_remote_code"] is True
         assert config["quantization"] == "ascend"
-        assert config["load_format"] == "dummy"
+        assert "load_format" not in config
         assert config["async_scheduling"] is True
         assert config["no_enable_prefix_caching"] is True
         assert config["enable_expert_parallel"] is True
@@ -1057,7 +1054,7 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
             "weight_nz_mode": True,
         }
         assert "enforce_eager" not in config
-        assert ("kv_cache_memory_bytes" in config) is expect_kv_bytes
+        assert "kv_cache_memory_bytes" not in config
         assert "speculative_config" not in config
 
 
@@ -1181,7 +1178,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert "max_model_len" not in glm47
 
     qwen27 = llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["vllm"]
-    assert qwen27["kv_cache_dtype"] == "fp8"
+    assert "kv_cache_dtype" not in qwen27
     assert "calculate_kv_scales" not in qwen27
     assert "enable_expert_parallel" not in qwen27
 
@@ -1207,7 +1204,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
 
     qwen35 = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.6-35B-A3B"]["vllm"]
     assert qwen35["tool_call_parser"] == "qwen3_xml"
-    assert qwen35["kv_cache_dtype"] == "fp8"
+    assert "kv_cache_dtype" not in qwen35
     assert "calculate_kv_scales" not in qwen35
 
     qwen_agent = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen-AgentWorld-35B-A3B"]
@@ -1263,7 +1260,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
         "h20-141",
     ]
     qwen_embedding = embedding["Qwen3ForCausalLM"]["Qwen3-Embedding-0.6B"]["vllm"]
-    assert qwen_embedding["kv_cache_dtype"] == "fp8"
+    assert "kv_cache_dtype" not in qwen_embedding
     assert "calculate_kv_scales" not in qwen_embedding
     assert embedding["BertModel"]["bge-large-zh-v1.5"]["vllm"]["gpu_memory_utilization"] == 0.9
 
@@ -1345,7 +1342,7 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
         _FakeModelInfo("Qwen3.6-27B", "Qwen3_5ForConditionalGeneration"),
         l20,
     )
-    assert qwen27_l20["kv_cache_dtype"] == "fp8"
+    assert "kv_cache_dtype" not in qwen27_l20
     assert qwen27_l20["mm_encoder_tp_mode"] == "data"
 
     qwen35_27_pro5000 = config_loader._match_model_engine_config(
