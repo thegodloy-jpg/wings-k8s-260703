@@ -1415,7 +1415,7 @@
             "mm_encoder_tp_mode": "data"
           }
         },
-        "Kimi-K2.7-Code-w4a8": {
+        "Kimi-K2.7-Code": {
           "vllm_ascend": {
             "trust_remote_code": true,
             "max_model_len": 81920,

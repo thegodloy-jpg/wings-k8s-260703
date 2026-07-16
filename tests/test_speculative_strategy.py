@@ -653,8 +653,8 @@ def test_kimi_k27_code_does_not_inherit_k26_dflash(monkeypatch):
 
     params = {
         "engine": "vllm_ascend",
-        "model_name": "Kimi-K2.7-Code-w4a8",
-        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "model_name": "Kimi-K2.7-Code",
+        "model_path": "/harbor_data/Kimi-K2.7-Code",
         "model_type": "llm",
         "enable_speculative_decode": True,
         "speculative_decode_model_path": "z-lab/Kimi-K2.6-DFlash",

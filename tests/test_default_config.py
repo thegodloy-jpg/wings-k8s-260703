@@ -908,7 +908,7 @@ def test_qwen35_day0_defaults_keep_language_model_only_from_excel():
 
 def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
     llm = _model_deploy_config("ascend")["llm"]
-    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code-w4a8"]
+    kimi = llm["KimiK25ForConditionalGeneration"]["Kimi-K2.7-Code"]
 
     for engine in ("vllm_ascend", "vllm_ascend_distributed"):
         config = kimi[engine]
@@ -955,7 +955,7 @@ def test_kimi_k26_ascend_defaults_follow_memcache_dflash_recipe():
         }
 
 
-def test_kimi_ascend_exact_defaults_match_w4a8_suffixes():
+def test_kimi_ascend_exact_defaults_match_document_model_names():
     kimi_arch = _model_deploy_config("ascend")["llm"]["KimiK25ForConditionalGeneration"]
     scenario = config_loader._SpecialEngineScenario()
     hardware = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
@@ -973,10 +973,10 @@ def test_kimi_ascend_exact_defaults_match_w4a8_suffixes():
 
     kimi27_code = config_loader._match_model_engine_config(
         kimi_arch,
-        "kimi-k2.7-code-w4a8",
+        "kimi-k2.7-code",
         "vllm_ascend",
         scenario,
-        _FakeModelInfo("Kimi-K2.7-Code-w4a8", "KimiK25ForConditionalGeneration"),
+        _FakeModelInfo("Kimi-K2.7-Code", "KimiK25ForConditionalGeneration"),
         hardware,
     )
     assert kimi27_code["max_model_len"] == 81920
@@ -1133,10 +1133,13 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     llm = config["llm"]
 
     assert llm["Glm4MoeForCausalLM"]["GLM-4.7"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["Glm4MoeForCausalLM"]["GLM-4.7-FP8"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["Glm4MoeForCausalLM"]["GLM4.7"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["GlmMoeDsaForCausalLM"]["GLM-5"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["GlmMoeDsaForCausalLM"]["GLM-5-FP8"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["GlmMoeDsaForCausalLM"]["GLM5.1"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["GlmMoeDsaForCausalLM"]["GLM-5.1"]["card_tokens"] == ["h20-96", "h20-141"]
+    assert llm["GlmMoeDsaForCausalLM"]["GLM-5.1-FP8"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["card_tokens"] == [
         "l20",
         "h20-96",

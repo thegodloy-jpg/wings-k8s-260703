@@ -2240,7 +2240,7 @@ def _apply_kimi_ascend_engine_defaults(
 ) -> None:
     """补齐 Kimi 0.21 DAY0 拓扑默认值。
 
-    Kimi-K2.6-W4A8 的官方命令按 4 卡 TP 分组，DP=总卡数/4；Kimi-K2.7-Code-w4a8
+    Kimi-K2.6-W4A8 的官方命令按 4 卡 TP 分组，DP=总卡数/4；Kimi-K2.7-Code
     保持单 DP 形态，TP 使用当前卡数。仅当用户没有显式传入 TP/DP 时注入，
     避免覆盖页面或 API 的明确配置。
     """

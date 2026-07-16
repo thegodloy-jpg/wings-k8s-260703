@@ -43,8 +43,8 @@ def test_memcache_fragment_is_rendered_from_shell_templates(monkeypatch):
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "_smart_feats": ["offload"],
         },
@@ -902,8 +902,8 @@ def test_memcache_fragment_uses_effective_smart_feats_when_env_not_synced(monkey
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
             "_smart_feats": ["offload"],
@@ -993,8 +993,8 @@ def test_kimi_k27_code_memcache_skips_lmcache_patch(monkeypatch):
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "_smart_feats": ["offload"],
         },
@@ -1012,8 +1012,8 @@ def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
             "_smart_feats": ["offload"],
@@ -1023,7 +1023,7 @@ def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
     assert commands == []
 
 
-def test_kimi_w4a8_memcache_model_matchers_are_supported():
+def test_kimi_memcache_model_matcher_uses_document_model_name():
     assert memcache_hybrid.is_kimi_k27_code_memcache_params(
         {
             "engine": "vllm_ascend",
@@ -1031,7 +1031,7 @@ def test_kimi_w4a8_memcache_model_matchers_are_supported():
             "model_path": "/harbor_data/Kimi-K2.7-Code",
         },
         "vllm_ascend",
-    ) is False
+    ) is True
     assert memcache_hybrid.is_kimi_k26_memcache_params(
         {
             "engine": "vllm_ascend",
@@ -1047,7 +1047,7 @@ def test_kimi_w4a8_memcache_model_matchers_are_supported():
             "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
         },
         "vllm_ascend",
-    ) is True
+    ) is False
     assert memcache_hybrid.is_kimi_k26_memcache_params(
         {
             "engine": "vllm_ascend",
@@ -1067,8 +1067,8 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_per_card_page_offload_memory
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
             "_smart_feats": ["offload"],
@@ -1124,8 +1124,8 @@ def test_kimi_k26_and_k27_code_topology_defaults_are_separate():
     kimi27_config = vllm_adapter._prepare_engine_config(
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
             "engine_config": {},
@@ -1320,8 +1320,8 @@ def test_kimi_k27_code_memcache_without_page_memory_is_disabled(monkeypatch):
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
             "_smart_feats": ["offload"],
@@ -1347,21 +1347,21 @@ def test_kimi_k27_code_memcache_prelude_is_assembled_before_engine_body(monkeypa
         "vllm_ascend",
         {
             "engine": "vllm_ascend",
-            "model_name": "Kimi-K2.7-Code-w4a8",
-            "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
             "_smart_feats": ["offload"],
         },
         {"device": "ascend", "details": [{"name": "Ascend910C"}]},
-        'exec vllm serve /harbor_data/Kimi-K2.7-Code-w4a8\n',
+        'exec vllm serve /harbor_data/Kimi-K2.7-Code\n',
         "",
     )
 
     prelude_index = command.index("# --- wings-memcache: engine prelude ---")
     master_start_index = command.index("Starting local MetaService for ConfigStore")
     config_ready_index = command.index("ConfigStore ${WINGS_MEMCACHE_CONFIG_STORE_URL} is ready")
-    engine_index = command.index("exec vllm serve /harbor_data/Kimi-K2.7-Code-w4a8")
+    engine_index = command.index("exec vllm serve /harbor_data/Kimi-K2.7-Code")
     assert prelude_index < master_start_index < config_ready_index < engine_index
     assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in command
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in command
@@ -1380,8 +1380,8 @@ def test_kimi_k27_code_memcache_reports_active_variant(monkeypatch, tmp_path):
 
     params = {
         "engine": "vllm_ascend",
-        "model_name": "Kimi-K2.7-Code-w4a8",
-        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "model_name": "Kimi-K2.7-Code",
+        "model_path": "/harbor_data/Kimi-K2.7-Code",
         "model_type": "llm",
         "device_count": 16,
         "_smart_feats": ["offload"],

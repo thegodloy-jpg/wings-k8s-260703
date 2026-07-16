@@ -95,7 +95,7 @@ architectures:
       Kimi-K2.6-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.7:      {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.7-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
-      Kimi-K2.7-Code-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
+      Kimi-K2.7-Code: {vllm: kimi_k2, vllm_ascend: kimi_k2}
 
   - name: GlmMoeDsaForCausalLM
     config:

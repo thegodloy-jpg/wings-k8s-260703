@@ -80,6 +80,7 @@ class _FakeQwen35Identifier:
 
 def test_default_smart_feature_whitelist_file_is_loaded():
     assert model_utils._SMART_WHITELIST_PATH.exists()
+    assert "GLM-4.7-FP8" in model_utils._LLM_MODELS["Glm4MoeForCausalLM"]
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
@@ -168,13 +169,23 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         and any("glm" in token for token in entry.get("name_tokens", []))
     ]
     assert nv023_glm_rows
+    nv023_glm_base_rows = [
+        entry
+        for entry in nv023_glm_rows
+        if not any("fp8" in token for token in entry["name_tokens"])
+    ]
     assert all(
         len(entry["name_tokens"]) == 2
         and entry["name_tokens"][0].startswith("zai-org/")
         and entry["name_tokens"][1] == entry["name_tokens"][0].split("/", 1)[1]
-        and "fp8" not in entry["name_tokens"][0]
-        for entry in nv023_glm_rows
+        for entry in nv023_glm_base_rows
     )
+    assert {
+        token
+        for entry in nv023_glm_rows
+        for token in entry["name_tokens"]
+        if token.endswith("-fp8")
+    } == {"glm-4.7-fp8", "glm-5-fp8", "glm-5.1-fp8"}
     assert all(
         "glm5.1" not in entry["name_tokens"]
         and "glm4.7" not in entry["name_tokens"]
@@ -249,10 +260,10 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
-        "ZhipuAI/GLM-4.7-FP8",
-        "/models/ZhipuAI/GLM-4.7-FP8",
+        "GLM-4.7-FP8",
+        "/models/zai-org/GLM-4.7",
         "h20-141",
-    ) == frozenset()
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "ZhipuAI/GLM-4.7-FP8",
@@ -285,10 +296,16 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
     assert model_utils.resolve_feature_whitelist(
         "vllm",
-        "ZhipuAI/GLM-5.1-FP8",
-        "/models/ZhipuAI/GLM-5.1-FP8",
+        "GLM-5.1-FP8",
+        "/models/zai-org/GLM-5.1",
         "h20-141",
-    ) == frozenset()
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "GLM-5-FP8",
+        "/models/zai-org/GLM-5",
+        "h20-96",
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "zai-org/GLM-5.1",
@@ -374,7 +391,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Kimi-K2.7-Code",
         "/harbor_data/Kimi-K2.7-Code",
         "910c",
-    ) == frozenset()
+    ) == frozenset({"offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
         "Eco-Tech/Kimi-K2.6",
@@ -386,7 +403,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Kimi-K2.7-Code-w4a8",
         "/harbor_data/Kimi-K2.7-Code-w4a8",
         "910c",
-    ) == frozenset({"offload"})
+    ) == frozenset()
 
 
 @pytest.mark.parametrize("card_token", ["l20", "h20-96", "h20-141"])
@@ -567,8 +584,8 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
 
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
-        "Kimi-K2.7-Code-w4a8",
-        "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "Kimi-K2.7-Code",
+        "/harbor_data/Kimi-K2.7-Code",
         "910b",
     ) == frozenset()
 
@@ -701,8 +718,8 @@ def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstrea
 
 
 class _FakeKimiK27CodeInfo:
-    model_name = "Kimi-K2.7-Code-w4a8"
-    model_path = "/harbor_data/Kimi-K2.7-Code-w4a8"
+    model_name = "Kimi-K2.7-Code"
+    model_path = "/harbor_data/Kimi-K2.7-Code"
     model_architecture = "KimiK25ForConditionalGeneration"
 
     @staticmethod
@@ -738,8 +755,8 @@ def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
 
     params = {
         "engine": "vllm_ascend",
-        "model_name": "Kimi-K2.7-Code-w4a8",
-        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "model_name": "Kimi-K2.7-Code",
+        "model_path": "/harbor_data/Kimi-K2.7-Code",
         "model_type": "llm",
         "distributed": False,
         "enable_speculative_decode": False,
@@ -841,8 +858,8 @@ def test_kimi_k27_code_effective_spec_is_suppressed(monkeypatch):
     hardware_env = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
     params = {
         "engine": "vllm_ascend",
-        "model_name": "Kimi-K2.7-Code-w4a8",
-        "model_path": "/harbor_data/Kimi-K2.7-Code-w4a8",
+        "model_name": "Kimi-K2.7-Code",
+        "model_path": "/harbor_data/Kimi-K2.7-Code",
         "enable_sparse": False,
         "enable_speculative_decode": True,
         "speculative_decode_model_path": "z-lab/Kimi-K2.6-DFlash",
@@ -1288,7 +1305,7 @@ def test_minimax_pro5000_offload_backend_stays_model_specific(
         ("spec", "MiniMax/MiniMax-M2.7-w8a8-QuaRot", "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot", "910c", "vllm-ascend-0.21"),
         ("offload", "Eco-Tech/Kimi-K2.6-W4A8", "/models/Eco-Tech/Kimi-K2.6-W4A8", "910c", "vllm-ascend-0.21"),
         ("spec", "Eco-Tech/Kimi-K2.6-W4A8", "/models/Eco-Tech/Kimi-K2.6-W4A8", "910c", "vllm-ascend-0.21"),
-        ("offload", "Kimi-K2.7-Code-w4a8", "/harbor_data/Kimi-K2.7-Code-w4a8", "910c", "vllm-ascend-0.21"),
+        ("offload", "Kimi-K2.7-Code", "/harbor_data/Kimi-K2.7-Code", "910c", "vllm-ascend-0.21"),
     ],
 )
 def test_day0_adapted_whitelist_rows_use_engine_version_source(

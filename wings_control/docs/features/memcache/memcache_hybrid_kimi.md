@@ -9,7 +9,7 @@ MemCache setup must be represented as script fragments and environment exports t
 Target usage:
 
 - `Kimi-K2.6-W4A8`: MemCache KV offload, optionally combined with DFlash speculative decoding
-- `Kimi-K2.7-Code-w4a8`: MemCache KV offload only
+- `Kimi-K2.7-Code`: MemCache KV offload only
 
 The vLLM connector is still an engine config / CLI concern:
 
@@ -99,7 +99,8 @@ If `enabled=false`, all script strings should be empty and `env` should be empty
 MemCache is effective only when all conditions are true:
 
 - engine is `vllm_ascend`
-- model matches exact `Kimi-K2.6-W4A8` or `Kimi-K2.7-Code-w4a8` tokens
+- model matches exact `Kimi-K2.6-W4A8` or `Kimi-K2.7-Code` tokens; the old
+  `Kimi-K2.7-Code-w4a8` spelling is not treated as an alias
 - offload is requested by page/env
 - model hits `offload` in `wings_control/config/smart_feature_whitelist.json`
 - memory offload resolves to a valid positive value

@@ -144,15 +144,17 @@ def is_kimi_k26_family(source: Optional[dict], engine: Optional[str] = None) -> 
 
 
 def is_kimi_k27_code_family(source: Optional[dict], engine: Optional[str] = None) -> bool:
-    """识别 Kimi-K2.7-Code-w4a8；该模型只允许 MemCache offload，不启用自动 spec。
+    """识别差异表中的 Kimi-K2.7-Code；仅允许 MemCache offload，不启用自动 spec。
 
-    这里同样使用大小写不敏感的完整后缀匹配。K2.7 Code 与普通 K2.7/K2.6 的
+    模型名严格与差异表 D/P/Q 列保持一致，不把旧 ``-w4a8`` 拼写作为兼容别名。
+    K2.7 Code 与普通 K2.7/K2.6 的
     投机策略不同：即使页面打开 speculative decode，也不应走 suffix 兜底，
     因此 SmartFeature 收口层会用这个 helper 明确关闭自动 spec。
     """
     if engine and engine != "vllm_ascend":
         return False
-    return "kimi-k2.7-code-w4a8" in _model_source_text(source)
+    text = _model_source_text(source)
+    return "kimi-k2.7-code" in text and "kimi-k2.7-code-w4a8" not in text
 
 
 def _whitelist_table_match(
@@ -674,7 +676,7 @@ _LLM_MODELS = {
         "Kimi-K2.6-w4a8",
         "Kimi-K2.7",
         "Kimi-K2.7-w4a8",
-        "Kimi-K2.7-Code-w4a8",
+        "Kimi-K2.7-Code",
         ],
     "DeepseekV32ForCausalLM": [
         "DeepSeek-V3.2",
@@ -697,6 +699,7 @@ _LLM_MODELS = {
         ],
     "Glm4MoeForCausalLM": [
         "GLM-4.7",
+        "GLM-4.7-FP8",
         "GLM4.7",
         "GLM-4.7-w8a8"
         ],
