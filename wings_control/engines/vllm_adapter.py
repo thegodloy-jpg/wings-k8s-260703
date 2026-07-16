@@ -2374,7 +2374,9 @@ def _remove_effective_spec_feature(params: Dict[str, Any]) -> None:
     if isinstance(smart_feats, str):
         smart_feats = [smart_feats]
     params["_smart_feats"] = [
-        feat for feat in list(smart_feats) if str(feat).strip().lower() != "spec"
+        feat
+        for feat in list(smart_feats)
+        if str(feat).strip().lower() != "spec"
     ]
 
 
