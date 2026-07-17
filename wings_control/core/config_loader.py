@@ -987,6 +987,21 @@ def _set_parallelism_params(params, ctx):
     """根据设备数和分布式模式设置张量并行度（tensor_parallel_size）。"""
     if _set_pd_parallelism_params(params, ctx):
         return
+    qwen397b_identity = " ".join(str(ctx.get(key) or "").lower() for key in ("model_name", "model_path"))
+    # Qwen3.5-397B 复用下面 Ascend dp_deployment 的通用短路结构，但它不像
+    # DeepSeek/GLM/Kimi 那样在 vllm_adapter 里有专属 TP 兜底。若这里不先写入
+    # 节点内 TP，随后的通用 Ascend DP 短路会直接 return，最终命令缺少
+    # --tensor-parallel-size。这里只补 TP，不在此处推导 DP；DP rank/size 仍由
+    # vllm_distributed 的 dp_deployment 拓扑拼装逻辑负责，避免把路由特例扩散成
+    # 一套新的 Qwen 并行策略。
+    if (
+        ctx.get("engine") == "vllm_ascend"
+        and ctx.get("distributed_executor_backend") == "dp_deployment"
+        and ("qwen3.5-397b" in qwen397b_identity or "qwen3_5-397b" in qwen397b_identity)
+    ):
+        if params.get("tensor_parallel_size") is None:
+            params["tensor_parallel_size"] = int(ctx.get("device_count") or 1)
+        return
     # Ascend DeepSeek dp_deployment 后端 TP 语义是「节点内」，由 vllm_adapter 的
     # _default_deepseek_ascend_dp_tensor_parallel_size 按架构兜底；
     # 此处不能套用 Ray 全局 TP 公式 (device_count × nnodes)，否则
@@ -3231,6 +3246,17 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
                                                   "GlmMoeDsaForCausalLM",
                                                   "KimiK25ForConditionalGeneration"]
                           and is_ascend)
+    qwen397b_identity = " ".join(str(cmd_params.get(key) or "").lower() for key in ("model_name", "model_path"))
+    # Qwen3.5-397B 与 35B/122B/AgentWorld 都属于 Qwen3_5MoeForConditionalGeneration，
+    # 不能把整个 architecture 加进 is_ascend_deepseek 名单，否则同架构其它 Qwen
+    # MoE 会一起从 Ray 切到 dp_deployment。这里复用现有后端分派结构，只把模型名/
+    # 路径中明确包含 397B 的系列纳入 DP；组织名前缀（如 Qwen/）和实际模型目录名
+    # 都可能承载身份，所以同时检查 model_name 与 model_path。
+    is_qwen35_397b_ascend_dp = (
+        is_ascend
+        and model_architecture == "Qwen3_5MoeForConditionalGeneration"
+        and ("qwen3.5-397b" in qwen397b_identity or "qwen3_5-397b" in qwen397b_identity)
+    )
 
     if pd_role in ['P', 'D'] and is_ascend:
         # Ascend PD: 使用 MooncakeConnector，各 P/D 实例作为独立 vllm 进程运行。
@@ -3239,8 +3265,9 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
         logger.info("[PD] Ascend PD mode: standalone instances with MooncakeConnector (role=%s)", pd_role)
         return
 
-    if (pd_role in ['P', 'D'] and not is_ascend) or is_ascend_deepseek:
-        # NVIDIA PD (NIXL) 或 Ascend DeepSeek DP: 使用 dp_deployment
+    if (pd_role in ['P', 'D'] and not is_ascend) or is_ascend_deepseek or is_qwen35_397b_ascend_dp:
+        # 仍走原来的 dp_deployment 出口：端口、nixl_ip、rpc_port 的注入方式不分叉，
+        # 397B 只是多一个命中条件，避免为一个模型系列复制整段分布式参数装配逻辑。
         if not vllm_distributed_port:
             vllm_distributed_port = distributed_config.get('vllm_distributed', {}).get('nixl_port', 27070)
 

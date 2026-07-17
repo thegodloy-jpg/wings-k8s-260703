@@ -1532,3 +1532,75 @@ def test_nvidia_day0_exact_default_replaces_arch_default(monkeypatch):
     )
     assert enabled["tool_call_parser"] == "glm47"
     assert enabled["enable_auto_tool_choice"] is True
+
+
+def test_qwen35_397b_ascend_distributed_forces_dp_backend_and_node_tp(monkeypatch):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
+    distributed_config = {
+        "vllm_distributed": {
+            "nixl_port": 27070,
+            "rpc_port": 27071,
+            "ray_head_port": 28020,
+        }
+    }
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen/Qwen3.5-397B-A17B",
+        "model_path": "/models/Qwen3.5-397B-A17B",
+        "device_count": 16,
+        "distributed": True,
+        "nnodes": 2,
+        "node_ips": "10.0.0.1,10.0.0.2",
+        "distributed_executor_backend": "ray",
+    }
+    model_info = _FakeModelInfo(
+        "Qwen/Qwen3.5-397B-A17B",
+        "Qwen3_5MoeForConditionalGeneration",
+    )
+
+    # 回归契约一：即使上层默认/环境仍给出 ray，397B 系列在 Ascend 分布式场景下
+    # 必须复用 dp_deployment 出口。这里直接调用后端分派函数，避免测试依赖完整
+    # 启动链路中的硬件探测、默认配置读取等无关因素。
+    config_loader._handle_vllm_distributed(distributed_config, params, model_info)
+
+    assert params["distributed_executor_backend"] == "dp_deployment"
+    engine_config = {}
+    # 回归契约二：397B 新增 DP 路由后不能丢失节点内 TP。DeepSeek/GLM/Kimi 的
+    # TP 由 adapter 专属逻辑兜底，397B 没有那层兜底，因此必须在通用并行设置层
+    # 保证最终 engine_config 至少包含 tensor_parallel_size=device_count。
+    config_loader._set_parallelism_params(engine_config, params)
+    assert engine_config["tensor_parallel_size"] == 16
+
+
+def test_qwen35_moe_non_397b_distributed_still_uses_ray(monkeypatch):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
+    distributed_config = {
+        "vllm_distributed": {
+            "nixl_port": 27070,
+            "rpc_port": 27071,
+            "ray_head_port": 28020,
+        }
+    }
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen/Qwen3.5-35B-A3B",
+        "model_path": "/models/Qwen3.5-35B-A3B",
+        "device_count": 16,
+        "distributed": True,
+        "nnodes": 2,
+        "node_ips": "10.0.0.1,10.0.0.2",
+        "distributed_executor_backend": "ray",
+    }
+    model_info = _FakeModelInfo(
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen3_5MoeForConditionalGeneration",
+    )
+
+    # 防扩散契约：397B 与 35B/122B/AgentWorld 共享 Qwen3_5Moe 架构，路由特例
+    # 必须依赖模型身份而不是 architecture 粗粒度命中；否则会把原本走 Ray 的
+    # Qwen MoE 分布式场景一起切到 dp_deployment。
+    config_loader._handle_vllm_distributed(distributed_config, params, model_info)
+
+    assert params["distributed_executor_backend"] == "ray"
