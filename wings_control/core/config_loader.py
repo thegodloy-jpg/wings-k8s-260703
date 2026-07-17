@@ -988,17 +988,22 @@ def _set_parallelism_params(params, ctx):
     if _set_pd_parallelism_params(params, ctx):
         return
     qwen397b_identity = " ".join(str(ctx.get(key) or "").lower() for key in ("model_name", "model_path"))
+    is_qwen397b_model = (
+        "qwen3.5-397b" in qwen397b_identity
+        or "qwen3_5-397b" in qwen397b_identity
+    )
+    is_qwen397b_ascend_dp = (
+        ctx.get("engine") == "vllm_ascend"
+        and ctx.get("distributed_executor_backend") == "dp_deployment"
+        and is_qwen397b_model
+    )
     # Qwen3.5-397B 复用下面 Ascend dp_deployment 的通用短路结构，但它不像
     # DeepSeek/GLM/Kimi 那样在 vllm_adapter 里有专属 TP 兜底。若这里不先写入
     # 节点内 TP，随后的通用 Ascend DP 短路会直接 return，最终命令缺少
     # --tensor-parallel-size。这里只补 TP，不在此处推导 DP；DP rank/size 仍由
     # vllm_distributed 的 dp_deployment 拓扑拼装逻辑负责，避免把路由特例扩散成
     # 一套新的 Qwen 并行策略。
-    if (
-        ctx.get("engine") == "vllm_ascend"
-        and ctx.get("distributed_executor_backend") == "dp_deployment"
-        and ("qwen3.5-397b" in qwen397b_identity or "qwen3_5-397b" in qwen397b_identity)
-    ):
+    if is_qwen397b_ascend_dp:
         if params.get("tensor_parallel_size") is None:
             params["tensor_parallel_size"] = int(ctx.get("device_count") or 1)
         return
@@ -1037,14 +1042,16 @@ def _set_parallelism_params(params, ctx):
     flash_identity = " ".join(
         str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
     )
-    if (
+    is_deepseek_v4_flash_identity = (
+        "deepseek-v4-flash" in flash_identity
+        or "deepseek_v4_flash" in flash_identity
+        or "deepseekv4flash" in flash_identity
+    )
+    is_deepseek_v4_flash_ascend = (
         ctx.get("engine") == "vllm_ascend"
-        and (
-            "deepseek-v4-flash" in flash_identity
-            or "deepseek_v4_flash" in flash_identity
-            or "deepseekv4flash" in flash_identity
-        )
-    ):
+        and is_deepseek_v4_flash_identity
+    )
+    if is_deepseek_v4_flash_ascend:
         return
     _adjust_tensor_parallelism(
         params,
@@ -3265,7 +3272,9 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
         logger.info("[PD] Ascend PD mode: standalone instances with MooncakeConnector (role=%s)", pd_role)
         return
 
-    if (pd_role in ['P', 'D'] and not is_ascend) or is_ascend_deepseek or is_qwen35_397b_ascend_dp:
+    is_nvidia_pd = pd_role in ['P', 'D'] and not is_ascend
+    use_dp_deployment = is_nvidia_pd or is_ascend_deepseek or is_qwen35_397b_ascend_dp
+    if use_dp_deployment:
         # 仍走原来的 dp_deployment 出口：端口、nixl_ip、rpc_port 的注入方式不分叉，
         # 397B 只是多一个命中条件，避免为一个模型系列复制整段分布式参数装配逻辑。
         if not vllm_distributed_port:
