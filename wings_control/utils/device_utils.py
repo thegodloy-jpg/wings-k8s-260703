@@ -362,6 +362,10 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     name = _resolve_hardware_card_name(hardware_env).strip().lower()
     if str((hardware_env or {}).get("device") or "").lower() == "nvidia":
         return _resolve_nvidia_card_token(name) or name
+    # SmartFeature 白名单只维护 910b/910c 这种能力 token。裸 Ascend910
+    # 在当前硬件口径下代表 910C，因此这里直接返回可被白名单子串命中的
+    # ascend910c；带字母后缀的 910B/910B3/910A 已在 helper 内排除，避免
+    # 把 910B 行误导到 910C 能力集合。
     if is_bare_ascend910_card(name):
         return "ascend910c"
     return name or _resolve_platform_card_token()

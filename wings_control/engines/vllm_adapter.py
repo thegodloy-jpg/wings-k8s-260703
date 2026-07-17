@@ -1752,6 +1752,9 @@ def _match_ascend_platform(value: Any) -> str:
         return "a3"
     if any(marker in token for marker in _ASCEND_A2_PLATFORM_TOKENS):
         return "a2"
+    # adapter 的拓扑/env 分支消费 a2/a3 平台，而不是 SmartFeature 的
+    # card_token。裸 Ascend910 必须在显式 910C/910B 判断之后兜底到 a3，
+    # 否则 DeepSeek/Qwen 等 A3 专属拓扑会和白名单链路看到不同硬件结论。
     if is_bare_ascend910_card(token):
         return "a3"
     return ""

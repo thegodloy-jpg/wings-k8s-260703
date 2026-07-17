@@ -104,8 +104,15 @@ def _normalize_card_token(raw: str) -> str:
 def is_bare_ascend910_card(raw: Any) -> bool:
     """识别没有字母后缀的 ``Ascend910``，用于兼容 910C 裸硬件名。
 
+    维护边界：
+      * 触发条件只允许 ``Ascend910`` 后面跟数字、容量、分隔符或结束位置；
+      * ``Ascend910B`` / ``Ascend910B3`` / ``Ascend910C`` 继续交给显式别名识别；
+      * ``Ascend910A`` 不属于本次兼容范围，不能被兜底成 910C。
+
     这里不能把 ``ascend910`` 加进通用 A3 token 集合，否则 ``Ascend910B`` /
-    ``Ascend910B3`` 这类 910B 名称会被子串优先级误判为 A3。
+    ``Ascend910B3`` 这类 910B 名称会被子串优先级误判为 A3。统一 helper
+    放在 version_util，是为了让 Smart 白名单、default profile 选择和
+    adapter 平台判断复用同一个边界，避免不同链路对同一硬件名给出不同结论。
     """
     compact = re.sub(r"[^a-z0-9]+", "", str(raw or "").lower())
     return bool(re.search(r"ascend910(?![a-z])", compact))
@@ -127,6 +134,8 @@ def _canonical_card_model(raw: Any) -> str:
     for alias, canonical in _CARD_TOKEN_ALIASES.items():
         if alias in token:
             return canonical
+    # 裸 Ascend910 兼容只能发生在显式别名全部 miss 之后：这样 910B/910B3
+    # 会先被 ascend910b 子串收敛到 a2，910C 也会先走 ascend910c -> a3。
     if is_bare_ascend910_card(raw):
         return "a3"
     return ""
