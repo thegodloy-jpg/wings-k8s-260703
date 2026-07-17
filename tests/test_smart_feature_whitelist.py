@@ -988,6 +988,66 @@ def test_generic_ascend_detail_name_falls_back_to_hardware_family(monkeypatch):
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
 
 
+@pytest.mark.parametrize(
+    "hardware_env",
+    [
+        {"device": "ascend", "details": [{"name": "Ascend910"}]},
+        {"device": "ascend", "details": [{"name": "Ascend 910"}]},
+        {"device": "ascend", "hardware_family": "Ascend910_64G"},
+    ],
+)
+def test_bare_ascend910_is_treated_as_910c_without_suffix_letter(hardware_env, monkeypatch):
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "GLM-5.1-w8a8",
+        "model_path": "/usr/local/serving/models/",
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    assert resolve_card_token(hardware_env) == "ascend910c"
+    assert resolve_card_model(hardware_env) == "a3"
+    assert config_loader._standard_ascend_card_token(hardware_env) == "910c"
+    assert vllm_adapter._match_ascend_platform(_first_card_name(hardware_env)) == "a3"
+
+    config_loader.apply_effective_feature_enablement(params, hardware_env)
+
+    assert params["_smart_card_token"] == "ascend910c"
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
+    assert params["_smart_feats"] == ["sparse", "spec"]
+
+
+@pytest.mark.parametrize(
+    ("card_name", "expected_platform"),
+    [
+        ("Ascend910B", "a2"),
+        ("Ascend910B3", "a2"),
+        ("Ascend910B_64G", "a2"),
+        ("Ascend910A", ""),
+    ],
+)
+def test_bare_ascend910_rule_does_not_override_letter_suffixes(card_name, expected_platform):
+    hardware_env = {"device": "ascend", "details": [{"name": card_name}]}
+
+    assert resolve_card_token(hardware_env) == card_name.lower()
+    assert vllm_adapter._match_ascend_platform(card_name) == expected_platform
+    if expected_platform == "a2":
+        assert resolve_card_model(hardware_env) == "a2"
+        assert config_loader._standard_ascend_card_token(hardware_env) == "910b"
+    else:
+        assert resolve_card_model(hardware_env) != "a3"
+        assert config_loader._standard_ascend_card_token(hardware_env) == ""
+
+
+def _first_card_name(hardware_env):
+    details = hardware_env.get("details") or [{"name": hardware_env.get("hardware_family", "")}]
+    return details[0]["name"]
+
+
 def test_nvidia_card_token_only_normalizes_chip_names():
     assert resolve_card_token({
         "device": "nvidia",

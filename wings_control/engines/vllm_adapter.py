@@ -63,9 +63,17 @@ except ImportError:
     from vllm_distributed import _build_vllm_distributed_script, _resolve_dp_deployment_topology  # noqa: F401
 
 try:
-    from wings_control.core.version_util import parse_engine_version_tuple, engine_version_platform
+    from wings_control.core.version_util import (
+        parse_engine_version_tuple,
+        engine_version_platform,
+        is_bare_ascend910_card,
+    )
 except ImportError:
-    from core.version_util import parse_engine_version_tuple, engine_version_platform  # noqa: F811
+    from core.version_util import (  # noqa: F811
+        parse_engine_version_tuple,
+        engine_version_platform,
+        is_bare_ascend910_card,
+    )
 
 
 def _sanitize_shell_path(path: str) -> str:
@@ -1744,6 +1752,8 @@ def _match_ascend_platform(value: Any) -> str:
         return "a3"
     if any(marker in token for marker in _ASCEND_A2_PLATFORM_TOKENS):
         return "a2"
+    if is_bare_ascend910_card(token):
+        return "a3"
     return ""
 
 

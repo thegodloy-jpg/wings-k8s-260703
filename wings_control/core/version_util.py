@@ -101,6 +101,16 @@ def _normalize_card_token(raw: str) -> str:
     return re.sub(r"[-_.\s]+", "", (raw or "").lower())
 
 
+def is_bare_ascend910_card(raw: Any) -> bool:
+    """识别没有字母后缀的 ``Ascend910``，用于兼容 910C 裸硬件名。
+
+    这里不能把 ``ascend910`` 加进通用 A3 token 集合，否则 ``Ascend910B`` /
+    ``Ascend910B3`` 这类 910B 名称会被子串优先级误判为 A3。
+    """
+    compact = re.sub(r"[^a-z0-9]+", "", str(raw or "").lower())
+    return bool(re.search(r"ascend910(?![a-z])", compact))
+
+
 def _canonical_card_model(raw: Any) -> str:
     """把任意写法的卡型号映射到规范 key，未识别返回空串。
 
@@ -117,6 +127,8 @@ def _canonical_card_model(raw: Any) -> str:
     for alias, canonical in _CARD_TOKEN_ALIASES.items():
         if alias in token:
             return canonical
+    if is_bare_ascend910_card(raw):
+        return "a3"
     return ""
 
 

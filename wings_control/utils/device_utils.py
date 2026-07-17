@@ -37,6 +37,11 @@ import threading
 from typing import List, Dict, Literal, Any
 import logging
 
+try:
+    from wings_control.core.version_util import is_bare_ascend910_card
+except ImportError:
+    from core.version_util import is_bare_ascend910_card  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 DeviceType = Literal["cuda", "npu", "cpu"]
@@ -357,6 +362,8 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
     name = _resolve_hardware_card_name(hardware_env).strip().lower()
     if str((hardware_env or {}).get("device") or "").lower() == "nvidia":
         return _resolve_nvidia_card_token(name) or name
+    if is_bare_ascend910_card(name):
+        return "ascend910c"
     return name or _resolve_platform_card_token()
 
 # ── PCIe 设备检测（lspci，不依赖 torch） ─────────────────────────────────────
