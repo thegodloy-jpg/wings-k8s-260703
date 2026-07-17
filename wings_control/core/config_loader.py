@@ -983,10 +983,8 @@ def _set_pd_parallelism_params(params, ctx) -> bool:
     return True
 
 
-def _set_parallelism_params(params, ctx):
-    """根据设备数和分布式模式设置张量并行度（tensor_parallel_size）。"""
-    if _set_pd_parallelism_params(params, ctx):
-        return
+def _set_qwen397b_ascend_dp_tensor_parallel(params, ctx) -> bool:
+    """补齐 Qwen3.5-397B Ascend DP 的节点内 TP，并返回是否已接管。"""
     qwen397b_identity = " ".join(str(ctx.get(key) or "").lower() for key in ("model_name", "model_path"))
     is_qwen397b_model = (
         "qwen3.5-397b" in qwen397b_identity
@@ -1003,10 +1001,16 @@ def _set_parallelism_params(params, ctx):
     # --tensor-parallel-size。这里只补 TP，不在此处推导 DP；DP rank/size 仍由
     # vllm_distributed 的 dp_deployment 拓扑拼装逻辑负责，避免把路由特例扩散成
     # 一套新的 Qwen 并行策略。
-    if is_qwen397b_ascend_dp:
-        if params.get("tensor_parallel_size") is None:
-            params["tensor_parallel_size"] = int(ctx.get("device_count") or 1)
-        return
+    if not is_qwen397b_ascend_dp:
+        return False
+
+    if params.get("tensor_parallel_size") is None:
+        params["tensor_parallel_size"] = int(ctx.get("device_count") or 1)
+    return True
+
+
+def _should_skip_generic_tensor_parallelism(ctx) -> bool:
+    """判断 TP 是否已由专属路径接管，避免进入通用 _adjust_tensor_parallelism。"""
     # Ascend DeepSeek dp_deployment 后端 TP 语义是「节点内」，由 vllm_adapter 的
     # _default_deepseek_ascend_dp_tensor_parallel_size 按架构兜底；
     # 此处不能套用 Ray 全局 TP 公式 (device_count × nnodes)，否则
@@ -1017,28 +1021,28 @@ def _set_parallelism_params(params, ctx):
         ctx.get("engine") == "vllm_ascend"
         and ctx.get("distributed_executor_backend") == "dp_deployment"
     ):
-        return
+        return True
     # [GLM-5.2] 单机 TP 由 vllm_adapter._apply_glm5_ascend_engine_defaults 接管
     # (TP=device_count//2 + DP2)，与上面 dp_deployment 同理短路：此处若按非分布式通用公式
     # 把 TP 钉成 device_count(单机=全卡)，下游 _set_if_not_explicit 只填空值、覆盖不掉 →
     # TP×DP=device_count×2 超订(16 卡 → 请求 32)。判定与 adapter 分支共用
     # is_glm52_single_node_even，保证两处条件逐字一致(否则会给奇数卡留下 TP 空缺)。
     if is_glm52_single_node_even(ctx):
-        return
+        return True
     # [DeepSeek-V4-Flash-NV] 单机 TP/DP 由 vllm_adapter._apply_deepseek_v4_flash_nv_engine_defaults
     # 接管 (TP=min(4,device_count) + DP=device_count/TP)，与 GLM-5.2 同理短路：
     # 此处若按非分布式通用公式把 TP 钉成 device_count(单机=全卡)，会与 adapter 的
     # min(4,device_count) 冲突，且让 log_analyzer 等更早的下游读到错误的 TP=device_count。
     # 判定与 adapter 分支共用 is_deepseek_v4_flash_rtx_pro_5000，保证两处条件逐字一致。
     if is_deepseek_v4_flash_rtx_pro_5000(ctx):
-        return
+        return True
     # [MiniMax-M2.7-NVFP4-NV] 单机 TP/DP 由 vllm_adapter._apply_minimax_m27_nvfp4_nv_engine_defaults
     # 接管 (TP=min(4,device_count) + DP=device_count/TP)，与 DeepSeek-V4-Flash-NV 同理短路：
     # 此处若按非分布式通用公式把 TP 钉成 device_count(单机=全卡)，会与 adapter 的 min(4,device_count)
     # 冲突，且让 log_analyzer 等更早的下游读到错误的 TP=device_count。
     # 判定与 adapter 分支共用 is_minimax_m27_rtx_pro_5000_vllm，保证两处条件逐字一致。
     if is_minimax_m27_rtx_pro_5000_vllm(ctx):
-        return
+        return True
     flash_identity = " ".join(
         str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
     )
@@ -1052,6 +1056,19 @@ def _set_parallelism_params(params, ctx):
         and is_deepseek_v4_flash_identity
     )
     if is_deepseek_v4_flash_ascend:
+        return True
+    return False
+
+
+def _set_parallelism_params(params, ctx):
+    """根据设备数和分布式模式设置张量并行度（tensor_parallel_size）。"""
+    if _set_pd_parallelism_params(params, ctx):
+        return
+    if _set_qwen397b_ascend_dp_tensor_parallel(params, ctx):
+        return
+    # 通用 TP 公式只处理标准推理路径；凡是 adapter 或 dp_deployment 已经明确接管
+    # TP 语义的场景，都在 helper 内短路，避免入口函数继续堆叠模型特例。
+    if _should_skip_generic_tensor_parallelism(ctx):
         return
     _adjust_tensor_parallelism(
         params,
