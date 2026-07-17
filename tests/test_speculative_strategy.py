@@ -1048,7 +1048,7 @@ def test_auto_floor_discarded_offload_keeps_mtp_strategy(
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
 
     strategy = vllm_adapter.resolve_speculative_strategy(
@@ -1075,7 +1075,7 @@ def test_auto_floor_with_disk_offload_still_uses_suffix_guard(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "true")
     monkeypatch.setenv("KV_DISK_OFFLOAD_PATH", "/mnt/kvcache_offload")
     monkeypatch.setenv("KV_DISK_OFFLOAD_SIZE", "8")

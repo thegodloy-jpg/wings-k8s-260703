@@ -883,7 +883,7 @@ def _is_lmcache_auto_cpu_floor_disabled(
 
 
 def is_kv_mem_offload_auto_floor_disabled(params: Optional[Dict[str, Any]]) -> bool:
-    """Return True when KV memory offload auto mode is fused by the 100G floor."""
+    """Return True when KV memory offload auto mode is disabled by the configured floor."""
     if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
         return False
     if os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() != "auto":
@@ -4226,7 +4226,7 @@ def _resolve_minimax_m27_lmcache_max_cpu_size(params: Dict[str, Any]) -> Optiona
 
     复用通用 ``resolve_offload_cpu_capacity_gb`` 反向预算「本节点总」M_offload，再 ÷ 卡数
     （LMCache 每 rank 一池需按卡平摊），与通用 LMCache 路径 ``_resolve_lmcache_cpu_env``
-    同源同公式（C4，需求一 §3.0）。auto 熔断（< 100G 不建池）亦复用通用语义，与
+    同源同公式（C4，需求一 §3.0）。auto 熔断（低于 OFFLOAD_MIN_GB 不建池）亦复用通用语义，与
     DeepSeek-V4-Flash-NV 一致。
 
       * ``KV_MEM_OFFLOAD_SIZE == "auto"``：``resolve_offload_cpu_capacity_gb`` 返回 None（非 auto
@@ -4246,7 +4246,7 @@ def _resolve_minimax_m27_lmcache_max_cpu_size(params: Dict[str, Any]) -> Optiona
     if raw_size.lower() == "auto":
         auto_total = resolve_offload_cpu_capacity_gb(params)
         if auto_total is None or auto_total <= 0:
-            # 非 auto 透传 / 缺 POD_MEM_SIZE / 熔断（< 100G 不建池）-> 省略该 env
+            # 非 auto 透传 / 缺 POD_MEM_SIZE / 熔断（低于 OFFLOAD_MIN_GB 不建池）-> 省略该 env
             logger.info(
                 "[MiniMax-M2.7] auto CPU capacity not available (resolve_offload_cpu_capacity_gb=%s); "
                 "skip LMCACHE_MAX_LOCAL_CPU_SIZE.", auto_total,

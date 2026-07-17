@@ -369,7 +369,7 @@ def test_deepseek_v4_flash_ascend_lmcache_auto_floor_disables_cpu_pool(monkeypat
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
 
     commands = vllm_adapter._build_cache_env_commands(
@@ -396,7 +396,7 @@ def test_lmcache_auto_floor_omits_generic_cpu_yaml(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
     monkeypatch.setattr(vllm_adapter, "_LMCACHE_SHARED_VOLUME", str(tmp_path))
 
@@ -426,7 +426,7 @@ def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch,
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
     monkeypatch.delenv("ENABLE_KV_QAT", raising=False)
     monkeypatch.delenv("ENABLE_COLD_START", raising=False)
@@ -575,7 +575,7 @@ def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tm
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "153600")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
     monkeypatch.delenv("ENABLE_KV_QAT", raising=False)
     monkeypatch.delenv("ENABLE_COLD_START", raising=False)
@@ -651,7 +651,7 @@ def test_lmcache_auto_floor_with_disk_keeps_patch_and_disk_variant(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "true")
     monkeypatch.setenv("KV_DISK_OFFLOAD_PATH", "/mnt/kvcache_offload")
     monkeypatch.setenv("KV_DISK_OFFLOAD_SIZE", "8")
@@ -1274,7 +1274,7 @@ def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
     monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "45056")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "40960")
 
     params = {
         "engine": "vllm_ascend",
@@ -1573,7 +1573,7 @@ def test_qwen35_nvfp4_native_offload_auto_reuses_kv_mem_formula_floor(monkeypatc
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
     monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "180224")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
 
     command = vllm_adapter._build_kv_offload_cmd(
         {
@@ -1686,7 +1686,7 @@ def test_deepseek_v4_flash_native_offload_auto_reuses_formula_floor(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
 
     command = vllm_adapter._build_kv_offload_cmd(
         {

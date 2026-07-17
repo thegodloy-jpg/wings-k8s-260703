@@ -928,7 +928,7 @@ def test_deepseek_v4_flash_auto_floor_skips_lmcache_connector(monkeypatch):
     monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
-    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "102400")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "20480")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
 
     params = {

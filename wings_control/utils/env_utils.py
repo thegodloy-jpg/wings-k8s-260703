@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 OFFLOAD_ENGINE_SELF_PER_WORKER_GB = 7   # 每 worker 常驻（CANN/torch_npu/.so/激活）线性系数
 OFFLOAD_ENGINE_SELF_BASE_GB = 3         # 固定开销
 OFFLOAD_MARGIN_RATIO = 0.10             # 安全垫
-OFFLOAD_MIN_GB = 100                    # 熔断下限：低于此不建卸载池
+OFFLOAD_MIN_GB = 20                     # 熔断下限：低于此不建卸载池
 
 
 def validate_ip(ip_str):
