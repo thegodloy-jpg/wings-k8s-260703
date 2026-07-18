@@ -811,6 +811,8 @@ def _set_common_params(params, engine_cmd_parameter, config_path):
         "gpu_memory_utilization",
         "enable_chunked_prefill",
         "block_size",
+        "max_num_seqs",
+        "max_num_batched_tokens",
         "seed",
         "enable_expert_parallel",
         "enable_prefix_caching",

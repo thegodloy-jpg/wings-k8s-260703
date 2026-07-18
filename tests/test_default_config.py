@@ -520,13 +520,13 @@ def test_removed_page_tuning_defaults_are_not_backfilled_when_not_explicit(monke
         "gpu_memory_utilization",
         "enable_chunked_prefill",
         "block_size",
+        "max_num_seqs",
+        "max_num_batched_tokens",
         "seed",
         "enable_expert_parallel",
         "enable_prefix_caching",
     ):
         assert key not in params
-    assert params["max_num_seqs"] == 32
-    assert params["max_num_batched_tokens"] == 4096
     assert params["trust_remote_code"] is True
 
 
@@ -564,7 +564,7 @@ def test_removed_page_tuning_defaults_still_allow_explicit_overrides(monkeypatch
     assert params["max_num_batched_tokens"] == 8192
 
 
-def test_vllm_capacity_defaults_reach_vllm_commands(monkeypatch):
+def test_vllm_capacity_defaults_do_not_reach_vllm_commands_when_not_explicit(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["pytest"])
     _clear_removed_param_env(monkeypatch)
     engine_cmd_parameter = {
@@ -589,8 +589,10 @@ def test_vllm_capacity_defaults_reach_vllm_commands(monkeypatch):
             }
         )
 
-        assert "--max-num-seqs 32" in command
-        assert "--max-num-batched-tokens 4096" in command
+        assert "max_num_seqs" not in engine_config
+        assert "max_num_batched_tokens" not in engine_config
+        assert "--max-num-seqs 32" not in command
+        assert "--max-num-batched-tokens 4096" not in command
 
 
 def test_vllm_capacity_model_defaults_are_preserved(monkeypatch):
