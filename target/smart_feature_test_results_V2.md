@@ -6,9 +6,11 @@
 >
 > H20 在源表未区分 96 GB 与 141 GB；本表按当前 0 Day H20 场景映射为 `h20-141`。
 >
-> 模型名维护注释：白名单 matcher 会对 `model_name + model_path` 统一小写后做子串匹配，大小写差异不影响命中；但 `-mtp`、`-mxfp8`、`w8a8` / `w4a8` 这类后缀是模型身份的一部分，不能随意删减。行 11/32 的 DeepSeek-V4-Flash 使用白名单口径 `Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp`，不要改回源表短名 `DeepSeek-V4-Flash-w8a8`；行 21 的 MiniMax-M3 使用 `MiniMax/MiniMax-M3-MXFP8`，不要改回 `MiniMax-M3`；行 43 的 DeepSeek-V4-Pro 使用 `vllm-ascend/DeepSeek-V4-Pro-w4a8-mtp`，短名 `DeepSeek-V4-Pro-w4a8` 不命中当前白名单；行 47 的 `Kimi-K2.7-Code` 可命中白名单小写 token `kimi-k2.7-code`，不是大小写问题，旧 `Kimi-K2.7-Code-w4a8` 仍不作为别名。
+> 模型名维护注释：白名单 matcher 会对 `model_name + model_path` 统一小写后做子串匹配，大小写差异不影响命中；但 `-mtp`、`-mxfp8`、`w8a8` / `w4a8` 这类后缀是模型身份的一部分，不能随意删减。行 11/32 的 DeepSeek-V4-Flash 使用白名单口径 `Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp`，不要改回源表短名 `DeepSeek-V4-Flash-w8a8`；行 21 的 MiniMax-M3 使用 `MiniMax/MiniMax-M3-MXFP8`，不要改回 `MiniMax-M3`；行 43 的 DeepSeek-V4-Pro 使用 `DeepSeek-V4-Pro-w4a8-mtp`，不要删掉 `-mtp` 后缀；行 47 的 `Kimi-K2.7-Code` 可命中白名单小写 token `kimi-k2.7-code`，不是大小写问题，旧 `Kimi-K2.7-Code-w4a8` 仍不作为别名。
 >
 > 特性差异维护注释：行 2-5 的 G5500+300I A2(910B) Qwen3.6 场景按文档中的 910B 特性组合复用；其中行 2、3 与行 13、14 是同一 W8A8 模型名 + 910B 芯片组合，随 910B `backend=memcache` 白名单补齐后命中 SmartDecoding + SmartKVcache，行 4、5 基础名仍只命中 SmartDecoding。行 17 的 G5680+910B Qwen3.5-35B-A3B 同样复用 910C MemCache/卸载口径，白名单已补 SmartKVcache；行 33、45 的 GLM 910C 场景仍按现状保留当前白名单能力集合，暂不新增 SmartKVcache。
+>
+> 拓扑维护注释：行 44、46、48 的 910C 标准命令按单机 16 卡编排（例如 `TP*DP=16`，MiniMax 脚本显式使用 `ASCEND_RT_VISIBLE_DEVICES=0..15`），不要再按 `2x8` 双机口径拆分；命令比对时以标准命令中的 `--tensor-parallel-size` / `--data-parallel-size` 为准，未显式出现的 `DP_LOCAL` 不作为文档字段补写。
 
 | Excel 行 | 芯片（C） | 模型名称（D） | 实际 Smart 特性（N） | 备注：实际特性分类 | 白名单静态匹配 |
 | ---: | --- | --- | --- | --- | --- |
@@ -53,12 +55,12 @@
 | 40 | G8680V3+910C*8 | `Qwen3.6-27B` | <br>MTP,memcache | SmartDecoding + SmartKVcache；与白名单静态匹配一致 | SmartDecoding + SmartKVcache |
 | 41 | G8680V3+910C*8 | `Qwen3.6-35B-A3B` | <br>MTP,memcache | SmartDecoding + SmartKVcache；与白名单静态匹配一致 | SmartDecoding + SmartKVcache |
 | 42 | G8680V3+910C*8 | `DeepSeek-Coder-V2-Instruct` | <br>MTP | SmartDecoding；与白名单静态匹配一致 | SmartDecoding |
-| 43 | G8680V3+910C*8 | `vllm-ascend/DeepSeek-V4-Pro-w4a8-mtp` | <br>MTP,IndexCache | SmartDecoding + SmartSparse；与白名单静态匹配一致 | SmartDecoding + SmartSparse |
-| 44 | G8680V3+910C*8 | `GLM-4.7-W8A8-floatmtp` | <br>MTP | SmartDecoding；与白名单静态匹配一致 | SmartDecoding |
+| 43 | G8680V3+910C*8 | `DeepSeek-V4-Pro-w4a8-mtp` | <br>MTP,IndexCache | SmartDecoding + SmartSparse；与白名单静态匹配一致 | SmartDecoding + SmartSparse |
+| 44 | G8680V3+910C*16 | `GLM-4.7-W8A8-floatmtp` | <br>MTP | SmartDecoding；与白名单静态匹配一致 | SmartDecoding |
 | 45 | G8680V3+910C*8 | `GLM-5.2-w8a8` | <br>MTP,MoonCake Store,PD分离 | SmartDecoding + SmartKVcache；差异保留（白名单：SmartDecoding；GLM 910C 暂不补 SmartKVcache） | SmartDecoding |
-| 46 | G8680V3+910C*8 | `Kimi-K2.6-w4a8` | memcache,Dflash | SmartDecoding + SmartKVcache；与白名单静态匹配一致 | SmartDecoding + SmartKVcache |
+| 46 | G8680V3+910C*16 | `Kimi-K2.6-w4a8` | memcache,Dflash | SmartDecoding + SmartKVcache；与白名单静态匹配一致 | SmartDecoding + SmartKVcache |
 | 47 | G8680V3+910C*8 | `Kimi-K2.7-Code` | memcache | SmartKVcache；与白名单静态匹配一致 | SmartKVcache |
-| 48 | G8680V3+910C*8 | `MiniMax-M2.7-w8a8-QuaRot` | Eagle | SmartDecoding；与白名单静态匹配一致 | SmartDecoding |
+| 48 | G8680V3+910C*16 | `MiniMax-M2.7-w8a8-QuaRot` | Eagle | SmartDecoding；与白名单静态匹配一致 | SmartDecoding |
 | 49 | G8680V3+910C*8 | `GLM-5.2-w4a8` | <br>MTP,IndexCache(开不了),memcache | SmartDecoding  + SmartKVcache；需核对（白名单：未命中） | 未命中 |
 | 50 | TokenBox RTX PRO 5000 * 8 | `MiniMax-M2.7-NVFP4` | suffix,LMCache | SmartDecoding + SmartKVcache；与白名单静态匹配一致 | SmartDecoding + SmartKVcache |
 | 51 | TokenBox RTX PRO 5000 * 8 | `Qwen3.5-397B-A17B-NVFP4` | <br>MTP,Native卸载 | SmartDecoding + SmartKVcache；与白名单静态匹配一致 | SmartDecoding + SmartKVcache |
@@ -90,7 +92,7 @@
 | --- | --- | --- |
 | 已按白名单模型名对齐 | 11、32 | 文档短名 `DeepSeek-V4-Flash-w8a8` 已改为 `Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp`，当前命中 SmartDecoding + SmartSparse + SmartKVcache。 |
 | 已按白名单模型名对齐 | 21 | 文档短名 `MiniMax-M3` 已改为 `MiniMax/MiniMax-M3-MXFP8`，当前命中 SmartDecoding + SmartKVcache。 |
-| 已按白名单模型名对齐 | 43 | 文档短名 `DeepSeek-V4-Pro-w4a8` 已改为 `vllm-ascend/DeepSeek-V4-Pro-w4a8-mtp`，当前命中 SmartDecoding + SmartSparse。 |
+| 白名单已按项目模型名对齐 | 43 | `DeepSeek-V4-Pro-w4a8-mtp` 当前命中 SmartDecoding + SmartSparse，服务名由启动默认值固定为 `dsv4`。 |
 | 名称大小写非问题 | 47 | `Kimi-K2.7-Code` 与白名单 token `kimi-k2.7-code` 可直接命中；旧 `Kimi-K2.7-Code-w4a8` 被排除，不应作为别名恢复。 |
 | 白名单已有精确模型名 | 15、39 | `Qwen3.5-397B-A17B-w8a8-mtp` 已有 910B/910C 精确 spec 行，父 token 已排除 `w8a8-mtp`。 |
 | 仍需确认模型身份 | 31 | 当前文档是 H20 + `DeepSeek-V3.2`，白名单没有 vLLM H20 对应模型 token；现有 `DeepSeek-V3.2-w8a8` 白名单属于 Ascend 910C，不可直接等价。 |
