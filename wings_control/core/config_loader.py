@@ -741,7 +741,7 @@ def _resolve_gpu_total_memory(ctx: Dict[str, Any]) -> float:
 
 
 def _validate_embedding_rerank_params(params, ctx):
-    """对于 embedding 和 rerank 模型，强制禁用 enable_chunked_prefill 和 enable_prefix_caching 参数。
+    """对于 embedding 和 rerank 模型，强制禁用生成链路专属参数。
 
     如果用户传入了这些参数，会记录警告日志后再取消这些参数。
 
@@ -749,7 +749,7 @@ def _validate_embedding_rerank_params(params, ctx):
         params: 参数字典
         ctx: 包含模型类型等上下文信息的字典
     """
-    model_type = ctx.get("model_type", "")
+    model_type = str(ctx.get("model_type", "") or "").strip().lower()
 
     # 仅对 embedding 和 rerank 模型进行处理
     if model_type not in ["embedding", "rerank"]:
@@ -772,6 +772,24 @@ def _validate_embedding_rerank_params(params, ctx):
                 f"This parameter will be disabled."
             )
         params.pop("enable_prefix_caching", None)
+
+    # embedding/rerank 是 pooling/score 任务，不能进入生成式 speculative decode；
+    # 否则未命中白名单时会被下游误当作普通生成模型回落到 suffix。
+    if "enable_speculative_decode" in params:
+        if params["enable_speculative_decode"] not in [None, False, "False", 0, "0"]:
+            logger.warning(
+                f"Model type '{model_type}' does not support 'enable_speculative_decode' parameter. "
+                f"This parameter will be disabled."
+            )
+        params["enable_speculative_decode"] = False
+
+    if "speculative_config" in params:
+        logger.warning(
+            "Model type '%s' does not support 'speculative_config'. "
+            "This parameter will be removed.",
+            model_type,
+        )
+        params.pop("speculative_config", None)
 
 
 def _set_common_params(params, engine_cmd_parameter, config_path):
@@ -2952,6 +2970,18 @@ def _apply_spec_feature_effect(
     forced_feats = context.forced_feats
     spec_req = bool(p.get("enable_speculative_decode"))
     spec_whitelisted = "spec" in feats or "spec" in forced_feats
+    model_type = str(p.get("_resolved_model_type") or p.get("model_type") or "").strip().lower()
+    if model_type in ["embedding", "rerank"]:
+        if spec_req or spec_whitelisted:
+            logger.warning(
+                "[SmartFeature] Model type '%s' does not support speculative decode; "
+                "disabled to avoid suffix fallback.",
+                model_type,
+            )
+        p["enable_speculative_decode"] = False
+        os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "false"
+        return spec_req, False, False
+
     spec_eff = spec_req or "spec" in forced_feats
     if (
         context.engine == "vllm_ascend"
@@ -3019,7 +3049,7 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
 
     logger.info(
         "[SmartFeature] effective enablement: engine=%s card=%s allowed=%s effective=%s forced=%s | "
-        "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix floor 恒产)",
+        "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix fallback only for generation models)",
         engine, card or "(empty)", sorted(feats), sorted(effective_feats), sorted(forced_feats),
         sparse_req, sparse_eff, offload_req, offload_eff,
         spec_req, spec_whitelisted,
@@ -4192,6 +4222,9 @@ def load_and_merge_configs(
     model_info = ModelIdentifier(cmd_known_params.get("model_name"),
                                  cmd_known_params.get("model_path"),
                                  cmd_known_params.get("model_type"))
+    # model_type 可能保持为 auto；SmartFeature 必须消费识别后的真实类型，
+    # 否则 embedding/rerank 会被当作普通生成模型进入 suffix 兜底。
+    cmd_known_params["_resolved_model_type"] = model_info.identify_model_type()
 
 
 

@@ -1122,6 +1122,46 @@ def test_spec_request_without_whitelist_stays_enabled_for_suffix_fallback(monkey
     assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
 
 
+@pytest.mark.parametrize(
+    ("model_type", "model_name"),
+    [
+        ("embedding", "bge-large-zh-v1.5"),
+        ("rerank", "bge-reranker-large"),
+    ],
+)
+def test_pooling_models_suppress_spec_suffix_fallback(monkeypatch, model_type, model_name):
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("SD_ENABLE", "true")
+
+    params = {
+        "engine": "vllm",
+        "model_name": model_name,
+        "model_path": f"/models/{model_name}",
+        "model_type": model_type,
+        "_resolved_model_type": model_type,
+        "enable_sparse": False,
+        "enable_speculative_decode": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 1, "details": [{"name": "NVIDIA L20"}]},
+    )
+
+    assert params["enable_speculative_decode"] is False
+    assert "spec" not in params["_smart_feats"]
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["SD_ENABLE"] == "false"
+
+    engine_config = {
+        "enable_speculative_decode": True,
+        "speculative_config": {"method": "suffix", "num_speculative_tokens": 5},
+    }
+    config_loader._validate_embedding_rerank_params(engine_config, {"model_type": model_type})
+    assert engine_config["enable_speculative_decode"] is False
+    assert "speculative_config" not in engine_config
+
+
 def test_qwen35_397b_a17b_ascend910b_is_not_in_day0_spec_whitelist():
     assert model_utils.resolve_feature_whitelist_row(
         "vllm_ascend",
