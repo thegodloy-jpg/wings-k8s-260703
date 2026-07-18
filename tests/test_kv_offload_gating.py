@@ -224,11 +224,6 @@ def test_lmcache_custom_size_is_computed_per_card(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
-    monkeypatch.setattr(
-        vllm_adapter,
-        "_write_lmcache_config_yaml",
-        lambda engine, max_cpu_size=None, local_cpu_enabled=None: None,
-    )
 
     commands = vllm_adapter._build_cache_env_commands(
         "vllm",
@@ -243,7 +238,13 @@ def test_lmcache_custom_size_is_computed_per_card(monkeypatch):
     )
 
     rendered = "\n".join(commands)
-    assert "export KV_MEM_OFFLOAD_SIZE=25" in rendered
+    assert "export LMCACHE_LOCAL_CPU=True" in rendered
+    assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=25" in rendered
+    # 页面/门控变量只参与 launcher 内部判断，不能再写进 engine 侧脚本和日志。
+    assert "export ENABLE_KV_OFFLOAD" not in rendered
+    assert "export ENABLE_KV_MEM_OFFLOAD" not in rendered
+    assert "export KV_MEM_OFFLOAD_SIZE" not in rendered
+    assert "export LMCACHE_CONFIG_FILE" not in rendered
 
 
 def test_deepseek_v4_flash_ascend_lmcache_worker_ids_follow_tensor_parallel_size(monkeypatch):
@@ -398,18 +399,18 @@ def test_deepseek_v4_flash_ascend_lmcache_auto_floor_disables_cpu_pool(monkeypat
     )
 
     rendered = "\n".join(commands)
+    assert rendered == ""
     assert "export LMCACHE_LOCAL_CPU" not in rendered
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE" not in rendered
-    assert "export KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED=true" in rendered
+    assert "export KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED" not in rendered
 
 
-def test_lmcache_auto_floor_omits_generic_cpu_yaml(monkeypatch, tmp_path):
+def test_lmcache_auto_floor_omits_generic_cpu_env_and_yaml(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
     monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
     monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
-    monkeypatch.setattr(vllm_adapter, "_LMCACHE_SHARED_VOLUME", str(tmp_path))
 
     commands = vllm_adapter._build_cache_env_commands(
         "vllm",
@@ -426,11 +427,11 @@ def test_lmcache_auto_floor_omits_generic_cpu_yaml(monkeypatch, tmp_path):
     )
 
     rendered = "\n".join(commands)
+    assert rendered == ""
     assert "export ENABLE_KV_MEM_OFFLOAD" not in rendered
     assert "export KV_MEM_OFFLOAD_SIZE" not in rendered
-    assert "export KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED=true" in rendered
+    assert "export KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED" not in rendered
     assert "export LMCACHE_CONFIG_FILE" not in rendered
-    assert not (tmp_path / "lmcache_config.yaml").exists()
 
 
 def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch, tmp_path):
@@ -575,6 +576,11 @@ def test_launcher_plan_reports_lmcache_auto_size_from_generated_command(monkeypa
     plan = wings_entry.build_launcher_plan(launch_args, port_plan)
 
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=15" in plan.command
+    assert "export LMCACHE_CONFIG_FILE" not in plan.command
+    assert "export ENABLE_KV_MEM_OFFLOAD" not in plan.command
+    assert "export KV_MEM_OFFLOAD_SIZE" not in plan.command
+    assert "[wings-env] export ENABLE_KV_MEM_OFFLOAD" not in plan.command
+    assert "[wings-env] export KV_MEM_OFFLOAD_SIZE" not in plan.command
     data = json.loads(state_file.read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "lmcache_cpu+auto"
@@ -682,9 +688,15 @@ def test_lmcache_auto_floor_with_disk_keeps_patch_and_disk_variant(monkeypatch):
         "vllm_ascend", params
     )
     variant = vllm_adapter.resolve_offload_variant(params, "vllm_ascend")
+    rendered = "\n".join(vllm_adapter._build_cache_env_commands("vllm_ascend", params))
 
     assert should_install is True
     assert variant == "lmcache_disk+cpu_auto_floor_disabled"
+    assert "export LMCACHE_LOCAL_DISK=/mnt/kvcache_offload" in rendered
+    assert "export LMCACHE_MAX_LOCAL_DISK_SIZE=8" in rendered
+    assert "export ENABLE_KV_DISK_OFFLOAD" not in rendered
+    assert "export KV_DISK_OFFLOAD_PATH" not in rendered
+    assert "export KV_DISK_OFFLOAD_SIZE" not in rendered
 
 
 def test_deepseek_v4_flash_ascend_custom_kv_mem_size_wins_over_lmcache_size(monkeypatch):

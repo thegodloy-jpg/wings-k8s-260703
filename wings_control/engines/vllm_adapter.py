@@ -21,10 +21,7 @@ import json
 import os
 import re
 import shlex
-import stat
 from typing import Dict, Any, List, Optional, Tuple
-
-import yaml
 
 from utils.model_utils import (ModelIdentifier,
                                INDEXCACHE_ARCHS, is_glm_moe_dsa_glm51,
@@ -46,7 +43,6 @@ from utils.env_utils import get_local_ip, get_lmcache_env, \
     get_sparse_level_env, OFFLOAD_MIN_GB as _OFFLOAD_MIN_GB, \
     resolve_offload_cpu_capacity_gb as _resolve_offload_cpu_capacity_gb
 from utils.shell_env_utils import dedupe_env_exports
-from utils.file_utils import safe_write_file, WriteOptions
 try:
     from wings_control.features.kv_offload.memcache import hybrid as memcache_hybrid
 except ImportError:
@@ -507,177 +503,54 @@ def _build_base_env_commands(params, engine: str, root: str) -> List[str]:
     return env_commands
 
 
-# ── LMCache YAML 配置文件 ─────────────────────────────────────────────
-# 当 cold_start 或 QAT 特性启用时，需要生成 YAML 配置文件供 LMCache 读取。
-# 纯内存卸载场景不需要 YAML 文件（环境变量即可控制）。
-_LMCACHE_CONFIG_FILENAME = "lmcache_config.yaml"
-_LMCACHE_SHARED_VOLUME = os.getenv("SHARED_VOLUME_PATH", "/shared-volume")
-
-
-def _build_lmcache_yaml_dict(
-    engine: str,
-    max_cpu_size: Optional[str] = None,
-    local_cpu_enabled: Optional[bool] = None,
-) -> dict:
-    """根据环境变量构建 LMCache 的 YAML 配置字典。
-
-    配置结构参考 LMCache 官方 YAML schema，包含以下可选段：
-    - chunk_size: KV 缓存分块大小（默认 256）
-    - local_cpu:  CPU 内存缓存配置
-    - local_disk: 本地磁盘缓存配置
-    - pre_caching: 冷启动预热配置（仅 cold_start 启用）
-    - qat:         QAT 硬件压缩配置（仅 QAT 启用）
-
-    Args:
-        engine: 引擎类型（vllm / vllm_ascend）
-
-    Returns:
-        dict: 可被 yaml.dump() 序列化的配置字典
-    """
-    config: dict = {}
-
-    # ── L2 门控（需求一 §A.1）──
-    mem_enabled = (
-        local_cpu_enabled
-        if local_cpu_enabled is not None
-        else os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
-    )
-    disk_enabled = os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true"
-
-    # ── chunk_size ──
-    chunk_size_str = os.getenv("LMCACHE_CHUNK_SIZE", "256")
-    try:
-        config["chunk_size"] = int(chunk_size_str)
-    except (ValueError, TypeError):
-        config["chunk_size"] = 256
-
-    # ── local_cpu（仅在 L2 mem=true 时处理）──
-    if mem_enabled:
-        max_cpu_size = (max_cpu_size if max_cpu_size is not None else os.getenv("KV_MEM_OFFLOAD_SIZE", "")).strip()
-        config["local_cpu"] = True
-        if max_cpu_size and max_cpu_size.lower() != "auto":
-            try:
-                config["max_local_cpu_size"] = float(max_cpu_size)
-            except (ValueError, TypeError):
-                logger.warning("[LMCache YAML] Invalid KV_MEM_OFFLOAD_SIZE=%r, skip", max_cpu_size)
-
-    # ── local_disk（仅在 L2 disk=true 时处理）──
-    if disk_enabled:
-        local_disk_path = os.getenv("KV_DISK_OFFLOAD_PATH", "").strip()
-        if local_disk_path:
-            config["local_disk"] = local_disk_path
-
-        max_disk_size = os.getenv("KV_DISK_OFFLOAD_SIZE", "").strip()
-        if max_disk_size:
-            try:
-                config["max_local_disk_size"] = float(max_disk_size)
-            except (ValueError, TypeError):
-                logger.warning("[LMCache YAML] Invalid KV_DISK_OFFLOAD_SIZE=%r, skip", max_disk_size)
-
-    # ── pre_caching（冷启动预热）──
-    if get_cold_start_env():
-        pre_caching: dict = {
-            "hash_algorithm": os.getenv("LMCACHE_PRE_CACHING_HASH", "sha256_cbor"),
-            "manifest_write_interval": int(os.getenv("LMCACHE_MANIFEST_WRITE_INTERVAL", "1")),
-            "maintenance": {"enabled": False},
-            "full_sync": {"enabled": False},
-        }
-        config["pre_caching"] = pre_caching
-        logger.info("[LMCache YAML] Cold-start pre_caching section enabled")
-
-    # ── qat（QAT 硬件压缩，L3 门控已在 get_qat_env() 内）──
-    if get_qat_env():
-        qat_module = "kv_agent" if engine == "vllm" else os.getenv("LMCACHE_QAT_MODULE", "kv_agent")
-        qat_section: dict = {
-            "module_name": qat_module,
-            "instance_num": int(os.getenv("KV_QAT_INSTANCE_NUM", "2")),
-            "loss_level": int(os.getenv("KV_QAT_COMPRESS_LEVEL", "0")),
-            "log_enabled": int(os.getenv("LMCACHE_QAT_LOG_ENABLED", "0")),
-        }
-        config["qat"] = qat_section
-        logger.info("[LMCache YAML] QAT section enabled (module=%s)", qat_module)
-
-    return config
-
-
-def _need_lmcache_config_yaml(local_cpu_enabled: Optional[bool] = None) -> bool:
-    """判断是否需要生成 LMCache YAML 配置文件。
-
-    触发条件（任一满足即生成）：
-      1. cold_start 或 QAT 特性启用（功能性段落）
-      2. L2 内存卸载开关 ENABLE_KV_MEM_OFFLOAD=true
-      3. L2 磁盘卸载开关 ENABLE_KV_DISK_OFFLOAD=true
-
-    说明：LMCache 的容量类字段（max_size 等）在多数版本下仅识别
-    YAML 文件，不保证从同名 env 自动注入；因此只要 L2 开关为 true，
-    就必须落盘 YAML，否则会沉默失效（参数丢失 bug）。
-
-    Returns:
-        bool: 需要生成返回 True
-    """
-    if get_cold_start_env() or get_qat_env():
-        return True
-    if (
-        local_cpu_enabled is not False
-        and os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() == "true"
-    ):
-        return True
-    if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true":
-        return True
-    return False
-
-
-def _write_lmcache_config_yaml(
-    engine: str,
-    max_cpu_size: Optional[str] = None,
-    local_cpu_enabled: Optional[bool] = None,
-) -> Optional[str]:
-    """生成并写入 LMCache YAML 配置文件到共享卷。
-
-    条件：见 _need_lmcache_config_yaml()，覆盖 cold_start / QAT /
-    CPU 卸载 / 磁盘卸载 等所有需要落盘的场景。
-    写入路径：/shared-volume/lmcache_config.yaml
-
-    Args:
-        engine: 引擎类型
-
-    Returns:
-        str | None: 写入成功返回文件路径，无需写入或失败返回 None
-    """
-    if not _need_lmcache_config_yaml(local_cpu_enabled=local_cpu_enabled):
-        return None
-
-    config = _build_lmcache_yaml_dict(
-        engine,
-        max_cpu_size=max_cpu_size,
-        local_cpu_enabled=local_cpu_enabled,
-    )
-    yaml_content = yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-    file_path = os.path.join(_LMCACHE_SHARED_VOLUME, _LMCACHE_CONFIG_FILENAME)
-    os.makedirs(_LMCACHE_SHARED_VOLUME, exist_ok=True)
-
-    ok = safe_write_file(
-        file_path, yaml_content, is_json=False,
-        options=WriteOptions(
-            modes=stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
-            atomic=True,
-        ),
-    )
-    if ok:
-        logger.info("[LMCache YAML] Config written to %s", file_path)
-        return file_path
-    else:
-        logger.error("[LMCache YAML] Failed to write config to %s", file_path)
-        return None
-
-
 def _append_lmcache_env_export(env_commands: List[str], name: str, value: Optional[str] = None) -> None:
     """Append an explicit engine-side export for an LMCache environment variable."""
     if value is None:
         value = os.getenv(name, "").strip()
     if value:
         env_commands.append(f"export {name}={shlex.quote(value)}")
+
+
+def _normalize_lmcache_true(value: str) -> str:
+    """把上层布尔开关收口成 LMCache 配方里使用的 True 字面量。"""
+    return "True" if value.strip().lower() == "true" else value
+
+
+def _append_lmcache_cpu_native_exports(
+    env_commands: List[str],
+    local_cpu_value: str,
+    max_cpu_size: str,
+) -> None:
+    """把 Wings 页面输入解析结果落成 LMCache 原生 CPU 卸载变量。"""
+    if not max_cpu_size:
+        return
+    local_cpu = os.getenv("LMCACHE_LOCAL_CPU", "").strip()
+    if not local_cpu:
+        local_cpu = _normalize_lmcache_true(local_cpu_value or "true")
+    _append_lmcache_env_export(env_commands, "LMCACHE_LOCAL_CPU", local_cpu)
+    _append_lmcache_env_export(env_commands, "LMCACHE_MAX_LOCAL_CPU_SIZE", max_cpu_size)
+
+
+def _append_lmcache_disk_native_exports(env_commands: List[str]) -> None:
+    """把 Wings 磁盘卸载输入落成 LMCache 原生磁盘卸载变量，不再回传内部开关。"""
+    if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() != "true":
+        return
+    local_disk = os.getenv("LMCACHE_LOCAL_DISK", "").strip() or os.getenv("KV_DISK_OFFLOAD_PATH", "").strip()
+    max_disk_size = (
+        os.getenv("LMCACHE_MAX_LOCAL_DISK_SIZE", "").strip()
+        or os.getenv("KV_DISK_OFFLOAD_SIZE", "").strip()
+    )
+    _append_lmcache_env_export(env_commands, "LMCACHE_LOCAL_DISK", local_disk)
+    _append_lmcache_env_export(env_commands, "LMCACHE_MAX_LOCAL_DISK_SIZE", max_disk_size)
+
+
+def _append_lmcache_cold_start_native_exports(env_commands: List[str]) -> None:
+    """冷启动只透传 LMCache 原生变量；不再通过 YAML 生成 pre_caching 段。"""
+    if not get_cold_start_env():
+        return
+    _append_lmcache_env_export(env_commands, "LMCACHE_COLD_START", os.getenv("LMCACHE_COLD_START", "true"))
+    _append_lmcache_env_export(env_commands, "LMCACHE_PRE_CACHING_HASH")
+    _append_lmcache_env_export(env_commands, "LMCACHE_MANIFEST_WRITE_INTERVAL")
 
 
 def _resolve_lmcache_lookup_server_worker_ids(params: Optional[Dict[str, Any]]) -> str:
@@ -766,7 +639,6 @@ _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
 _OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv-offloading-backend
 _OFFLOAD_NATIVE_BACKEND_VARIANT = "native_kv_offloading_backend"
-KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV = "KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED"
 _OFFLOAD_AUTO_FLOOR_VARIANT = "lmcache_cpu+auto+floor_disabled"
 _OFFLOAD_CPU_AUTO_FLOOR_MODIFIER = "cpu_auto_floor_disabled"
 _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offload_variant 的 variant 串
@@ -1000,9 +872,11 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
 
     _append_lmcache_env_export(env_commands, "LMCACHE_TRACK_USAGE", os.getenv("LMCACHE_TRACK_USAGE", "false"))
     if auto_cpu_floor_disabled:
-        _append_lmcache_env_export(env_commands, KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV, "true")
-    _append_lmcache_env_export(env_commands, "LMCACHE_LOCAL_CPU", local_cpu)
-    _append_lmcache_env_export(env_commands, "LMCACHE_MAX_LOCAL_CPU_SIZE", max_cpu_size)
+        logger.info("[KVCache Offload] auto CPU pool disabled; skip LMCache CPU native env exports.")
+    else:
+        _append_lmcache_cpu_native_exports(env_commands, local_cpu, max_cpu_size)
+    _append_lmcache_disk_native_exports(env_commands)
+    _append_lmcache_cold_start_native_exports(env_commands)
     _append_lmcache_env_export(env_commands, "LMCACHE_LOG_LEVEL", os.getenv("LMCACHE_LOG_LEVEL", "INFO"))
     _append_lmcache_env_export(env_commands, "LMCACHE_USE_LAYERWISE", os.getenv("LMCACHE_USE_LAYERWISE", "False"))
     _append_lmcache_env_export(env_commands, "LMCACHE_NUMA_MODE", os.getenv("LMCACHE_NUMA_MODE", "auto"))
@@ -1027,19 +901,15 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
     LMCache 所需的共享库已在 accel-volume 安装阶段通过平台对应的
     ``install.py`` 安装命令注入，无需再手动设置 LD_LIBRARY_PATH。
 
-    只要传入了任何容量/路径类配置（CPU/Disk/cold_start/QAT），就会
-    生成 LMCache YAML 配置文件并通过 ``LMCACHE_CONFIG_FILE`` 环境变量
-    告知 LMCache，避免容量参数被沉默丢弃。
+    本函数只向 engine 启动脚本写入 LMCache 运行时原生变量。Wings 内部
+    页面/门控变量（如 ENABLE_KV_* / KV_*）只参与本进程内判断和容量换算，
+    不再回传给 engine，也不再生成 LMCache YAML。
 
     Args:
         engine: 引擎类型
 
     Returns:
         List[str]: 环境变量设置命令列表，未启用时返回空列表
-
-    环境变量:
-        - ENABLE_KV_OFFLOAD: 是否启用 KVCache Offload (true/false)
-        - LMCACHE_CONFIG_FILE: LMCache YAML 配置文件路径（自动生成）
     """
     env_commands = []
     params = params or {}
@@ -1081,6 +951,12 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
             "skipping LMCache engine-side env exports."
         )
         return env_commands
+    if lmcache_auto_floor_disables_all_backends(params):
+        logger.info(
+            "[KVCache Offload] auto memory offload capacity below floor and no "
+            "LMCache backend is active; skipping LMCache native env exports."
+        )
+        return env_commands
     if (
         backend == "disabled"
         and not is_kv_mem_offload_auto_floor_disabled(params)
@@ -1098,10 +974,9 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         return _build_deepseek_v4_flash_lmcache_env_commands(params)
 
     env_commands.append('export PYTHONHASHSEED=0')
-    _append_lmcache_env_export(env_commands, "ENABLE_KV_OFFLOAD", "true")
-    _append_lmcache_env_export(env_commands, "LMCACHE_CHUNK_SIZE")
+    _append_lmcache_env_export(env_commands, "LMCACHE_CHUNK_SIZE", os.getenv("LMCACHE_CHUNK_SIZE", "256"))
 
-    # C4：auto 模式反向预算并写回「均卡」CPU 容量（LMCache 每 rank 一池，需 per-card）。需求一 §3.0。
+    # 页面/上层仍是容量真相源；产出口只落 LMCache 原生 env，避免 engine 日志打印内部卸载变量。
     local_cpu_value, max_cpu_size = _resolve_lmcache_cpu_env(params)
     auto_cpu_floor_disabled = _is_lmcache_auto_cpu_floor_disabled(
         params,
@@ -1109,32 +984,12 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         max_cpu_size,
     )
     if local_cpu_value or max_cpu_size:
-        _append_lmcache_env_export(env_commands, "ENABLE_KV_MEM_OFFLOAD", local_cpu_value or "true")
-        _append_lmcache_env_export(env_commands, "KV_MEM_OFFLOAD_SIZE", max_cpu_size)
+        _append_lmcache_cpu_native_exports(env_commands, local_cpu_value, max_cpu_size)
     elif auto_cpu_floor_disabled:
-        _append_lmcache_env_export(env_commands, KV_MEM_OFFLOAD_AUTO_FLOOR_DISABLED_ENV, "true")
+        logger.info("[KVCache Offload] auto CPU pool disabled; skip LMCache CPU native env exports.")
 
-    if os.getenv("ENABLE_KV_DISK_OFFLOAD", "false").strip().lower() == "true":
-        _append_lmcache_env_export(env_commands, "ENABLE_KV_DISK_OFFLOAD", "true")
-        _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_PATH")
-        _append_lmcache_env_export(env_commands, "KV_DISK_OFFLOAD_SIZE")
-
-    # 任何 LMCache 容量/功能段配置都会触发 YAML 生成并导出路径
-    yaml_path = _write_lmcache_config_yaml(
-        engine,
-        max_cpu_size=max_cpu_size,
-        local_cpu_enabled=False if auto_cpu_floor_disabled else None,
-    )
-    if yaml_path:
-        env_commands.append(f'export LMCACHE_CONFIG_FILE={shlex.quote(yaml_path)}')
-        logger.info("[KVCache Offload] LMCACHE_CONFIG_FILE exported -> %s", yaml_path)
-    else:
-        logger.warning(
-            "[KVCache Offload] ENABLE_KV_OFFLOAD enabled but no LMCache config "
-            "yaml generated. Capacity envs (KV_MEM_OFFLOAD_SIZE / "
-            "KV_DISK_OFFLOAD_SIZE) may not take effect. "
-            "Set ENABLE_KV_MEM_OFFLOAD=true (or any capacity env) to enable."
-        )
+    _append_lmcache_disk_native_exports(env_commands)
+    _append_lmcache_cold_start_native_exports(env_commands)
 
     return env_commands
 
