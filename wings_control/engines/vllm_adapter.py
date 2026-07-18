@@ -2070,6 +2070,24 @@ def _build_glm5_model_env(params: Dict[str, Any], arch: str) -> List[str]:
     return env_commands
 
 
+def _is_minimax_m25_native_pro5000_vllm(
+    params: Dict[str, Any],
+    engine: str,
+    arch: str,
+) -> bool:
+    """识别 MiniMax-M2.5-NVFP4 + RTX PRO 5000 的 native vLLM 配方。"""
+    if engine != "vllm" or arch != "MiniMaxM2ForCausalLM":
+        return False
+    # 复用 offload 白名单的 engine/model/card 命中结果，避免重新散写 Pro5000 卡型和模型别名规则。
+    row = resolve_feature_whitelist_row_from_params(params, engine, "offload")
+    if not row or row.get("backend") != "native":
+        return False
+    return any(
+        str(token).strip().lower().endswith("minimax-m2.5-nvfp4")
+        for token in row.get("name_tokens", ())
+    )
+
+
 def _build_nvidia_model_env_commands(
     params: Dict[str, Any],
     engine: str,
@@ -2086,6 +2104,11 @@ def _build_nvidia_model_env_commands(
     if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
         logger.info("[MiniMax-M2.7] inject LMCache runtime env for %s on vllm (RTX-PRO-5000)", arch)
         return _build_minimax_m27_rtx_pro_5000_env_commands(params)
+    if _is_minimax_m25_native_pro5000_vllm(params, engine, arch):
+        logger.info("[MiniMax-M2.5] inject vLLM V1 runtime env for %s on vllm (RTX-PRO-5000)", arch)
+        return [
+            "export VLLM_USE_V1=1",
+        ]
     if is_minimax_m3_rtx_pro_5000_vllm(params, engine):
         logger.info("[MiniMax-M3] inject native-offload runtime env for %s on vllm (RTX-PRO-5000)", arch)
         return [

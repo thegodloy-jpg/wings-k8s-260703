@@ -141,6 +141,16 @@ class _FakeQwen35Nvfp4Identifier:
         self.model_type = model_type
 
 
+class _FakeMiniMaxM2Identifier:
+    model_architecture = "MiniMaxM2ForCausalLM"
+    model_quantize = "nvfp4"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeMiniMaxM3Identifier:
     model_architecture = "MiniMaxM3SparseForConditionalGeneration"
     model_quantize = "mxfp8"
@@ -1589,6 +1599,26 @@ def test_pro5000_native_offload_uses_kv_mem_size_and_skips_lmcache_env(
         " --kv-offloading-backend native --kv-offloading-size 40"
     )
     assert vllm_adapter._build_cache_env_commands("vllm", params) == []
+
+
+def test_minimax_m25_pro5000_env_uses_v1_without_lmcache(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    params = {
+        "engine": "vllm",
+        "model_name": "MiniMax/MiniMax-M2.5-NVFP4",
+        "model_path": "/models/MiniMax/MiniMax-M2.5-NVFP4",
+        "model_type": "llm",
+        "device_count": 4,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["spec", "offload"],
+    }
+
+    commands = vllm_adapter._build_model_env_commands(params, "vllm")
+    common_commands = vllm_adapter._build_vllm_common_env_cmds(params, "vllm")
+
+    assert commands == ["export VLLM_USE_V1=1"]
+    assert "export VLLM_USE_V1=1" in common_commands
+    assert not any("LMCACHE_" in command for command in commands)
 
 
 def test_minimax_m3_pro5000_env_uses_v1_without_lmcache(monkeypatch):
