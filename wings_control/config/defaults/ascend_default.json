@@ -1246,6 +1246,9 @@
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
             "async_scheduling": true,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
             "additional_config": {
               "enable_cpu_binding": true,
               "enable_fused_mc2": true,
@@ -1265,6 +1268,9 @@
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
             "async_scheduling": true,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
             "additional_config": {
               "enable_cpu_binding": true,
               "enable_fused_mc2": true,

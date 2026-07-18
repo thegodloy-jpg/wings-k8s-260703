@@ -2201,6 +2201,65 @@ _DP_TOPOLOGY_KEYS = (
 _ASCEND910C_SINGLE_NODE_16_TP = 8
 _ASCEND910C_SINGLE_NODE_16_DP = 2
 
+_MINIMAX_M27_QUAROT_910C_ENV_DROP_NAMES = {
+    "HCCL_BUFFSIZE",
+    "HCCL_OP_EXPANSION_MODE",
+    "OMP_NUM_THREADS",
+    "OMP_PROC_BIND",
+    "PYTHONHASHSEED",
+    "PYTORCH_NPU_ALLOC_CONF",
+    "TASK_QUEUE_ENABLE",
+    "VLLM_ASCEND_BALANCE_SCHEDULING",
+    "VLLM_ASCEND_ENABLE_FLASHCOMM1",
+    "VLLM_ASCEND_ENABLE_FUSED_MC2",
+    "VLLM_TORCH_COMPILE",
+    "VLLM_USE_GRAPH",
+    "VLLM_USE_V1",
+    "VLLM_LOGGING_LEVEL",
+    "ASCEND_BUFFER_POOL",
+    "ACL_OP_INIT_MODE",
+    "LD_PRELOAD",
+}
+_MINIMAX_M27_QUAROT_910C_LD_LIBRARY_PATH = (
+    "export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:"
+    "/usr/local/lib:${LD_LIBRARY_PATH:-}"
+)
+_MINIMAX_M27_QUAROT_910C_ENV_EXPORTS = [
+    "export VLLM_LOGGING_LEVEL=INFO",
+    'export HCCL_OP_EXPANSION_MODE="AIV"',
+    "export HCCL_BUFFSIZE=1024",
+    "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+    "export OMP_NUM_THREADS=1",
+    "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}",
+    "export TASK_QUEUE_ENABLE=1",
+    "export ASCEND_BUFFER_POOL=4:8",
+    "export VLLM_ASCEND_BALANCE_SCHEDULING=0",
+    "export PYTHONHASHSEED=0",
+    "export ACL_OP_INIT_MODE=1",
+]
+
+
+def _is_minimax_m27_quarot_ascend910c_single_node_16(
+    params: Dict[str, Any],
+    engine: str,
+) -> bool:
+    """识别 MiniMax-M2.7-w8a8-QuaRot 的 910C 单机 16 卡 DAY0 recipe。"""
+    if engine != "vllm_ascend":
+        return False
+    try:
+        nnodes = int(params.get("nnodes") or 1)
+    except (TypeError, ValueError):
+        return False
+    device_count = _safe_int(params.get("device_count")) or 0
+    if nnodes != 1 or device_count != 16 or _ascend_platform_from_runtime(params) != "a3":
+        return False
+    model_identity = " ".join(str(params.get(key) or "").lower() for key in ("model_name", "model_path"))
+    return (
+        any(marker in model_identity for marker in ("minimax-m2.7", "minimax_m2.7", "minimaxm2.7"))
+        and "w8a8" in model_identity
+        and "quarot" in model_identity
+    )
+
 
 def _strip_internal_engine_config_keys(params: Dict[str, Any], engine_config: Dict[str, Any]) -> None:
     """清理 adapter 内部字段，并应用必须在 CLI 渲染前完成的硬约束。
@@ -2342,7 +2401,7 @@ def _apply_ascend910c_single_node_16_tp_dp_recipe(
     except (TypeError, ValueError):
         return
     device_count = _safe_int(params.get("device_count")) or 0
-    if nnodes != 1 or device_count != 16 or engine_version_platform() != "a3":
+    if nnodes != 1 or device_count != 16 or _ascend_platform_from_runtime(params) != "a3":
         return
 
     model_identity = " ".join(str(params.get(key) or "").lower() for key in ("model_name", "model_path"))
@@ -2354,10 +2413,8 @@ def _apply_ascend910c_single_node_16_tp_dp_recipe(
     if is_glm47_w8a8:
         recipe_name = "GLM-4.7-W8A8-floatmtp"
     else:
-        is_minimax_m27_quarot = (
-            any(marker in model_identity for marker in ("minimax-m2.7", "minimax_m2.7", "minimaxm2.7"))
-            and "w8a8" in model_identity
-            and "quarot" in model_identity
+        is_minimax_m27_quarot = _is_minimax_m27_quarot_ascend910c_single_node_16(
+            params, params.get("engine", "vllm_ascend")
         )
         if is_minimax_m27_quarot:
             recipe_name = "MiniMax-M2.7-w8a8-QuaRot"
@@ -4413,6 +4470,48 @@ def _build_minimax_m27_rtx_pro_5000_env_commands(params: Dict[str, Any]) -> List
     return cmds
 
 
+def _top_level_export_name(command: str) -> str:
+    """返回 export 语句的变量名；非 export 语句返回空串。"""
+    stripped = command.strip()
+    if not stripped.startswith("export ") or "=" not in stripped:
+        return ""
+    return stripped[len("export "):].split("=", 1)[0].strip()
+
+
+def _align_minimax_m27_quarot_910c_env(
+    commands: List[str],
+    params: Dict[str, Any],
+    engine: str,
+) -> List[str]:
+    """按 MiniMax-M2.7-w8a8-QuaRot 910C 单机 16 卡脚本收口 env。
+
+    该模型复用 MiniMaxM2 架构，通用 env builder 会带出 M2.5 的 VLLM_USE_GRAPH/V1
+    等历史变量；DAY0 2.7 QuaRot 910C 脚本要求更窄的 env 集合。这里只在精确模型、
+    vllm_ascend、单机 16 卡、910C 命中时后置过滤，不改变其它 MiniMaxM2 场景。
+    CPU governor/sysctl 与 ASCEND_RT_VISIBLE_DEVICES 由部署层负责，不在这里补齐。
+    """
+    if not _is_minimax_m27_quarot_ascend910c_single_node_16(params, engine):
+        return commands
+
+    aligned: List[str] = []
+    ld_library_path_written = False
+    for command in commands:
+        export_name = _top_level_export_name(command)
+        if export_name == "LD_LIBRARY_PATH":
+            if not ld_library_path_written:
+                aligned.append(_MINIMAX_M27_QUAROT_910C_LD_LIBRARY_PATH)
+                ld_library_path_written = True
+            continue
+        if export_name in _MINIMAX_M27_QUAROT_910C_ENV_DROP_NAMES:
+            continue
+        aligned.append(command)
+    if not ld_library_path_written:
+        aligned.append(_MINIMAX_M27_QUAROT_910C_LD_LIBRARY_PATH)
+    aligned.extend(_MINIMAX_M27_QUAROT_910C_ENV_EXPORTS)
+    logger.info("[MiniMax-M2.7-QuaRot-910C] aligned single-node 16-card env recipe")
+    return aligned
+
+
 def build_start_command(params: Dict[str, Any]) -> str:
     """为 launcher 生成 vLLM 启动命令字符串（旧版接口）。
 
@@ -4488,6 +4587,7 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     # 多个 builder（内联 set_vllm_ascend_env.sh / 架构块 / forced 软默认）会重复导出同名变量，
     # 这里收口去重，保证每个变量最终只有一条 export 生效（等价最终值，不动累加型与块内导出）。
     cmds = dedupe_env_exports(cmds)
+    cmds = _align_minimax_m27_quarot_910c_env(cmds, params, engine)
     # 单机 GLM-5.2(a3) 对齐官方 recipe：去重后剔除 TASK_QUEUE_ENABLE（官方单机命令不设）。
     cmds = _filter_glm52_single_node_task_queue(cmds, params, engine)
     return cmds
