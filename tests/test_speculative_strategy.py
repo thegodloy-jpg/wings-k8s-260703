@@ -133,6 +133,14 @@ class _FakePro5000Identifier:
             self.model_architecture = "unknown_architecture"
 
 
+def _export_by_name(commands):
+    return {
+        command.split(" ", 1)[1].split("=", 1)[0]: command
+        for command in commands
+        if command.startswith("export ") and "=" in command
+    }
+
+
 def test_resolve_speculative_strategy_passes_engine_to_mtp_method(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
 
@@ -543,9 +551,108 @@ def test_minimax_m27_w8a8_quarot_eagle3_uses_draft_path_options(
 
     assert config["method"] == "eagle3"
     assert config["model"] == str(draft_dir)
-    assert config["draft_tensor_parallel_size"] == 1
+    assert "draft_tensor_parallel_size" not in config
     assert config["num_speculative_tokens"] == 3
     assert config["enforce_eager"] is True
+
+
+def test_minimax_m27_w8a8_quarot_910b_env_matches_day0_script_without_deploy_pinning(
+    monkeypatch,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_path": "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_type": "llm",
+        "device_count": 8,
+        "nnodes": 1,
+        "device_details": [{"name": "Ascend910B_64G"}],
+    }
+
+    commands = vllm_adapter._build_vllm_common_env_cmds(params, "vllm_ascend")
+    export_by_name = _export_by_name(commands)
+
+    assert "ASCEND_RT_VISIBLE_DEVICES" not in export_by_name
+    assert "MOONCAKE_CONFIG_PATH" not in export_by_name
+    assert export_by_name["VLLM_LOG_LEVEL"] == "export VLLM_LOG_LEVEL=DEBUG"
+    assert export_by_name["HCCL_OP_EXPANSION_MODE"] == 'export HCCL_OP_EXPANSION_MODE="AIV"'
+    assert export_by_name["HCCL_BUFFSIZE"] == "export HCCL_BUFFSIZE=1024"
+    assert export_by_name["PYTORCH_NPU_ALLOC_CONF"] == (
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True"
+    )
+    assert export_by_name["OMP_NUM_THREADS"] == "export OMP_NUM_THREADS=1"
+    assert export_by_name["LD_PRELOAD"] == (
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}"
+    )
+    assert export_by_name["TASK_QUEUE_ENABLE"] == "export TASK_QUEUE_ENABLE=1"
+    assert export_by_name["ASCEND_BUFFER_POOL"] == "export ASCEND_BUFFER_POOL=4:8"
+    assert export_by_name["VLLM_ASCEND_BALANCE_SCHEDULING"] == (
+        "export VLLM_ASCEND_BALANCE_SCHEDULING=0"
+    )
+    assert export_by_name["LD_LIBRARY_PATH"] == (
+        "export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:"
+        "/usr/local/lib:${LD_LIBRARY_PATH:-}"
+    )
+    assert export_by_name["PYTHONHASHSEED"] == "export PYTHONHASHSEED=0"
+    assert export_by_name["ACL_OP_INIT_MODE"] == "export ACL_OP_INIT_MODE=1"
+
+    for removed_name in (
+        "OMP_PROC_BIND",
+        "VLLM_USE_GRAPH",
+        "VLLM_USE_V1",
+        "VLLM_ASCEND_ENABLE_FUSED_MC2",
+        "VLLM_ASCEND_ENABLE_FLASHCOMM1",
+        "VLLM_TORCH_COMPILE",
+    ):
+        assert removed_name not in export_by_name
+
+
+def test_minimax_m27_w8a8_quarot_910b_startup_includes_top_level_eager(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    defaults_path = (
+        Path(__file__).resolve().parents[1]
+        / "wings_control"
+        / "config"
+        / "defaults"
+        / "ascend_default.json"
+    )
+    profile = json.loads(defaults_path.read_text(encoding="utf-8"))[
+        "model_deploy_config"
+    ]["llm"]["MiniMaxM2ForCausalLM"]["MiniMax-M2.7-w8a8-QuaRot-Ascend910B"][
+        "vllm_ascend"
+    ]
+    draft_dir = tmp_path / "Eagle3"
+    draft_dir.mkdir()
+    (draft_dir / "config.json").write_text(
+        json.dumps({"architectures": ["MiniMaxM2Eagle3ForCausalLM"]}),
+        encoding="utf-8",
+    )
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_path": "/models/MiniMax/MiniMax-M2.7-w8a8-QuaRot",
+        "model_type": "llm",
+        "device_count": 8,
+        "nnodes": 1,
+        "device_details": [{"name": "Ascend910B_64G"}],
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": str(draft_dir),
+        "_smart_feats": ["spec"],
+        "_smart_card_token": "910b",
+        "engine_config": json.loads(json.dumps(profile)),
+        "_explicit_cli_keys": set(),
+    }
+
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert " --enforce-eager " in f" {exec_line} "
+    assert '"enforce_eager": true' in exec_line
+    assert "draft_tensor_parallel_size" not in exec_line
 
 
 def test_minimax_m27_w8a8_quarot_without_draft_falls_back_to_suffix(monkeypatch):

@@ -1300,7 +1300,10 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
             "enable_flashcomm1": True,
             "weight_nz_mode": True,
         }
-        assert "enforce_eager" not in config
+        if "910B" in card_name:
+            assert config["enforce_eager"] is True
+        else:
+            assert "enforce_eager" not in config
         assert "kv_cache_memory_bytes" not in config
         assert "speculative_config" not in config
 

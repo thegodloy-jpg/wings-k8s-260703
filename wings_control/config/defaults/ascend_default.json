@@ -1287,6 +1287,7 @@
             "trust_remote_code": true,
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
+            "enforce_eager": true,
             "async_scheduling": true,
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"
@@ -1309,6 +1310,7 @@
             "trust_remote_code": true,
             "no_enable_prefix_caching": true,
             "quantization": "ascend",
+            "enforce_eager": true,
             "async_scheduling": true,
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"

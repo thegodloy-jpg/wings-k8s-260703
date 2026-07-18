@@ -2257,6 +2257,7 @@ _MINIMAX_M27_QUAROT_910C_ENV_DROP_NAMES = {
     "VLLM_TORCH_COMPILE",
     "VLLM_USE_GRAPH",
     "VLLM_USE_V1",
+    "VLLM_LOG_LEVEL",
     "VLLM_LOGGING_LEVEL",
     "ASCEND_BUFFER_POOL",
     "ACL_OP_INIT_MODE",
@@ -2279,6 +2280,29 @@ _MINIMAX_M27_QUAROT_910C_ENV_EXPORTS = [
     "export PYTHONHASHSEED=0",
     "export ACL_OP_INIT_MODE=1",
 ]
+_MINIMAX_M27_QUAROT_910B_ENV_EXPORTS = [
+    "export VLLM_LOG_LEVEL=DEBUG",
+    'export HCCL_OP_EXPANSION_MODE="AIV"',
+    "export HCCL_BUFFSIZE=1024",
+    "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+    "export OMP_NUM_THREADS=1",
+    "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}",
+    "export TASK_QUEUE_ENABLE=1",
+    "export ASCEND_BUFFER_POOL=4:8",
+    "export VLLM_ASCEND_BALANCE_SCHEDULING=0",
+    "export PYTHONHASHSEED=0",
+    "export ACL_OP_INIT_MODE=1",
+]
+
+
+def _is_minimax_m27_quarot_model(params: Dict[str, Any]) -> bool:
+    """识别 MiniMax-M2.7-w8a8-QuaRot 模型族，避免 910B/910C recipe 各自散写。"""
+    model_identity = " ".join(str(params.get(key) or "").lower() for key in ("model_name", "model_path"))
+    return (
+        any(marker in model_identity for marker in ("minimax-m2.7", "minimax_m2.7", "minimaxm2.7"))
+        and "w8a8" in model_identity
+        and "quarot" in model_identity
+    )
 
 
 def _is_minimax_m27_quarot_ascend910c_single_node_16(
@@ -2295,12 +2319,24 @@ def _is_minimax_m27_quarot_ascend910c_single_node_16(
     device_count = _safe_int(params.get("device_count")) or 0
     if nnodes != 1 or device_count != 16 or _ascend_platform_from_runtime(params) != "a3":
         return False
-    model_identity = " ".join(str(params.get(key) or "").lower() for key in ("model_name", "model_path"))
-    return (
-        any(marker in model_identity for marker in ("minimax-m2.7", "minimax_m2.7", "minimaxm2.7"))
-        and "w8a8" in model_identity
-        and "quarot" in model_identity
-    )
+    return _is_minimax_m27_quarot_model(params)
+
+
+def _is_minimax_m27_quarot_ascend910b_single_node_8(
+    params: Dict[str, Any],
+    engine: str,
+) -> bool:
+    """识别 MiniMax-M2.7-w8a8-QuaRot 的 910B 单机 8 卡 DAY0 recipe。"""
+    if engine != "vllm_ascend":
+        return False
+    try:
+        nnodes = int(params.get("nnodes") or 1)
+    except (TypeError, ValueError):
+        return False
+    device_count = _safe_int(params.get("device_count")) or 0
+    if nnodes != 1 or device_count != 8 or _ascend_platform_from_runtime(params) != "a2":
+        return False
+    return _is_minimax_m27_quarot_model(params)
 
 
 def _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8(
@@ -3660,7 +3696,7 @@ def _build_whitelist_draft_speculative_cmd(params: Dict[str, Any], engine: str) 
     """按白名单 draft 配方渲染 DFlash/Eagle3 等非 MTP/suffix 配置。
 
     此函数只处理“已确认有真实 draft 权重”的路径。DFlash 使用平台 recipe 的
-    紧凑 JSON 形态；Eagle3 等其它 draft 方法需要 ``draft_tensor_parallel_size=1``
+    紧凑 JSON 形态；Eagle3 等其它 draft 方法只保留 draft 路径、token
     和可选 ``enforce_eager``。如果未来再加非 MTP/suffix 的 draft 策略，也应先在
     白名单声明 method/path/token，再复用这里，而不是在模型分支里再写一套。
     """
@@ -3679,8 +3715,6 @@ def _build_whitelist_draft_speculative_cmd(params: Dict[str, Any], engine: str) 
         f'"model"{sep}"{safe_path}"',
         f'"num_speculative_tokens"{sep}{_resolve_whitelist_draft_tokens(row, method)}',
     ]
-    if method != "dflash":
-        config.insert(2, f'"draft_tensor_parallel_size"{sep}1')
     if row.get("draft_enforce_eager") is True:
         config.append(f'"enforce_eager"{sep}true')
     logger.info(
@@ -4543,19 +4577,27 @@ def _top_level_export_name(command: str) -> str:
     return stripped[len("export "):].split("=", 1)[0].strip()
 
 
-def _align_minimax_m27_quarot_910c_env(
+def _align_minimax_m27_quarot_env(
     commands: List[str],
     params: Dict[str, Any],
     engine: str,
 ) -> List[str]:
-    """按 MiniMax-M2.7-w8a8-QuaRot 910C 单机 16 卡脚本收口 env。
+    """按 MiniMax-M2.7-w8a8-QuaRot DAY0 脚本收口 env。
 
     该模型复用 MiniMaxM2 架构，通用 env builder 会带出 M2.5 的 VLLM_USE_GRAPH/V1
-    等历史变量；DAY0 2.7 QuaRot 910C 脚本要求更窄的 env 集合。这里只在精确模型、
-    vllm_ascend、单机 16 卡、910C 命中时后置过滤，不改变其它 MiniMaxM2 场景。
-    CPU governor/sysctl 与 ASCEND_RT_VISIBLE_DEVICES 由部署层负责，不在这里补齐。
+    等历史变量；DAY0 2.7 QuaRot 脚本要求更窄的 env 集合。这里只在精确模型、
+    vllm_ascend、单机卡数、910B/910C 命中时后置过滤，不改变其它 MiniMaxM2 场景。
+    CPU governor/sysctl、ASCEND_RT_VISIBLE_DEVICES 与 Mooncake 配置由部署/卸载层负责。
     """
-    if not _is_minimax_m27_quarot_ascend910c_single_node_16(params, engine):
+    recipe_name = ""
+    recipe_exports: Optional[List[str]] = None
+    if _is_minimax_m27_quarot_ascend910c_single_node_16(params, engine):
+        recipe_name = "910C-16"
+        recipe_exports = _MINIMAX_M27_QUAROT_910C_ENV_EXPORTS
+    elif _is_minimax_m27_quarot_ascend910b_single_node_8(params, engine):
+        recipe_name = "910B-8"
+        recipe_exports = _MINIMAX_M27_QUAROT_910B_ENV_EXPORTS
+    else:
         return commands
 
     aligned: List[str] = []
@@ -4572,8 +4614,8 @@ def _align_minimax_m27_quarot_910c_env(
         aligned.append(command)
     if not ld_library_path_written:
         aligned.append(_MINIMAX_M27_QUAROT_910C_LD_LIBRARY_PATH)
-    aligned.extend(_MINIMAX_M27_QUAROT_910C_ENV_EXPORTS)
-    logger.info("[MiniMax-M2.7-QuaRot-910C] aligned single-node 16-card env recipe")
+    aligned.extend(recipe_exports)
+    logger.info("[MiniMax-M2.7-QuaRot-%s] aligned single-node env recipe", recipe_name)
     return aligned
 
 
@@ -4672,7 +4714,7 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     # 多个 builder（内联 set_vllm_ascend_env.sh / 架构块 / forced 软默认）会重复导出同名变量，
     # 这里收口去重，保证每个变量最终只有一条 export 生效（等价最终值，不动累加型与块内导出）。
     cmds = dedupe_env_exports(cmds)
-    cmds = _align_minimax_m27_quarot_910c_env(cmds, params, engine)
+    cmds = _align_minimax_m27_quarot_env(cmds, params, engine)
     cmds = _align_qwen35_397b_w8a8_mtp_910c_env(cmds, params, engine)
     # 单机 GLM-5.2(a3) 对齐官方 recipe：去重后剔除 TASK_QUEUE_ENABLE（官方单机命令不设）。
     cmds = _filter_glm52_single_node_task_queue(cmds, params, engine)
