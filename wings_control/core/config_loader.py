@@ -1029,6 +1029,18 @@ def _set_qwen397b_ascend_dp_tensor_parallel(params, ctx) -> bool:
 
 def _should_skip_generic_tensor_parallelism(ctx) -> bool:
     """判断 TP 是否已由专属路径接管，避免进入通用 _adjust_tensor_parallelism。"""
+    deepseek_v4_pro_identity = " ".join(
+        str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
+    )
+    # V4-Pro 双机拓扑由 adapter 按本机卡数推导；此时 distributed backend 可能尚未
+    # 被 _handle_distributed 归一成 dp_deployment，不能先套通用全局 TP 公式。
+    if (
+        ctx.get("engine") == "vllm_ascend"
+        and ctx.get("distributed")
+        and "deepseek-v4-pro" in deepseek_v4_pro_identity
+        and "flash" not in deepseek_v4_pro_identity
+    ):
+        return True
     # Ascend DeepSeek dp_deployment 后端 TP 语义是「节点内」，由 vllm_adapter 的
     # _default_deepseek_ascend_dp_tensor_parallel_size 按架构兜底；
     # 此处不能套用 Ray 全局 TP 公式 (device_count × nnodes)，否则
@@ -3369,6 +3381,7 @@ def _handle_sglang_distributed(distributed_config: Dict[str, Any], cmd_params: D
 _PREFIX_TOKEN_MATCH_CONFIG_KEYS = {
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    "deepseek-v4-pro-w4a8-mtp",
     "minimax-m2.7",
 }
 _MODEL_NAME_TOKEN_BOUNDARY_CHARS = set("-_./:")
@@ -3439,11 +3452,11 @@ def _fingerprint_model_config_keys(model_info) -> list:
     config = getattr(model_info, "config", None) or {}
     for key in _V4_PRO_IDENTITY_CONFIG_KEYS:
         if _config_value_contains_v4_pro(config.get(key)):
-            return ["deepseek-v4-pro"]
+            return ["deepseek-v4-pro-w4a8-mtp", "deepseek-v4-pro"]
 
     quantize = getattr(model_info, "model_quantize", None)
     if _is_w4a8_quantize_token(quantize):
-        return ["deepseek-v4-pro"]
+        return ["deepseek-v4-pro-w4a8-mtp", "deepseek-v4-pro"]
     return []
 
 

@@ -176,6 +176,30 @@ def test_qwen_day0_memcache_keeps_mtp_strategy_and_whitelist_tokens(monkeypatch)
     assert "suffix" not in command
 
 
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_qwen35_35b_a3b_ascend_mtp_matches_day0_recipe(monkeypatch, card_token):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen36MoeIdentifier)
+
+    command = vllm_adapter.build_speculative_cmd(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Qwen/Qwen3.5-35B-A3B",
+            "model_path": "/models/Qwen/Qwen3.5-35B-A3B",
+            "model_type": "llm",
+            "enable_speculative_decode": True,
+            "speculative_decode_model_path": "none",
+            "_smart_card_token": card_token,
+            "_smart_feats": ["spec"],
+        },
+        "vllm_ascend",
+    )
+
+    assert command == (
+        " --speculative-config "
+        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":1,\"enforce_eager\":true}'"
+    )
+
+
 def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
 
@@ -591,8 +615,8 @@ def test_ascend_deepseek_v4_pro_mtp_uses_exact_whitelist_enforce_eager(monkeypat
 
     params = {
         "engine": "vllm_ascend",
-        "model_name": "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
-        "model_path": "/models/Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        "model_name": "DeepSeek-V4-Pro-w4a8-mtp",
+        "model_path": "/models/DeepSeek-V4-Pro-w4a8-mtp",
         "model_type": "llm",
         "enable_speculative_decode": True,
         "_smart_card_token": "910c",

@@ -18,6 +18,9 @@ from utils.vllm_helpers import (
 logger = logging.getLogger(__name__)
 
 
+_DEEPSEEK_V4_PRO_HCCL_IF_IP = "${POD_IP:-${RANK_IP:-$(hostname -i | awk '{print $1}')}}"
+
+
 def _import_vllm_adapter():
     """Import vllm_adapter in both package and script-style layouts."""
     try:
@@ -190,14 +193,14 @@ def _build_ray_worker_commands(params: Dict[str, Any], ctx: DistScriptCtx) -> Li
 def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
     """构造 Ascend dp_deployment 通信环境。
 
-    GLM-5 / DeepSeek-V4-Pro / 通用 DeepSeek DP 三档默认值不同：
-    - GLM-5 DP   : OMP=1     / BUFFSIZE=200  / TIMEOUT=1800
-    - V4-Pro     : OMP=10    / BUFFSIZE=2048 / TIMEOUT=7200（与 V4-Pro 模型 env 对齐）
+    GLM-5 / DeepSeek-V4-Pro / 通用 DeepSeek DP 三档处理不同：
+    - GLM-5 DP   : OMP=1     / BUFFSIZE=1024 / TIMEOUT=1800
+    - V4-Pro     : 直接返回参考 start_1/start_2 的完整 export 集合
     - 通用 DeepSeek DP: OMP=100 / BUFFSIZE=1024 / TIMEOUT=1800
 
-    该函数在 ``common_env_cmds`` 之后输出，会覆盖前序值，故必须在此处用正确默认值，
-    否则 V4-Pro 模型 env 设置的 HCCL_BUFFSIZE=2048 / OMP=10 / TIMEOUT=7200 都会被
-    硬编码默认覆盖回去。``os.getenv`` 仍然允许调用方通过环境变量进一步覆盖。
+    该函数在 ``common_env_cmds`` 之后输出，会覆盖前序值，故普通 DP 场景仍保留
+    ``os.getenv`` 覆盖能力；V4-Pro 为了和参考脚本变量集合严格一致，不继承通用 DP
+    的 whitelist/timeout 变量。
     """
     vllm_adapter = _import_vllm_adapter()
     dp_arch = vllm_adapter.get_deepseek_ascend_dp_model_architecture(params)
@@ -206,10 +209,25 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
     # 不按模型硬编码——由平台 HCCL_BUFFSIZE env 覆盖）；GLM-5/5.1 维持 BALANCE=1 / 无 FLASHCOMM1。
     is_glm52_dp = is_glm5_dp and is_glm52_model(params.get("model_name"), params.get("model_path"))
     is_v4_pro_dp = vllm_adapter.is_deepseek_v4_pro_adapted_scope(params)
+    if is_v4_pro_dp:
+        # DeepSeek-V4-Pro 双机对齐参考 start_1/start_2：前置 export 变量名必须一致，
+        # 不继承通用 DP 的 whitelist/timeout，也不追加 multi-block/multi-groups/FUSED_MC2。
+        return [
+            'export HCCL_OP_EXPANSION_MODE="AIV"',
+            f"export HCCL_IF_IP={_DEEPSEEK_V4_PRO_HCCL_IF_IP}",
+            f"export GLOO_SOCKET_IFNAME={net_if}",
+            f"export TP_SOCKET_IFNAME={net_if}",
+            f"export HCCL_SOCKET_IFNAME={net_if}",
+            "export HCCL_BUFFSIZE=2048",
+            "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+            "export OMP_PROC_BIND=false",
+            "export OMP_NUM_THREADS=10",
+            "export TASK_QUEUE_ENABLE=1",
+            "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+            "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+        ]
     if is_glm5_dp:
         omp_default, buffsize_default, connect_timeout_default = "1", "1024", "1800"
-    elif is_v4_pro_dp:
-        omp_default, buffsize_default, connect_timeout_default = "10", "2048", "7200"
     else:
         omp_default, buffsize_default, connect_timeout_default = "100", "1024", "1800"
     env_commands = [

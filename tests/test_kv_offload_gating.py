@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from engines import vllm_adapter  # noqa: E402
+from engines import vllm_distributed  # noqa: E402
 from core import wings_entry  # noqa: E402
 from core import config_loader  # noqa: E402
 from core.port_plan import derive_port_plan  # noqa: E402
@@ -764,6 +765,28 @@ def test_kimi_k27_code_ascend_env_includes_jemalloc_and_pythonhashseed():
     assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in ld_preload
 
 
+def test_kimi_k27_code_ascend_env_matches_day0_memcache_script(monkeypatch):
+    monkeypatch.delenv("DISTRIBUTED", raising=False)
+
+    env_commands = vllm_adapter._build_ascend_arch_model_env_commands(
+        {
+            "engine": "vllm_ascend",
+            "model_name": "Kimi-K2.7-Code",
+            "model_path": "/harbor_data/Kimi-K2.7-Code",
+            "model_type": "llm",
+        },
+        "KimiK25ForConditionalGeneration",
+    )
+    rendered = "\n".join(env_commands)
+
+    assert "export OMP_NUM_THREADS=10" in rendered
+    assert "export HCCL_BUFFSIZE=1024" in rendered
+    assert "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1" in rendered
+    assert "export VLLM_ASCEND_ENABLE_MLAPO=1" in rendered
+    assert "export VLLM_ASCEND_BALANCE_SCHEDULING=1" in rendered
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" not in rendered
+
+
 def test_deepseek_v4_flash_ascend_v021_uses_lmcache_package_config(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     params = {
@@ -1080,6 +1103,7 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_per_card_page_offload_memory
     assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in fragment["engine_prelude"]
     assert "tcp://127.0.0.1:5000" in fragment["engine_prelude"]
     assert "tcp://127.0.0.1:6000" in fragment["engine_prelude"]
+    assert 'export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_sdma}"' in fragment["engine_prelude"]
     assert "ock.mmc.local_service.dram.size = ${WINGS_MEMCACHE_DRAM_GB}GB" in fragment["engine_prelude"]
     assert "MMC_LOCAL_CONFIG_PATH" in fragment["engine_prelude"]
     assert "MMC_META_CONFIG_PATH" in fragment["master_script"]
@@ -1213,19 +1237,19 @@ def test_qwen_day0_memcache_profile_uses_static_scene_defaults(
 
 
 @pytest.mark.parametrize(
-    "model_name",
+    ("model_name", "expected_protocol"),
     [
-        "Qwen/Qwen3.5-27B",
-        "Qwen/Qwen3.5-35B-A3B",
-        "Qwen/Qwen3.5-122B-A10B",
-        "Qwen/Qwen3.6-27B",
-        "Eco-Tech/Qwen3.6-27B-w8a8",
-        "Qwen/Qwen3.6-35B-A3B",
-        "Eco-Tech/Qwen3.6-35B-A3B-w8a8",
+        ("Qwen/Qwen3.5-27B", None),
+        ("Qwen/Qwen3.5-35B-A3B", "device_sdma"),
+        ("Qwen/Qwen3.5-122B-A10B", None),
+        ("Qwen/Qwen3.6-27B", None),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", "device_rdma"),
+        ("Qwen/Qwen3.6-35B-A3B", None),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "device_rdma"),
     ],
 )
-def test_qwen_day0_910b_never_enables_memcache(monkeypatch, model_name):
-    """当前 Qwen3.5/3.6 910B 场景只保留 MTP，不允许 MemCache 卸载。"""
+def test_qwen_day0_910b_memcache_follows_whitelist(monkeypatch, model_name, expected_protocol):
+    """910B 只允许白名单补充的 Qwen Day0 MemCache 场景，其余 Qwen 仍保持关闭。"""
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
@@ -1240,11 +1264,22 @@ def test_qwen_day0_910b_never_enables_memcache(monkeypatch, model_name):
         "_smart_feats": ["offload", "spec"],
     }
 
-    assert memcache_hybrid.is_qwen_day0_memcache_params(params, "vllm_ascend") is False
-    assert memcache_hybrid.build_memcache_hybrid_fragment(
+    assert (
+        memcache_hybrid.is_qwen_day0_memcache_params(params, "vllm_ascend")
+        is bool(expected_protocol)
+    )
+    fragment = memcache_hybrid.build_memcache_hybrid_fragment(
         "vllm_ascend",
         params,
-    ) == memcache_hybrid.empty_memcache_hybrid_fragment()
+    )
+    if expected_protocol:
+        assert fragment["enabled"] is True
+        assert (
+            f'export WINGS_MEMCACHE_PROTOCOL="${{WINGS_MEMCACHE_PROTOCOL:-{expected_protocol}}}"'
+            in fragment["engine_prelude"]
+        )
+    else:
+        assert fragment == memcache_hybrid.empty_memcache_hybrid_fragment()
 
 
 def test_memcache_backend_respects_effective_offload_switch(monkeypatch):
@@ -1409,6 +1444,38 @@ def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatc
     )
 
     assert special == ""
+
+
+def test_deepseek_v4_pro_dp_env_matches_reference_script(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Pro-w4a8-mtp",
+        "model_path": "/models/DeepSeek-V4-Pro-w4a8-mtp",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "external_launcher",
+        "nnodes": 2,
+    }
+
+    env_commands = vllm_distributed._build_ascend_dp_env_commands(params, "eth0")
+
+    # 参考脚本要求变量集合完全一致，额外的 multi-block/multi-groups/FUSED_MC2/whitelist 均不能出现。
+    assert env_commands == [
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+        "export HCCL_IF_IP=${POD_IP:-${RANK_IP:-$(hostname -i | awk '{print $1}')}}",
+        "export GLOO_SOCKET_IFNAME=eth0",
+        "export TP_SOCKET_IFNAME=eth0",
+        "export HCCL_SOCKET_IFNAME=eth0",
+        "export HCCL_BUFFSIZE=2048",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export TASK_QUEUE_ENABLE=1",
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+    ]
+    assert vllm_adapter._build_deepseek_v4_pro_env(params) == []
 
 
 def test_qwen35_nvfp4_native_offload_drops_when_page_size_missing(monkeypatch):

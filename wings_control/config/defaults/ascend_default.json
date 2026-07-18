@@ -241,9 +241,8 @@
             "use_vllm_serve": true
           }
         },
-        "DeepSeek-V4-Pro": {
+        "DeepSeek-V4-Pro-w4a8-mtp": {
           "vllm_ascend_distributed": {
-            "trust_remote_code": true,
             "max_model_len": 135000,
             "max_num_batched_tokens": 4096,
             "gpu_memory_utilization": 0.9,
@@ -252,8 +251,6 @@
             "quantization": "ascend",
             "block_size": 128,
             "async_scheduling": true,
-            "enable_chunked_prefill": true,
-            "enable_prefix_caching": true,
             "safetensors_load_strategy": "prefetch",
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {
@@ -266,6 +263,7 @@
             },
             "tokenizer_mode": "deepseek_v4",
             "tool_call_parser": "deepseek_v4",
+            "served_model_name": "dsv4",
             "use_vllm_serve": true
           }
         }

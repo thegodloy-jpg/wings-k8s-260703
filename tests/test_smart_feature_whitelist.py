@@ -365,8 +365,8 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset({"spec"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
-        "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
-        "/models/Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        "DeepSeek-V4-Pro-w4a8-mtp",
+        "/models/DeepSeek-V4-Pro-w4a8-mtp",
         "910c",
     ) == frozenset({"spec", "sparse"})
     assert model_utils.resolve_feature_whitelist(
@@ -1250,6 +1250,22 @@ def test_qwen_day0_910b_selected_models_reuse_memcache_offload(model_name):
     assert row["backend"] == "memcache"
 
 
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_qwen35_35b_a3b_ascend_spec_row_matches_day0_mtp_recipe(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "Qwen/Qwen3.5-35B-A3B",
+        "/models/Qwen/Qwen3.5-35B-A3B",
+        card_token,
+        "spec",
+    )
+
+    assert row is not None
+    assert row.get("mtp_method") == "qwen3_5_mtp"
+    assert row.get("mtp_num_speculative_tokens") == 1
+    assert row.get("enforce_eager") is True
+
+
 def test_qwen_day0_910b_reference_script_without_offload_still_has_no_memcache():
     """未补 910B offload 的参考脚本不能直接注入卸载。"""
     day0_dir = Path(__file__).resolve().parents[1] / "wings_control" / "docs" / "DAY0"
@@ -1285,7 +1301,7 @@ def test_qwen_day0_910b_reference_script_without_offload_still_has_no_memcache()
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910b", 1),
-        ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp", "910c", 1),
+        ("vllm_ascend", "DeepSeek-V4-Pro-w4a8-mtp", "/models/DeepSeek-V4-Pro-w4a8-mtp", "910c", 1),
         ("vllm_ascend", "DeepSeek-Coder-V2-Instruct-BF16", "/models/DeepSeek-Coder-V2-Instruct-BF16", "910c", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.2-w8a8", "/models/Eco-Tech/GLM-5.2-w8a8", "910c", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910b", 3),

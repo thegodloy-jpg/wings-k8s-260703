@@ -1575,6 +1575,9 @@ def _build_qwen35moe_ascend_env(arch: str) -> List[str]:
     logger.info("[Qwen3.5-MoE] Set Ascend environment variables for %s", arch)
     return [
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export PYTHONHASHSEED=0",
+        "export VLLM_USE_V1=1",
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}",
         "export HCCL_BUFFSIZE=512",
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=1",
@@ -2032,25 +2035,14 @@ def _build_deepseek_v4_flash_env(params: Dict[str, Any]) -> List[str]:
 
 
 def _build_deepseek_v4_pro_env(params: Dict[str, Any]) -> List[str]:
-    """构建 DeepSeek-V4-Pro A3 双机 vLLM-Ascend 专属环境变量。
+    """DeepSeek-V4-Pro 双机 env 由 dp_deployment 统一输出。
 
-    与 vLLM-Ascend 官方 V4-Pro 双机参考脚本严格对齐。差异点：``HCCL_BUFFSIZE=2048``
-    （Pro 长上下文/MoE 通信量更大，沿用 1024 会触发 HCCL OOM 风险）。
-
+    参考 start_1/start_2 的变量集合必须保持“只多不少都不行”。网卡名与本机 IP 只在
+    dp_deployment 构造器里有完整上下文，因此这里不再追加模型 env，避免和通信 env
+    分散维护后再次引入 USE_MULTI_BLOCK_POOL / FUSED_MC2 等额外变量。
     """
-    logger.info("[DeepSeek-V4-Pro] Set Ascend A3 environment variables")
-    return [
-        "export USE_MULTI_BLOCK_POOL=1",
-        "export OMP_PROC_BIND=false",
-        "export OMP_NUM_THREADS=10",
-        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export USE_MULTI_GROUPS_KV_CACHE=1",
-        "export HCCL_BUFFSIZE=2048",
-        "export VLLM_ASCEND_ENABLE_FUSED_MC2=1",
-        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
-        "export HCCL_OP_EXPANSION_MODE=AIV",
-        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
-    ]
+    logger.info("[DeepSeek-V4-Pro] defer Ascend A3 environment variables to dp_deployment builder")
+    return []
 
 
 def _build_glm5_model_env(params: Dict[str, Any], arch: str) -> List[str]:
@@ -4564,7 +4556,7 @@ def _align_qwen35_397b_w8a8_mtp_910c_env(
     params: Dict[str, Any],
     engine: str,
 ) -> List[str]:
-    """??? 397B w8a8-mtp ??? env???/IP/????????????"""
+    """只对齐 397B w8a8-mtp 的模型 env，网卡/IP/可见卡继续走部署层逻辑。"""
     if not _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8(params, engine):
         return commands
     aligned = [
@@ -4922,7 +4914,12 @@ def build_start_script(params: Dict[str, Any]) -> str:
             is_distributed,
             nnodes,
         )
-        common_env_cmds = _build_vllm_common_env_cmds(params, engine)
+        # DeepSeek-V4-Pro 官方双机脚本要求前置 export 集合严格一致；通用 Ascend env
+        # 会额外带入 LD_LIBRARY_PATH、CANN 初始化导出等变量，因此该场景只走 DP 专属 env。
+        if is_deepseek_v4_pro_adapted_scope(params):
+            common_env_cmds = []
+        else:
+            common_env_cmds = _build_vllm_common_env_cmds(params, engine)
         script = _build_vllm_distributed_script(params, cmd, common_env_cmds, engine, sparse_args)
     else:
         logger.info(

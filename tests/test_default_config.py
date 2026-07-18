@@ -678,21 +678,29 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
     deepseek_v4 = llm["DeepseekV4ForCausalLM"]
     assert "DeepSeek-V4-Flash-A2" not in deepseek_v4
     assert "DeepSeek-V4-Flash-A3" not in deepseek_v4
-    assert deepseek_v4["DeepSeek-V4-Flash-Ascend910B"]["vllm_ascend"]["no_enable_prefix_caching"] is True
-    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910B"]["vllm_ascend"]
-    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910C"]["vllm_ascend"]
-    assert "no_enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-Ascend910C"]["vllm_ascend"]
+    assert "DeepSeek-V4-Flash-Ascend910B" not in deepseek_v4
+    assert "DeepSeek-V4-Flash-Ascend910C" not in deepseek_v4
+    assert (
+        deepseek_v4["DeepSeek-V4-Flash-w8a8-mtp-Ascend910B"]["vllm_ascend"]["no_enable_prefix_caching"]
+        is True
+    )
+    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-w8a8-mtp-Ascend910B"]["vllm_ascend"]
+    assert "enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-w8a8-mtp-Ascend910C"]["vllm_ascend"]
+    assert "no_enable_prefix_caching" not in deepseek_v4["DeepSeek-V4-Flash-w8a8-mtp-Ascend910C"]["vllm_ascend"]
     _assert_engine_fields(
-        deepseek_v4["DeepSeek-V4-Pro"]["vllm_ascend_distributed"],
+        deepseek_v4["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"],
         {
-            "enable_chunked_prefill": True,
-            "enable_prefix_caching": True,
             "max_num_seqs": 32,
+            "served_model_name": "dsv4",
             "tool_call_parser": "deepseek_v4",
         },
     )
+    deepseek_v4_pro = deepseek_v4["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"]
+    assert "trust_remote_code" not in deepseek_v4_pro
+    assert "enable_chunked_prefill" not in deepseek_v4_pro
+    assert "enable_prefix_caching" not in deepseek_v4_pro
     assert _as_dict(
-        deepseek_v4["DeepSeek-V4-Pro"]["vllm_ascend_distributed"]["additional_config"]
+        deepseek_v4["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"]["additional_config"]
     )["multistream_overlap_shared_expert"] is True
 
     glm5 = llm["GlmMoeDsaForCausalLM"]
@@ -753,13 +761,141 @@ def test_qwen_day0_910b_reuse_defaults_are_independent_copies():
     ):
         assert moe[f"{model_name}-Ascend910B"] == moe[f"{model_name}-Ascend910C"]
 
-    assert "Qwen3.5-397B-A17B-Ascend910B" not in moe
+    assert "Qwen3.5-397B-A17B-w8a8-mtp-Ascend910B" in moe
+    assert "Qwen3.5-397B-A17B-w8a8-mtp-Ascend910C" in moe
+    assert (
+        moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910B"]
+        != moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910C"]
+    )
+
+
+def test_qwen35_397b_w8a8_mtp_ascend_defaults_match_day0_scripts():
+    moe = _model_deploy_config("ascend")["llm"]["Qwen3_5MoeForConditionalGeneration"]
+
+    expected_by_card = {
+        "Ascend910C": 262144,
+        "Ascend910B": 131072,
+    }
+    expected_additional = {
+        "enable_cpu_binding": True,
+        "ascend_compilation_config": {"enable_npugraph_ex": True},
+    }
+    for card_name, expected_len in expected_by_card.items():
+        config = moe[f"Qwen3.5-397B-A17B-w8a8-mtp-{card_name}"]
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            engine_config = config[engine]
+            assert engine_config["use_vllm_serve"] is True
+            assert engine_config["max_model_len"] == expected_len
+            assert engine_config["max_num_seqs"] == 32
+            assert engine_config["max_num_batched_tokens"] == 8192
+            assert engine_config["gpu_memory_utilization"] == 0.95
+            assert engine_config["enable_expert_parallel"] is True
+            assert engine_config["async_scheduling"] is True
+            assert engine_config["compilation_config"] == {"cudagraph_mode": "FULL_DECODE_ONLY"}
+            assert engine_config["additional_config"] == expected_additional
+            # TP/DP 属于运行时拓扑，不能重新固化到 defaults。
+            assert "tensor_parallel_size" not in engine_config
+            assert "data_parallel_size" not in engine_config
+
+
+def test_qwen35_35b_a3b_ascend_defaults_match_day0_script():
+    moe = _model_deploy_config("ascend")["llm"]["Qwen3_5MoeForConditionalGeneration"]
+    expected_additional = {
+        "enable_cpu_binding": False,
+        "ascend_compilation_config": {
+            "enable_npugraph_ex": True,
+            "enable_static_kernel": False,
+        },
+        "multistream_overlap_shared_expert": False,
+    }
+
+    for card_name in ("Ascend910C", "Ascend910B"):
+        config = moe[f"Qwen3.5-35B-A3B-{card_name}"]
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            engine_config = config[engine]
+            assert engine_config["use_vllm_serve"] is True
+            assert engine_config["max_model_len"] == 161072
+            assert engine_config["max_num_seqs"] == 32
+            assert engine_config["max_num_batched_tokens"] == 8192
+            assert engine_config["gpu_memory_utilization"] == 0.9
+            assert engine_config["enable_expert_parallel"] is True
+            assert engine_config["language_model_only"] is True
+            assert engine_config["compilation_config"] == {"cudagraph_mode": "FULL_DECODE_ONLY"}
+            assert engine_config["additional_config"] == expected_additional
+            assert "async_scheduling" not in engine_config
+            # TP/DP 属于运行时拓扑，不能重新固化到 defaults。
+            assert "tensor_parallel_size" not in engine_config
+            assert "data_parallel_size" not in engine_config
+
+
+def test_qwen35_397b_w8a8_mtp_uses_whitelist_driven_ascend_profile():
+    moe = _model_deploy_config("ascend")["llm"]["Qwen3_5MoeForConditionalGeneration"]
+    scenario = config_loader._SpecialEngineScenario()
+    model_info = _FakeModelInfo(
+        "Qwen/Qwen3.5-397B-A17B-w8a8-mtp",
+        "Qwen3_5MoeForConditionalGeneration",
+    )
+
+    cases = [
+        ("Ascend910C", 262144),
+        ("Ascend910B_64G", 131072),
+    ]
+    for card_name, expected_len in cases:
+        config = config_loader._match_model_engine_config(
+            moe,
+            "qwen/qwen3.5-397b-a17b-w8a8-mtp",
+            "vllm_ascend",
+            scenario,
+            model_info,
+            {"device": "ascend", "details": [{"name": card_name}]},
+            "/models/qwen/qwen3.5-397b-a17b-w8a8-mtp",
+        )
+
+        assert config["max_model_len"] == expected_len
+        assert config["max_num_seqs"] == 32
+        assert config["max_num_batched_tokens"] == 8192
+
+
+def test_qwen35_day0_single_node_topology_uses_generic_tp_rule(monkeypatch):
+    monkeypatch.setattr(
+        config_loader,
+        "check_pcie_cards",
+        lambda *_args: (False, None),
+    )
+
+    cases = [
+        ("Qwen/Qwen3.5-35B-A3B", 2),
+        ("Qwen/Qwen3.5-397B-A17B-w8a8-mtp", 8),
+    ]
+    for model_name, device_count in cases:
+        model_info = _FakeModelInfo(
+            model_name,
+            "Qwen3_5MoeForConditionalGeneration",
+        )
+        params = {
+            "engine": "vllm_ascend",
+            "distributed": False,
+            "device_count": device_count,
+            "nnodes": 1,
+            "model_name": model_name,
+            "model_path": f"/models/{model_name.rsplit('/', 1)[-1]}",
+        }
+        config = config_loader._get_model_specific_config(
+            {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+            params,
+            model_info,
+        )
+
+        # 这两类 Qwen 单机场景的 TP 与卡数一致，复用 _adjust_tensor_parallelism；
+        # DP=1 交给 vLLM 默认值，不为等价场景额外增加模型专属分支。
+        assert config["tensor_parallel_size"] == device_count
+        assert "data_parallel_size" not in config
 
 
 def test_deepseek_v4_pro_parallelism_depends_on_device_count(monkeypatch):
     config = (
         _model_deploy_config("ascend")["llm"]["DeepseekV4ForCausalLM"]
-        ["DeepSeek-V4-Pro"]["vllm_ascend_distributed"]
+        ["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"]
     )
     for key in (
         "tensor_parallel_size",
@@ -792,6 +928,45 @@ def test_deepseek_v4_pro_parallelism_depends_on_device_count(monkeypatch):
         assert engine_config["data_parallel_size"] == 2
         assert engine_config["data_parallel_size_local"] == 1
         assert engine_config["data_parallel_start_rank"] == 1
+
+
+def test_deepseek_v4_pro_config_loader_defers_dp_topology_to_adapter(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    model_info = _FakeModelInfo("DeepSeek-V4-Pro-w4a8-mtp", "DeepseekV4ForCausalLM")
+    model_info.model_quantize = "w4a8"
+    model_info.config = {"_name_or_path": "DeepSeek-V4-Pro-w4a8-mtp"}
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Pro-w4a8-mtp",
+        "model_path": "/models/DeepSeek-V4-Pro-w4a8-mtp",
+        "model_type": "llm",
+        "model_quantize": "w4a8",
+        "distributed": True,
+        "distributed_executor_backend": "external_launcher",
+        "device_count": 16,
+        "nnodes": 2,
+        "node_rank": 1,
+        "enable_auto_tool_choice": True,
+    }
+
+    config = config_loader._get_model_specific_config(
+        {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+        params,
+        model_info,
+    )
+
+    # config_loader 只合并模型默认和显式开关；V4-Pro DP 拓扑交给 adapter
+    # 基于本机卡数推导，避免通用分布式公式提前写入 TP=32。
+    assert config["served_model_name"] == "dsv4"
+    assert config["enable_auto_tool_choice"] is True
+    assert "tensor_parallel_size" not in config
+    assert "data_parallel_size" not in config
+
+    prepared = vllm_adapter._prepare_engine_config({**params, "engine_config": config})
+    assert prepared["tensor_parallel_size"] == 16
+    assert prepared["data_parallel_size"] == 2
+    assert prepared["data_parallel_size_local"] == 1
+    assert prepared["data_parallel_start_rank"] == 1
 
 
 def test_qwen_day0_defaults_leave_parallelism_to_device_count(monkeypatch):
@@ -897,7 +1072,6 @@ def test_qwen_day0_additional_config_matches_excel_baseline():
                 "Qwen3.5-35B-A3B-Ascend910B",
                 "Qwen3.5-122B-A10B-Ascend910C",
                 "Qwen3.5-122B-A10B-Ascend910B",
-                "Qwen3.5-397B-A17B-Ascend910C",
             )
         },
         **{
@@ -914,6 +1088,19 @@ def test_qwen_day0_additional_config_matches_excel_baseline():
         for engine in ("vllm_ascend", "vllm_ascend_distributed"):
             assert _as_dict(moe[model_name][engine]["additional_config"]) == expected
 
+    qwen397_expected = {
+        "enable_cpu_binding": True,
+        "ascend_compilation_config": {
+            "enable_npugraph_ex": True,
+        },
+    }
+    for model_name in (
+        "Qwen3.5-397B-A17B-w8a8-mtp-Ascend910C",
+        "Qwen3.5-397B-A17B-w8a8-mtp-Ascend910B",
+    ):
+        for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+            assert _as_dict(moe[model_name][engine]["additional_config"]) == qwen397_expected
+
 
 def test_qwen35_day0_defaults_keep_language_model_only_from_excel():
     llm = _model_deploy_config("ascend")["llm"]
@@ -927,7 +1114,8 @@ def test_qwen35_day0_defaults_keep_language_model_only_from_excel():
         moe["Qwen3.5-35B-A3B-Ascend910B"],
         moe["Qwen3.5-122B-A10B-Ascend910C"],
         moe["Qwen3.5-122B-A10B-Ascend910B"],
-        moe["Qwen3.5-397B-A17B-Ascend910C"],
+        moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910C"],
+        moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910B"],
     ]
     for config in qwen35_models:
         for engine in ("vllm_ascend", "vllm_ascend_distributed"):
@@ -954,6 +1142,7 @@ def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
 
     for engine in ("vllm_ascend", "vllm_ascend_distributed"):
         config = kimi[engine]
+        assert config["use_vllm_serve"] is True
         assert config["max_model_len"] == 81920
         assert config["max_num_seqs"] == 48
         assert config["max_num_batched_tokens"] == 4096
@@ -962,6 +1151,10 @@ def test_kimi_k27_code_ascend_defaults_follow_official_memcache_recipe():
         assert config["async_scheduling"] is True
         assert "enable_auto_tool_choice" not in config
         assert config["tool_call_parser"] == "kimi_k2"
+        assert "seed" not in config
+        assert "allowed-local-media-path" not in config
+        assert "no_enable_prefix_caching" not in config
+        assert "mm_encoder_tp_mode" not in config
         assert "tensor_parallel_size" not in config
         assert "data_parallel_size" not in config
         additional_config = _as_dict(config["additional_config"])
@@ -1051,6 +1244,9 @@ def test_glm47_ascend_exact_defaults_use_card_specific_cudagraph_sizes():
         )
         assert config["use_vllm_serve"] is True
         assert config["compilation_config"]["cudagraph_capture_sizes"] == expected_sizes
+        # TP/DP 属于运行时拓扑，不写进 defaults；910C 单机 16 卡由 adapter recipe 接管。
+        assert "tensor_parallel_size" not in config
+        assert "data_parallel_size" not in config
 
 
 def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
@@ -1080,6 +1276,7 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
         assert config["async_scheduling"] is True
         assert config["no_enable_prefix_caching"] is True
         assert config["enable_expert_parallel"] is True
+        # TP/DP 属于运行时拓扑，不写进 defaults；910C 单机 16 卡由 adapter recipe 接管。
         assert "tensor_parallel_size" not in config
         assert "data_parallel_size" not in config
         assert config["max_num_seqs"] == 48
@@ -1097,6 +1294,42 @@ def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
         assert "enforce_eager" not in config
         assert "kv_cache_memory_bytes" not in config
         assert "speculative_config" not in config
+
+
+def test_ascend910c_single_node_day0_topology_is_adapter_owned(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    monkeypatch.setattr(
+        config_loader,
+        "check_pcie_cards",
+        lambda *_args: (False, None),
+    )
+
+    cases = [
+        ("GLM-4.7-W8A8-floatmtp", 8, 2),
+        ("Kimi-K2.6-w4a8", 4, 4),
+        ("MiniMax-M2.7-w8a8-QuaRot", 8, 2),
+    ]
+    for model_name, expected_tp, expected_dp in cases:
+        params = {
+            "engine": "vllm_ascend",
+            "distributed": False,
+            "device_count": 16,
+            "nnodes": 1,
+            "model_name": model_name,
+            "model_path": f"/models/{model_name}",
+            "engine_config": {},
+            "_explicit_cli_keys": set(),
+        }
+        # config_loader 复用既有单机 TP=device_count 规则；最终由 adapter 的
+        # 非显式 recipe 覆盖成 DAY0 标准命令要求的 TP/DP。
+        config_loader._set_parallelism_params(params["engine_config"], params)
+        assert params["engine_config"]["tensor_parallel_size"] == 16
+        prepared = vllm_adapter._prepare_engine_config(params)
+
+        assert prepared["tensor_parallel_size"] == expected_tp
+        assert prepared["data_parallel_size"] == expected_dp
+        assert params["engine_config"]["tensor_parallel_size"] == expected_tp
+        assert params["engine_config"]["data_parallel_size"] == expected_dp
 
 
 def test_nvidia_defaults_follow_parameter_reduction_plan():
@@ -1117,10 +1350,7 @@ def test_nvidia_defaults_follow_parameter_reduction_plan():
             "Qwen3-Coder-480B-A35B-Instruct",
             "Qwen3-Coder-30B-A3B-Instruct",
         ),
-        "Qwen3_5MoeForConditionalGeneration": (
-            "default",
-            "Qwen-AgentWorld-35B-A3B",
-        ),
+        "Qwen3_5MoeForConditionalGeneration": ("default",),
         "Glm4MoeForCausalLM": ("default",),
         "GlmMoeDsaForCausalLM": ("default",),
     }
@@ -1142,11 +1372,12 @@ def test_nvidia_defaults_follow_parameter_reduction_plan():
     expected_deepseek_flash = {
         "kv_cache_dtype": "fp8",
         "block_size": 256,
-        "gpu_memory_utilization": 0.92,
         "enable_expert_parallel": True,
     }
     _assert_engine_fields(deepseek_flash["vllm"]["default"], expected_deepseek_flash)
     _assert_engine_fields(deepseek_flash["vllm_distributed"], expected_deepseek_flash)
+    assert "gpu_memory_utilization" not in deepseek_flash["vllm"]["default"]
+    assert deepseek_flash["vllm_distributed"]["gpu_memory_utilization"] == 0.92
     _assert_engine_fields(
         deepseek_flash["vllm"]["rtx_pro_5000_72G"],
         {
@@ -1264,6 +1495,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
         assert engine_config["max_model_len"] == 262144
         assert engine_config["max_num_batched_tokens"] == 1024
         assert "tensor_parallel_size" not in engine_config
+        assert "enable_expert_parallel" not in engine_config
         assert engine_config["enable_prefix_caching"] is True
         assert engine_config["language_model_only"] is True
         assert "served_model_name" not in engine_config
@@ -1275,7 +1507,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
 
     minimax_m25 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["vllm"]
     assert minimax_m25["max_model_len"] == 196608
-    assert minimax_m25["tensor_parallel_size"] == 4
+    assert "tensor_parallel_size" not in minimax_m25
     assert minimax_m25["gpu_memory_utilization"] == 0.9
     assert minimax_m25["kv_cache_dtype"] == "fp8"
     assert minimax_m25["tool_call_parser"] == "minimax_m2"
@@ -1289,7 +1521,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
 
     minimax_m3 = llm["MiniMaxM3SparseForConditionalGeneration"]["MiniMax-M3-MXFP8"]["vllm"]
     assert minimax_m3["max_model_len"] == 80000
-    assert minimax_m3["tensor_parallel_size"] == 8
+    assert "tensor_parallel_size" not in minimax_m3
     assert minimax_m3["gpu_memory_utilization"] == 0.95
     assert minimax_m3["tool_call_parser"] == "minimax_m3"
     assert minimax_m3["model_loader_extra_config"] == {
@@ -1446,7 +1678,7 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
         pro5000,
     )
     assert minimax_m25_pro5000["max_model_len"] == 196608
-    assert minimax_m25_pro5000["tensor_parallel_size"] == 4
+    assert "tensor_parallel_size" not in minimax_m25_pro5000
 
     minimax_m3_arch = config["llm"]["MiniMaxM3SparseForConditionalGeneration"]
     assert config_loader._match_model_engine_config(
@@ -1466,6 +1698,7 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
         pro5000,
     )
     assert minimax_m3_pro5000["max_model_len"] == 80000
+    assert "tensor_parallel_size" not in minimax_m3_pro5000
     assert minimax_m3_pro5000["model_loader_extra_config"] == {
         "enable_multithread_load": "true",
         "num_threads": 128,
