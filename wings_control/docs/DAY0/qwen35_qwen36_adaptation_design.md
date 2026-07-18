@@ -77,7 +77,7 @@
 | Qwen3.6-27B-w8a8-910B | row7 / 910B 优化 | done | Eco-Tech/Qwen3.6-27B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 否 | quantization=ascend | 32 | 131702 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 | Qwen3.6-35B-A3B-910C | row8 / 910C 优化 + J6 | done | Qwen/Qwen3.6-35B-A3B | vllm_ascend | 910C | BF16 / MoE | 2 | 1 | 7799 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 是 | 否 | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 | Qwen3.6-35B-A3B-w8a8-910C | row9 / 910C 优化 + J6 | 基线 done | Eco-Tech/Qwen3.6-35B-A3B-w8a8 | vllm_ascend | 910C | INT8 / W8A8 | 2 | 1 | 7799 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 是 | quantization=ascend | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
-| Qwen3.6-35B-A3B-w8a8-910B | row9 / 910B 优化 | doing | Eco-Tech/Qwen3.6-35B-A3B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 是 | quantization=ascend | 32 | 131702 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
+| Qwen3.6-35B-A3B-w8a8-910B | row9 / 910B 优化 | doing | Eco-Tech/Qwen3.6-35B-A3B-w8a8 | vllm_ascend | 910B | INT8 / W8A8 | 4 | 1 | 7899 | qwen3_5_mtp | 3 | MTP+MemCache | 是 | 50071/50081 | 是 | quantization=ascend | 32 | 131072 | 8192 | 0.9 | 1024 | qwen36 | 是 | qwen3_coder | 否 |
 
 完整 `model_path` 以 `qwen优化参数适配基准.xlsx` 的 `model_path` 列为准。Markdown 表为了可读性不重复展开所有长路径。
 

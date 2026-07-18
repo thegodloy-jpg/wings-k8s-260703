@@ -1120,7 +1120,7 @@
         "Qwen3.6-35B-A3B-w8a8-Ascend910B": {
           "vllm_ascend": {
             "trust_remote_code": true,
-            "max_model_len": 131702,
+            "max_model_len": 131072,
             "task": "generate",
             "seed": 1024,
             "quantization": "ascend",
@@ -1135,7 +1135,7 @@
           },
           "vllm_ascend_distributed": {
             "trust_remote_code": true,
-            "max_model_len": 131702,
+            "max_model_len": 131072,
             "task": "generate",
             "seed": 1024,
             "quantization": "ascend",

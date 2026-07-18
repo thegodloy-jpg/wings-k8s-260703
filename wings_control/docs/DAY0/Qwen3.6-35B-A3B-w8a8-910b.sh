@@ -42,7 +42,7 @@ LOG_FILE="$LOG_DIR/qwen36_35b_a3b_w8a8_910b_memcache-$(date +%Y%m%d_%H%M%S).log"
 vllm serve "$MODEL_DIR" \
     --host 0.0.0.0 --port "$PORT" --served-model-name "$SERVED" \
     --tensor-parallel-size "$TP_SIZE" --data-parallel-size 1 --enable-expert-parallel \
-    --max-num-seqs 32 --max-model-len 131702 --max-num-batched-tokens 8192 \
+    --max-num-seqs 32 --max-model-len 131072 --max-num-batched-tokens 8192 \
     --gpu-memory-utilization "$GPU_MEM_UTIL" --seed 1024 --trust-remote-code \
     --enable-auto-tool-choice --tool-call-parser qwen3_coder \
     --quantization ascend \
