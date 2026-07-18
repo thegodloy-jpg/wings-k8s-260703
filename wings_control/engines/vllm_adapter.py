@@ -1698,6 +1698,38 @@ def _build_kimik25_ascend_env(arch: str) -> List[str]:
     return env_vars
 
 
+def _build_kimik27_code_ascend_env(arch: str) -> List[str]:
+    """构建 Kimi-K2.7-Code 官方 MemCache 脚本对应的 Ascend 环境变量。
+
+    KimiK25 架构同时承载 K2.6 和 K2.7 Code。K2.7 Code 的 Day0 标准脚本
+    将 OMP_NUM_THREADS 固定为 10，且未设置通用 KimiK25 分支中的 ready timeout，
+    因此这里单独收口，避免影响 K2.6 的既有 DFlash/MemCache 场景。
+    """
+    is_distributed = _is_kimik25_distributed()
+    logger.info(
+        "[Kimi-K2.7-Code] Set Ascend environment variables for %s (DISTRIBUTED=%s)",
+        arch, is_distributed,
+    )
+    env_vars = [
+        "export HCCL_OP_EXPANSION_MODE=AIV",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export TASK_QUEUE_ENABLE=1",
+        "export PYTHONHASHSEED=0",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
+        "export HCCL_BUFFSIZE=1024",
+        "export VLLM_ASCEND_ENABLE_MLAPO=1",
+        "export VLLM_ASCEND_BALANCE_SCHEDULING=1",
+    ]
+    if not is_distributed:
+        env_vars.append("export VLLM_ASCEND_ENABLE_FLASHCOMM1=1")
+    else:
+        env_vars.append("export HCCL_INTRA_PCIE_ENABLE=1")
+        env_vars.append("export HCCL_INTRA_ROCE_ENABLE=0")
+    return env_vars
+
+
 def _build_glm5_ascend_env(arch: str, platform: str = "") -> List[str]:
     """构建 GLM-5 (GlmMoeDsaForCausalLM) Ascend 环境变量命令。
 
@@ -2069,6 +2101,11 @@ def _build_nvidia_model_env_commands(
 
 
 def _build_ascend_arch_model_env_commands(params: Dict[str, Any], arch: str) -> List[str]:
+    if (
+        arch == "KimiK25ForConditionalGeneration"
+        and is_kimi_k27_code_family(params, params.get("engine", "vllm_ascend"))
+    ):
+        return _build_kimik27_code_ascend_env(arch)
     builders = {
         "Glm4MoeForCausalLM": _build_glm4moe_ascend_env,
         "GlmMoeDsaForCausalLM": _build_glm5_ascend_env,
@@ -2160,6 +2197,9 @@ _DP_TOPOLOGY_KEYS = (
     "data_parallel_size_local",
     "data_parallel_start_rank",
 )
+
+_ASCEND910C_SINGLE_NODE_16_TP = 8
+_ASCEND910C_SINGLE_NODE_16_DP = 2
 
 
 def _strip_internal_engine_config_keys(params: Dict[str, Any], engine_config: Dict[str, Any]) -> None:
@@ -2282,6 +2322,61 @@ def _apply_kimi_ascend_engine_defaults(
     if device_count > 0:
         if "tensor_parallel_size" not in explicit_keys:
             engine_config["tensor_parallel_size"] = device_count
+
+
+def _apply_ascend910c_single_node_16_tp_dp_recipe(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+    explicit_keys: set,
+) -> None:
+    """按 DAY0 标准命令补齐 910C 单机 16 卡 TP/DP。
+
+    这类拓扑不放在 default JSON：default 只描述模型/芯片静态参数，单机 16 卡
+    TP=8/DP=2 属于运行时拓扑 recipe。config_loader 仍复用既有单机 TP=device_count
+    规则；这里只在用户未显式传 TP/DP 时覆盖最终命令参数。
+    """
+    if params.get("engine") != "vllm_ascend":
+        return
+    try:
+        nnodes = int(params.get("nnodes") or 1)
+    except (TypeError, ValueError):
+        return
+    device_count = _safe_int(params.get("device_count")) or 0
+    if nnodes != 1 or device_count != 16 or engine_version_platform() != "a3":
+        return
+
+    model_identity = " ".join(str(params.get(key) or "").lower() for key in ("model_name", "model_path"))
+    glm47_name_hit = any(marker in model_identity for marker in ("glm-4.7", "glm_4.7", "glm4.7"))
+    glm47_w8a8_hit = "w8a8" in model_identity or "w8-a8" in model_identity or "floatmtp" in model_identity
+    is_glm47_w8a8 = _get_glm47_w8a8_model_info(params) is not None or (glm47_name_hit and glm47_w8a8_hit)
+
+    recipe_name = None
+    if is_glm47_w8a8:
+        recipe_name = "GLM-4.7-W8A8-floatmtp"
+    else:
+        is_minimax_m27_quarot = (
+            any(marker in model_identity for marker in ("minimax-m2.7", "minimax_m2.7", "minimaxm2.7"))
+            and "w8a8" in model_identity
+            and "quarot" in model_identity
+        )
+        if is_minimax_m27_quarot:
+            recipe_name = "MiniMax-M2.7-w8a8-QuaRot"
+    if recipe_name is None:
+        return
+
+    if "tensor_parallel_size" not in explicit_keys:
+        engine_config["tensor_parallel_size"] = _ASCEND910C_SINGLE_NODE_16_TP
+        params["tensor_parallel_size"] = _ASCEND910C_SINGLE_NODE_16_TP
+    if "data_parallel_size" not in explicit_keys:
+        engine_config["data_parallel_size"] = _ASCEND910C_SINGLE_NODE_16_DP
+        params["data_parallel_size"] = _ASCEND910C_SINGLE_NODE_16_DP
+
+    logger.info(
+        "[Ascend910C-16C] %s topology recipe ensured: TP=%s, DP=%s",
+        recipe_name,
+        engine_config.get("tensor_parallel_size"),
+        engine_config.get("data_parallel_size"),
+    )
 
 
 def _apply_glm5_dsa_distributed_fixups(
@@ -2490,6 +2585,7 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     _force_deepseek_v4_flash_nv_block_size(params, engine_config)
     _apply_glm5_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_kimi_ascend_engine_defaults(params, engine_config, explicit_keys)
+    _apply_ascend910c_single_node_16_tp_dp_recipe(params, engine_config, explicit_keys)
     _apply_generic_deepseek_ascend_dp_defaults(params, engine_config, explicit_keys)
     _apply_glm5_dsa_distributed_fixups(params, engine_config, explicit_keys)
    
@@ -3125,8 +3221,8 @@ def is_deepseek_ascend_dp_deployment(params: Dict[str, Any]) -> bool:
 #       做 **深合并**，用户给出的 sub-key 优先，未给出的 sub-key 注入
 _GLM47_W8A8_ENGINE_DEFAULTS: Dict[str, Any] = {
     "use_vllm_serve": True,
-    "data_parallel_size": 2,
-    "tensor_parallel_size": 8,
+    # TP/DP 不放在 GLM-4.7 静态默认里；910C 单机 16 卡由
+    # _apply_ascend910c_single_node_16_tp_dp_recipe 按运行时拓扑注入。
     "enable_expert_parallel": True,
     "async_scheduling": True,
     "quantization": "ascend",

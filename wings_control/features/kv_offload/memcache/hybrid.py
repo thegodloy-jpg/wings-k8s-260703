@@ -58,6 +58,11 @@ _QWEN36_DAY0_PROFILE = (
     "tcp://127.0.0.1:50081",
     "device_rdma",
 )
+_KIMI_K27_DAY0_PROFILE = (
+    _DEFAULT_META_SERVICE_URL,
+    _DEFAULT_CONFIG_STORE_URL,
+    "device_sdma",
+)
 
 
 def empty_memcache_hybrid_fragment() -> dict:
@@ -184,6 +189,10 @@ def _resolve_memcache_profile_defaults(
     qwen_profile = _resolve_qwen_day0_memcache_profile(params, engine)
     if qwen_profile:
         return qwen_profile
+    # Kimi-K2.7-Code 的 Day0 标准脚本使用 5000/6000 本地端口和 device_sdma。
+    # 该默认属于 MemCache 启动 profile，不放进只负责命中特性的白名单。
+    if is_kimi_k27_code_memcache_params(params, engine):
+        return _KIMI_K27_DAY0_PROFILE
     return (
         _DEFAULT_META_SERVICE_URL,
         _DEFAULT_CONFIG_STORE_URL,

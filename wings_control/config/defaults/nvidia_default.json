@@ -341,7 +341,6 @@
               "kv_cache_dtype": "fp8",
               "block_size": 256,
               "enable_expert_parallel": true,
-              "gpu_memory_utilization": 0.92,
               "tokenizer_mode": "deepseek_v4",
               "tool_call_parser": "deepseek_v4"
             },
@@ -636,15 +635,12 @@
             "trust_remote_code": true,
             "max_model_len": 262144,
             "max_num_batched_tokens": 1024,
-            "gpu_memory_utilization": 0.9,
-            "enable_expert_parallel": true,
             "enable_prefix_caching": true,
             "language_model_only": true,
             "model_loader_extra_config": {
               "enable_multithread_load": "true",
               "num_threads": 128
             },
-            "mm_encoder_tp_mode": "data",
             "tool_call_parser": "qwen3_xml"
           },
           "vllm_distributed": {
@@ -652,15 +648,12 @@
             "trust_remote_code": true,
             "max_model_len": 262144,
             "max_num_batched_tokens": 1024,
-            "gpu_memory_utilization": 0.9,
-            "enable_expert_parallel": true,
             "enable_prefix_caching": true,
             "language_model_only": true,
             "model_loader_extra_config": {
               "enable_multithread_load": "true",
               "num_threads": 128
             },
-            "mm_encoder_tp_mode": "data",
             "tool_call_parser": "qwen3_xml"
           },
           "sglang": {
@@ -716,7 +709,6 @@
             "use_vllm_serve": true,
             "trust_remote_code": true,
             "max_model_len": 196608,
-            "tensor_parallel_size": 4,
             "gpu_memory_utilization": 0.9,
             "kv_cache_dtype": "fp8",
             "tool_call_parser": "minimax_m2"
@@ -752,7 +744,6 @@
             "use_vllm_serve": true,
             "trust_remote_code": true,
             "block_size": 128,
-            "tensor_parallel_size": 8,
             "max_model_len": 80000,
             "gpu_memory_utilization": 0.95,
             "tool_call_parser": "minimax_m3",

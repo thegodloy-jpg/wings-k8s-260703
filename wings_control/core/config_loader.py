@@ -3561,8 +3561,18 @@ def _is_minimax_m27_lookup(lookup_names: list) -> bool:
 def _resolve_deepseek_v4_flash_ascend_config_key(arch_dict: Dict[str, Any]) -> str:
     platform = _resolve_ascend_platform() or "a2"
     candidate_by_platform = {
-        "a2": ("DeepSeek-V4-Flash-Ascend910B", "DeepSeek-V4-Flash-A2"),
-        "a3": ("DeepSeek-V4-Flash-Ascend910C", "DeepSeek-V4-Flash-A3"),
+        # Ascend 白名单和 DAY0 文档统一使用带量化/MTP 后缀的模型身份。
+        # 旧短名只作为历史配置兜底，避免私有 defaults 尚未同步时无法启动。
+        "a2": (
+            "DeepSeek-V4-Flash-w8a8-mtp-Ascend910B",
+            "DeepSeek-V4-Flash-Ascend910B",
+            "DeepSeek-V4-Flash-A2",
+        ),
+        "a3": (
+            "DeepSeek-V4-Flash-w8a8-mtp-Ascend910C",
+            "DeepSeek-V4-Flash-Ascend910C",
+            "DeepSeek-V4-Flash-A3",
+        ),
     }
     for candidate in candidate_by_platform.get(platform, ()):
         if candidate in arch_dict:
