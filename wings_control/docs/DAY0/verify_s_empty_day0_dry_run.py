@@ -304,7 +304,7 @@ def _scenarios() -> list[Scenario]:
         Scenario(40, "row40-deepseek-coder-910c", "DeepSeek-Coder-V2-Instruct",
                  "DeepseekV3ForCausalLM", "vllm_ascend", "ascend", "Ascend910C",
                  "Ascend910C", 8, simple),
-        Scenario(41, "row41-deepseek-v4-pro-910c-dual", "Eco-Tech/DeepSeek-V4-Pro-w4a8-mtp",
+        Scenario(41, "row41-deepseek-v4-pro-910c-dual", "DeepSeek-V4-Pro-w4a8-mtp",
                  "DeepseekV4ForCausalLM", "vllm_ascend", "ascend", "Ascend910C",
                  "Ascend910C", 16, simple, "w4a8", distributed=True, nnodes=2, ranks=(0, 1)),
         Scenario(42, "row42-glm47-910c", "Eco-Tech/GLM-4.7-W8A8-floatmtp",
