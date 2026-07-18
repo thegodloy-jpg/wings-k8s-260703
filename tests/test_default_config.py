@@ -793,6 +793,11 @@ def test_qwen35_397b_w8a8_mtp_ascend_defaults_match_day0_scripts():
             assert engine_config["async_scheduling"] is True
             assert engine_config["compilation_config"] == {"cudagraph_mode": "FULL_DECODE_ONLY"}
             assert engine_config["additional_config"] == expected_additional
+            if card_name == "Ascend910B":
+                # 910B3 Day0 397B-w8a8-mtp 脚本不带 --language-model-only，避免生成命令额外注入。
+                assert "language_model_only" not in engine_config
+            else:
+                assert engine_config["language_model_only"] is True
             # TP/DP 属于运行时拓扑，不能重新固化到 defaults。
             assert "tensor_parallel_size" not in engine_config
             assert "data_parallel_size" not in engine_config
@@ -1115,11 +1120,15 @@ def test_qwen35_day0_defaults_keep_language_model_only_from_excel():
         moe["Qwen3.5-122B-A10B-Ascend910C"],
         moe["Qwen3.5-122B-A10B-Ascend910B"],
         moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910C"],
-        moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910B"],
     ]
     for config in qwen35_models:
         for engine in ("vllm_ascend", "vllm_ascend_distributed"):
             assert config[engine]["language_model_only"] is True
+
+    qwen397_910b = moe["Qwen3.5-397B-A17B-w8a8-mtp-Ascend910B"]
+    for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+        # 910B3 397B-w8a8-mtp 原生脚本不带该参数，保持 exact profile 不额外输出。
+        assert "language_model_only" not in qwen397_910b[engine]
 
     qwen36_models = [
         dense["Qwen3.6-27B-Ascend910C"],
