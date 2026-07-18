@@ -1766,22 +1766,23 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 
     if lmcache_offload and is_memcache_hybrid_params(ctx, ctx.get("engine")):
         if resolve_memcache_dram_gb(ctx):
-            # Qwen Day0 标准脚本的 AscendStoreConnector 不带 kv_load_failure_policy。
-            # Hybrid Qwen 模型在 vLLM-Ascend 中不支持 recompute 模式；Kimi 仍保留
-            # 既有官方 MemCache 配置。
-            include_load_failure_policy = not is_qwen_day0_memcache_params(
+            qwen_day0_memcache = is_qwen_day0_memcache_params(
                 ctx,
                 ctx.get("engine"),
             )
+            # Qwen Day0 标准脚本的 AscendStoreConnector 不带 kv_load_failure_policy。
+            # Hybrid Qwen 模型在 vLLM-Ascend 中不支持 recompute 模式；Kimi 仍保留
+            # 既有官方 MemCache 配置。
+            include_load_failure_policy = not qwen_day0_memcache
             params["kv_transfer_config"] = json.dumps(
                 _build_memcache_ascend_store_config(
                     include_load_failure_policy=include_load_failure_policy,
                 )
             )
-            # Qwen Day0 标准里的 AscendStoreConnector MemCache 场景要求保留
-            # vLLM 的 hybrid KV cache manager；这里仅在实际注入 MemCache
-            # connector 时下发，避免影响非 MemCache 的卸载路径。
-            params["no_disable_hybrid_kv_cache_manager"] = True
+            # 只有 Qwen Day0 MemCache 明确要求保留 vLLM hybrid KV cache manager。
+            # Kimi 官方脚本不带该 flag，保持 AscendStoreConnector/recompute 即可。
+            if qwen_day0_memcache:
+                params["no_disable_hybrid_kv_cache_manager"] = True
             logger.info("[MemCache] Model uses AscendStoreConnector.")
         else:
             logger.info(

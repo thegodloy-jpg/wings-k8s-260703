@@ -768,6 +768,7 @@ def test_kimi_k27_code_uses_memcache_ascend_store_connector(monkeypatch):
 
     kv_transfer = json.loads(config["kv_transfer_config"])
     assert params["_smart_feats"] == ["offload"]
+    assert "no_disable_hybrid_kv_cache_manager" not in config
     assert kv_transfer == {
         "kv_connector": "AscendStoreConnector",
         "kv_role": "kv_both",
@@ -809,6 +810,7 @@ def test_kimi_k26_uses_memcache_ascend_store_connector(monkeypatch):
     kv_transfer = json.loads(config["kv_transfer_config"])
     assert params["_smart_feats"] == ["offload", "spec"]
     assert params["enable_speculative_decode"] is True
+    assert "no_disable_hybrid_kv_cache_manager" not in config
     assert kv_transfer == {
         "kv_connector": "AscendStoreConnector",
         "kv_role": "kv_both",

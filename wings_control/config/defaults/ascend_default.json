@@ -1424,10 +1424,6 @@
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
             "tool_call_parser": "kimi_k2",
-            "async_scheduling": true,
-            "additional_config": {
-              "enable_balance_scheduling": true
-            },
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"
             },
@@ -1446,10 +1442,6 @@
             "allowed-local-media-path": "/",
             "no_enable_prefix_caching": true,
             "tool_call_parser": "kimi_k2",
-            "async_scheduling": true,
-            "additional_config": {
-              "enable_balance_scheduling": true
-            },
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"
             },

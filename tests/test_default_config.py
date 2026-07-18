@@ -989,9 +989,8 @@ def test_kimi_k26_ascend_defaults_follow_memcache_dflash_recipe():
         assert config["tool_call_parser"] == "kimi_k2"
         assert "tensor_parallel_size" not in config
         assert "data_parallel_size" not in config
-        assert _as_dict(config["additional_config"]) == {
-            "enable_balance_scheduling": True,
-        }
+        assert "async_scheduling" not in config
+        assert "additional_config" not in config
         assert _as_dict(config["compilation_config"]) == {
             "cudagraph_mode": "FULL_DECODE_ONLY",
         }
