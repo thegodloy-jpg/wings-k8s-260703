@@ -208,7 +208,9 @@ def _resolve_qwen_day0_memcache_profile(
         str(params.get(key, "") or "").lower()
         for key in ("model_name", "model_path")
     )
-    if "qwen3.5-27b" in text:
+    # 行 17：Qwen3.5-35B-A3B + 910B 复用 910C MemCache 卸载方式；
+    # 端口/协议沿用 Qwen3.5 Day0 profile，白名单仍负责限定具体模型和卡型。
+    if "qwen3.5-27b" in text or "qwen3.5-35b-a3b" in text:
         return _QWEN35_DAY0_PROFILE
     if "qwen3.6-" in text:
         return _QWEN36_DAY0_PROFILE
