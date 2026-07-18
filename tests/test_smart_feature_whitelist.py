@@ -1336,6 +1336,22 @@ def test_spec_whitelist_mtp_rows_carry_mtp_tokens(
     assert row.get("mtp_num_speculative_tokens") == expected_tokens
 
 
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_deepseek_v4_flash_h20_spec_rows_use_explicit_mtp_without_eager(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "/models/deepseek-ai/DeepSeek-V4-Flash",
+        card_token,
+        "spec",
+    )
+
+    assert row is not None
+    assert row.get("mtp_method") == "mtp"
+    assert row.get("mtp_num_speculative_tokens") == 1
+    assert "enforce_eager" not in row
+
+
 @pytest.mark.parametrize("card_token", ["910b", "910c"])
 def test_minimax_m27_w8a8_quarot_spec_rows_are_draft_only(card_token):
     row = model_utils.resolve_feature_whitelist_row(

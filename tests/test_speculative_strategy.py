@@ -338,6 +338,32 @@ def test_deepseek_v4_flash_pro5000_vllm_speculative_config_matches_tokenbox(monk
     assert '"enforce_eager": true' not in command
 
 
+def test_deepseek_v4_flash_h20_vllm_speculative_config_matches_day0_recipe(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+
+    params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec", "sparse", "offload"],
+        "_smart_card_token": "h20-141",
+    }
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm") == "mtp"
+    assert vllm_adapter.build_speculative_cmd(params, "vllm") == (
+        " --speculative-config "
+        "'{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
+    )
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "mtp",
+        "num_speculative_tokens": 1,
+        "moe_backend": None,
+    }
+
+
 def test_qwen35_nvfp4_native_offload_keeps_mtp_strategy(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeModelIdentifier)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
