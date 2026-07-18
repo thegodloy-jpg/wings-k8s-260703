@@ -783,7 +783,7 @@
             "seed": 1024,
             "quantization": "ascend",
             "max_num_seqs": 32,
-            "max_model_len": 131702,
+            "max_model_len": 131072,
             "max_num_batched_tokens": 8192,
             "gpu_memory_utilization": 0.9,
             "tool_call_parser": "qwen3_coder"
@@ -797,7 +797,7 @@
             "seed": 1024,
             "quantization": "ascend",
             "max_num_seqs": 32,
-            "max_model_len": 131702,
+            "max_model_len": 131072,
             "max_num_batched_tokens": 8192,
             "gpu_memory_utilization": 0.9,
             "tool_call_parser": "qwen3_coder"

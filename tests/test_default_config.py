@@ -803,6 +803,17 @@ def test_qwen35_397b_w8a8_mtp_ascend_defaults_match_day0_scripts():
             assert "data_parallel_size" not in engine_config
 
 
+def test_qwen36_27b_w8a8_910b_max_model_len_matches_910c():
+    dense = _model_deploy_config("ascend")["llm"]["Qwen3_5ForConditionalGeneration"]
+    qwen36_27b_910b = dense["Qwen3.6-27B-w8a8-Ascend910B"]
+    qwen36_27b_910c = dense["Qwen3.6-27B-w8a8-Ascend910C"]
+
+    for engine in ("vllm_ascend", "vllm_ascend_distributed"):
+        # 27B w8a8 的 910B 现场脚本与 910C 同源，max_model_len 需要保持 131072。
+        assert qwen36_27b_910b[engine]["max_model_len"] == 131072
+        assert qwen36_27b_910b[engine]["max_model_len"] == qwen36_27b_910c[engine]["max_model_len"]
+
+
 def test_qwen35_35b_a3b_ascend_defaults_match_day0_script():
     moe = _model_deploy_config("ascend")["llm"]["Qwen3_5MoeForConditionalGeneration"]
     expected_additional = {
