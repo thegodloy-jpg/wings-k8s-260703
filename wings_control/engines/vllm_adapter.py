@@ -2187,6 +2187,7 @@ def _build_env_commands(params: Dict[str, Any], current_ip: str, network_interfa
     env_commands.extend(_build_model_env_commands(params, engine))
     env_commands = _filter_vllm_ascend_ray_incompatible_env(env_commands, params, engine)
     env_commands.extend(_build_vllm_ascend_forced_env_commands(params, engine))
+    env_commands = _align_qwen35_397b_w8a8_mtp_910c_env(env_commands, params, engine)
 
     return env_commands
 
@@ -2200,6 +2201,36 @@ _DP_TOPOLOGY_KEYS = (
 
 _ASCEND910C_SINGLE_NODE_16_TP = 8
 _ASCEND910C_SINGLE_NODE_16_DP = 2
+
+_QWEN35_397B_W8A8_MTP_910C_ENV_RECIPE = [
+    "unset ASCEND_RT_VISIBLE_DEVICES",
+    "export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}",
+    "export HCCL_IF_IP=127.0.0.1",
+    "export GLOO_SOCKET_IFNAME=lo",
+    "export TP_SOCKET_IFNAME=lo",
+    "export HCCL_SOCKET_IFNAME=lo",
+    "set +u",
+    "source /usr/local/Ascend/ascend-toolkit/set_env.sh 2>/dev/null || true",
+    "source /usr/local/Ascend/nnal/atb/set_env.sh 2>/dev/null || true",
+    "set -u",
+    "export PYTHONHASHSEED=0",
+    "export HCCL_BUFFSIZE=512",
+    "export OMP_PROC_BIND=false",
+    "export OMP_NUM_THREADS=1",
+    "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+    "export VLLM_USE_V1=1",
+    "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}",
+    "export TASK_QUEUE_ENABLE=1",
+    'export HCCL_OP_EXPANSION_MODE="AIV"',
+    "# Pre-flight: verify Ascend driver is accessible",
+    "if [ ! -f /usr/local/Ascend/driver/lib64/driver/libascend_hal.so ]; then",
+    "    echo 'FATAL: libascend_hal.so not found at "
+    "/usr/local/Ascend/driver/lib64/driver/'",
+    "    echo 'HINT: Ensure the host Ascend driver is mounted "
+    "into the container (hostPath: /usr/local/Ascend/driver)'",
+    "    exit 1",
+    "fi",
+]
 
 _MINIMAX_M27_QUAROT_910C_ENV_DROP_NAMES = {
     "HCCL_BUFFSIZE",
@@ -2259,6 +2290,29 @@ def _is_minimax_m27_quarot_ascend910c_single_node_16(
         and "w8a8" in model_identity
         and "quarot" in model_identity
     )
+
+
+def _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8(
+    params: Dict[str, Any],
+    engine: str,
+) -> bool:
+    """识别 Qwen3.5-397B-w8a8-mtp 的 910C 单机 8 卡 DAY0 recipe。"""
+    if engine != "vllm_ascend":
+        return False
+    try:
+        nnodes = int(params.get("nnodes") or 1)
+        device_count = int(params.get("device_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    if nnodes != 1 or device_count != 8:
+        return False
+    if _ascend_platform_from_runtime(params) != "a3":
+        return False
+    model_identity = " ".join(
+        str(params.get(key) or "").lower()
+        for key in ("model_name", "model_path")
+    )
+    return "qwen3.5-397b-a17b-w8a8-mtp" in model_identity
 
 
 def _strip_internal_engine_config_keys(params: Dict[str, Any], engine_config: Dict[str, Any]) -> None:
@@ -4512,6 +4566,18 @@ def _align_minimax_m27_quarot_910c_env(
     return aligned
 
 
+def _align_qwen35_397b_w8a8_mtp_910c_env(
+    commands: List[str],
+    params: Dict[str, Any],
+    engine: str,
+) -> List[str]:
+    """对齐 397B w8a8-mtp 标准脚本的显式 env 集合，不继承通用 Qwen-MoE 多余项。"""
+    if not _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8(params, engine):
+        return commands
+    logger.info("[Qwen3.5-397B-w8a8-mtp-910C] aligned single-node 8-card env recipe")
+    return list(_QWEN35_397B_W8A8_MTP_910C_ENV_RECIPE)
+
+
 def build_start_command(params: Dict[str, Any]) -> str:
     """为 launcher 生成 vLLM 启动命令字符串（旧版接口）。
 
@@ -4588,6 +4654,7 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     # 这里收口去重，保证每个变量最终只有一条 export 生效（等价最终值，不动累加型与块内导出）。
     cmds = dedupe_env_exports(cmds)
     cmds = _align_minimax_m27_quarot_910c_env(cmds, params, engine)
+    cmds = _align_qwen35_397b_w8a8_mtp_910c_env(cmds, params, engine)
     # 单机 GLM-5.2(a3) 对齐官方 recipe：去重后剔除 TASK_QUEUE_ENABLE（官方单机命令不设）。
     cmds = _filter_glm52_single_node_task_queue(cmds, params, engine)
     return cmds

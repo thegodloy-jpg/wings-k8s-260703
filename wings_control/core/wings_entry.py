@@ -35,6 +35,7 @@ from engines.vllm_adapter import (
     prepare_params_for_startup_status,
     lmcache_auto_floor_disables_all_backends,
     _is_deepseek_v4_flash_params,
+    _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8,
     _inject_env_echo,
     _need_triton_patch,
 )
@@ -1299,6 +1300,11 @@ def _assemble_startup_command(
     memcache_fragment = build_memcache_hybrid_fragment(engine, merged)
     env_overrides = _build_env_overrides_preamble()
     env_echo_helpers = _build_env_echo_helpers_preamble()
+    qwen397_env_exact = _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8(merged, engine)
+    prometheus_export = "" if qwen397_env_exact else (
+        "export PROMETHEUS_MULTIPROC_DIR=/var/log/wings/prometheus_multiproc\n"
+    )
+    python_unbuffered_export = "" if qwen397_env_exact else "export PYTHONUNBUFFERED=1\n"
 
     full_script = (
         "#!/usr/bin/env bash\nset -euo pipefail\n"
@@ -1310,12 +1316,14 @@ def _assemble_startup_command(
         "rm -rf /var/log/wings/prometheus_multiproc\n"
         "mkdir -p /var/log/wings/prometheus_multiproc\n"
         + env_echo_helpers
-        + "export PROMETHEUS_MULTIPROC_DIR=/var/log/wings/prometheus_multiproc\n"
+        # Qwen3.5-397B w8a8-mtp 的 910C 标准脚本要求显式 env 集合精确对齐；
+        # 该场景仍保留目录准备和日志管道，但不额外注入全局 export。
+        + prometheus_export
         + analyzer_preamble
         # Disable Python stdout full-buffering so that engine ready
         # messages (e.g. "Starting vLLM server on") reach engine.log
         # immediately rather than being stuck in an 8 KB buffer.
-        + "export PYTHONUNBUFFERED=1\n"
+        + python_unbuffered_export
         # Filter engine noise from console output and engine.log:
         #   1) /health and /metrics access logs (uvicorn)
         #   2) "Prefill batch" / "Decode batch" scheduler metrics (SGLang)
