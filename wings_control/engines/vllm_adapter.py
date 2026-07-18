@@ -2202,17 +2202,18 @@ _DP_TOPOLOGY_KEYS = (
 _ASCEND910C_SINGLE_NODE_16_TP = 8
 _ASCEND910C_SINGLE_NODE_16_DP = 2
 
+_QWEN35_397B_W8A8_MTP_910C_ENV_DROP_NAMES = {
+    "HCCL_BUFFSIZE",
+    "HCCL_OP_EXPANSION_MODE",
+    "OMP_NUM_THREADS",
+    "OMP_PROC_BIND",
+    "PYTHONHASHSEED",
+    "PYTORCH_NPU_ALLOC_CONF",
+    "TASK_QUEUE_ENABLE",
+    "VLLM_USE_V1",
+    "LD_PRELOAD",
+}
 _QWEN35_397B_W8A8_MTP_910C_ENV_RECIPE = [
-    "unset ASCEND_RT_VISIBLE_DEVICES",
-    "export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}",
-    "export HCCL_IF_IP=127.0.0.1",
-    "export GLOO_SOCKET_IFNAME=lo",
-    "export TP_SOCKET_IFNAME=lo",
-    "export HCCL_SOCKET_IFNAME=lo",
-    "set +u",
-    "source /usr/local/Ascend/ascend-toolkit/set_env.sh 2>/dev/null || true",
-    "source /usr/local/Ascend/nnal/atb/set_env.sh 2>/dev/null || true",
-    "set -u",
     "export PYTHONHASHSEED=0",
     "export HCCL_BUFFSIZE=512",
     "export OMP_PROC_BIND=false",
@@ -2222,14 +2223,6 @@ _QWEN35_397B_W8A8_MTP_910C_ENV_RECIPE = [
     "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}",
     "export TASK_QUEUE_ENABLE=1",
     'export HCCL_OP_EXPANSION_MODE="AIV"',
-    "# Pre-flight: verify Ascend driver is accessible",
-    "if [ ! -f /usr/local/Ascend/driver/lib64/driver/libascend_hal.so ]; then",
-    "    echo 'FATAL: libascend_hal.so not found at "
-    "/usr/local/Ascend/driver/lib64/driver/'",
-    "    echo 'HINT: Ensure the host Ascend driver is mounted "
-    "into the container (hostPath: /usr/local/Ascend/driver)'",
-    "    exit 1",
-    "fi",
 ]
 
 _MINIMAX_M27_QUAROT_910C_ENV_DROP_NAMES = {
@@ -4571,11 +4564,19 @@ def _align_qwen35_397b_w8a8_mtp_910c_env(
     params: Dict[str, Any],
     engine: str,
 ) -> List[str]:
-    """对齐 397B w8a8-mtp 标准脚本的显式 env 集合，不继承通用 Qwen-MoE 多余项。"""
+    """??? 397B w8a8-mtp ??? env???/IP/????????????"""
     if not _is_qwen35_397b_w8a8_mtp_ascend910c_single_node_8(params, engine):
         return commands
-    logger.info("[Qwen3.5-397B-w8a8-mtp-910C] aligned single-node 8-card env recipe")
-    return list(_QWEN35_397B_W8A8_MTP_910C_ENV_RECIPE)
+    aligned = [
+        command
+        for command in commands
+        if _top_level_export_name(command) not in _QWEN35_397B_W8A8_MTP_910C_ENV_DROP_NAMES
+    ]
+    aligned.extend(_QWEN35_397B_W8A8_MTP_910C_ENV_RECIPE)
+    logger.info(
+        "[Qwen3.5-397B-w8a8-mtp-910C] aligned model env; preserved deployment network/card env"
+    )
+    return aligned
 
 
 def build_start_command(params: Dict[str, Any]) -> str:
