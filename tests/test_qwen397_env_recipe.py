@@ -16,12 +16,57 @@ class _FakeQwen35MoeIdentifier:
         pass
 
 
+class _FakeQwen35DenseIdentifier:
+    model_architecture = "Qwen3_5ForConditionalGeneration"
+    model_quantize = ""
+    config = {"architectures": ["Qwen3_5ForConditionalGeneration"]}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+
 def _export_by_name(commands):
     return {
         command.split(" ", 1)[1].split("=", 1)[0]: command
         for command in commands
         if command.startswith("export ") and "=" in command
     }
+
+
+def test_qwen35_27b_dense_910c_env_matches_day0_script_without_network_pinning(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen35DenseIdentifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen/Qwen3.5-27B",
+        "model_path": "/models/Qwen3.5-27B",
+        "device_count": 2,
+        "nnodes": 1,
+        "device_details": [{"name": "Ascend910C"}],
+    }
+
+    commands = vllm_adapter._build_vllm_common_env_cmds(params, "vllm_ascend")
+    export_by_name = _export_by_name(commands)
+
+    assert "ASCEND_RT_VISIBLE_DEVICES" not in export_by_name
+    assert export_by_name.get("HCCL_IF_IP") != "export HCCL_IF_IP=127.0.0.1"
+    assert export_by_name.get("GLOO_SOCKET_IFNAME") != "export GLOO_SOCKET_IFNAME=lo"
+    assert export_by_name.get("TP_SOCKET_IFNAME") != "export TP_SOCKET_IFNAME=lo"
+    assert export_by_name.get("HCCL_SOCKET_IFNAME") != "export HCCL_SOCKET_IFNAME=lo"
+    assert export_by_name["PYTHONHASHSEED"] == "export PYTHONHASHSEED=0"
+    assert export_by_name["HCCL_BUFFSIZE"] == "export HCCL_BUFFSIZE=512"
+    assert export_by_name["OMP_PROC_BIND"] == "export OMP_PROC_BIND=false"
+    assert export_by_name["OMP_NUM_THREADS"] == "export OMP_NUM_THREADS=1"
+    assert export_by_name["PYTORCH_NPU_ALLOC_CONF"] == (
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True"
+    )
+    assert export_by_name["VLLM_USE_V1"] == "export VLLM_USE_V1=1"
+    assert export_by_name["LD_PRELOAD"] == (
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}"
+    )
+    assert export_by_name["TASK_QUEUE_ENABLE"] == "export TASK_QUEUE_ENABLE=1"
+    assert export_by_name["HCCL_OP_EXPANSION_MODE"] == (
+        "export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-AIV}"
+    )
 
 
 def test_qwen35_397b_w8a8_mtp_910c_env_matches_day0_script():

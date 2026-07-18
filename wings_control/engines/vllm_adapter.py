@@ -1562,7 +1562,10 @@ def _build_qwen35_ascend_env(arch: str) -> List[str]:
     """构建 Qwen3.5 (Qwen3_5ForConditionalGeneration) Ascend 环境变量命令。"""
     logger.info("[Qwen3.5] Set Ascend environment variables for %s", arch)
     return [
+        "export PYTHONHASHSEED=0",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export VLLM_USE_V1=1",
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:${LD_PRELOAD:-}",
         "export HCCL_BUFFSIZE=512",
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=1",
