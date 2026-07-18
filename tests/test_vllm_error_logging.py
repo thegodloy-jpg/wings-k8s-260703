@@ -7,35 +7,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 from engines import vllm_adapter  # noqa: E402
 
 
-def _assert_error_stack_logging_is_forced(engine: str) -> None:
-    command = vllm_adapter._build_vllm_cmd_parts(
+def _build_command(engine: str, engine_config: dict) -> str:
+    return vllm_adapter._build_vllm_cmd_parts(
         {
             "engine": engine,
-            "engine_config": {
-                "no_log_error_stack": True,
-                "log_error_stack": False,
-            },
+            "engine_config": engine_config,
         }
     )
 
-    assert command.count("--log-error-stack") == 1
-    assert "--no-log-error-stack" not in command
 
-
-def test_vllm_ascend_start_command_forces_error_stack_logging():
-    _assert_error_stack_logging_is_forced("vllm_ascend")
-
-
-def test_vllm_start_command_forces_error_stack_logging():
-    _assert_error_stack_logging_is_forced("vllm")
-
-
-def test_non_vllm_engine_does_not_force_error_stack_logging():
+def _assert_error_stack_logging_is_not_forced(engine: str) -> None:
     command = vllm_adapter._build_vllm_cmd_parts(
         {
-            "engine": "sglang",
-            "engine_config": {"log_error_stack": False},
+            "engine": engine,
+            "engine_config": {},
         }
     )
 
     assert "--log-error-stack" not in command
+    assert "--no-log-error-stack" not in command
+
+
+def test_vllm_ascend_start_command_does_not_force_error_stack_logging():
+    _assert_error_stack_logging_is_not_forced("vllm_ascend")
+
+
+def test_vllm_start_command_does_not_force_error_stack_logging():
+    _assert_error_stack_logging_is_not_forced("vllm")
+
+
+def test_vllm_start_command_preserves_explicit_error_stack_logging_config():
+    command = _build_command(
+        "vllm",
+        {
+            "no_log_error_stack": True,
+            "log_error_stack": False,
+        },
+    )
+
+    assert "--log-error-stack" not in command
+    assert command.count("--no-log-error-stack") == 1

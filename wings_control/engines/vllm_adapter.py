@@ -2428,26 +2428,6 @@ def _writeback_dp_topology_to_params(params: Dict[str, Any], engine_config: Dict
             params_engine_config[key] = engine_config[key]
 
 
-def _force_vllm_error_stack_logging(
-    params: Dict[str, Any],
-    engine_config: Dict[str, Any],
-) -> None:
-    """Force vLLM API errors to include their stack in engine logs.
-
-    Newer vLLM frontends still return validation details in the HTTP 4xx body,
-    but error-stack logging is disabled by default.  Wings currently relays
-    those responses without logging the upstream body, so enable the native
-    frontend diagnostic flag for both NVIDIA vLLM and vLLM-Ascend launches.
-    Remove the inverse flag as well to avoid rendering contradictory CLI
-    options.
-    """
-    if params.get("engine") not in {"vllm", "vllm_ascend"}:
-        return
-
-    engine_config.pop("no_log_error_stack", None)
-    engine_config["log_error_stack"] = True
-
-
 def _is_truthy_engine_config_value(value: Any) -> bool:
     """Return whether an engine_config value enables a boolean-like switch."""
     # engine_config 的布尔字段来源很多：默认 JSON 里通常是 bool，
@@ -2640,7 +2620,6 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[vLLM] Mapping deprecated task=%s to --runner pooling", removed_task)
         engine_config.setdefault("runner", "pooling")
 
-    _force_vllm_error_stack_logging(params, engine_config)
     _disable_speculative_decode_for_async_suffix_conflict(params, engine_config)
     _writeback_dp_topology_to_params(params, engine_config)
     # 同步 speculative_config 回 params，阻止 _should_append_auto_speculative_config 重复合成
