@@ -477,7 +477,7 @@ def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch,
     assert wings_entry._has_advanced_features(params) is False
 
 
-def test_deepseek_v4_flash_ascend_auto_reports_effective_lmcache_size(monkeypatch, tmp_path):
+def test_deepseek_v4_flash_ascend_auto_reports_node_lmcache_size(monkeypatch, tmp_path):
     _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -506,10 +506,10 @@ def test_deepseek_v4_flash_ascend_auto_reports_effective_lmcache_size(monkeypatc
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "lmcache_cpu+auto"
-    assert data["others"]["kv_mem_offload_size"] == 15
+    assert data["others"]["kv_mem_offload_size"] == 121
 
 
-def test_launcher_plan_reports_lmcache_auto_size_from_generated_command(monkeypatch, tmp_path):
+def test_launcher_plan_keeps_lmcache_per_card_command_and_node_status(monkeypatch, tmp_path):
     _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -584,7 +584,7 @@ def test_launcher_plan_reports_lmcache_auto_size_from_generated_command(monkeypa
     data = json.loads(state_file.read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "lmcache_cpu+auto"
-    assert data["others"]["kv_mem_offload_size"] == 15
+    assert data["others"]["kv_mem_offload_size"] == 121
 
 
 def test_qwen35_nvfp4_auto_floor_reports_inactive_offload_status(monkeypatch, tmp_path, caplog):
@@ -727,7 +727,7 @@ def test_deepseek_v4_flash_ascend_custom_kv_mem_size_wins_over_lmcache_size(monk
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=21" not in rendered
 
 
-def test_deepseek_v4_flash_ascend_custom_reports_effective_lmcache_size(monkeypatch, tmp_path):
+def test_deepseek_v4_flash_ascend_custom_reports_node_lmcache_size(monkeypatch, tmp_path):
     _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
@@ -756,7 +756,7 @@ def test_deepseek_v4_flash_ascend_custom_reports_effective_lmcache_size(monkeypa
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "lmcache_cpu+custom"
-    assert data["others"]["kv_mem_offload_size"] == 10
+    assert data["others"]["kv_mem_offload_size"] == 80
 
 
 def test_deepseek_v4_flash_ascend_ld_preload_is_safe_under_set_u(monkeypatch):
@@ -934,7 +934,7 @@ def test_lmcache_env_exports_use_effective_smart_feats_when_env_not_synced(monke
 
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=10" in rendered
     assert variant == "lmcache_cpu+custom"
-    assert resolved_size == 10
+    assert resolved_size == 80
 
 
 def test_memcache_fragment_uses_effective_smart_feats_when_env_not_synced(monkeypatch):
@@ -1425,7 +1425,7 @@ def test_kimi_k27_code_memcache_prelude_is_assembled_before_engine_body(monkeypa
     assert "start_memcache_master.sh" in command
 
 
-def test_kimi_k27_code_memcache_reports_active_variant(monkeypatch, tmp_path):
+def test_kimi_k27_code_memcache_reports_node_offload_size(monkeypatch, tmp_path):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
@@ -1449,7 +1449,7 @@ def test_kimi_k27_code_memcache_reports_active_variant(monkeypatch, tmp_path):
     data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
     assert data["features"]["kv_offload"] is True
     assert data["variants"]["kv_offload"] == "memcache"
-    assert data["others"]["kv_mem_offload_size"] == 2
+    assert data["others"]["kv_mem_offload_size"] == 40
 
 
 def test_deepseek_v4_pro_is_not_cpu_offloading_connector_special_case(monkeypatch):

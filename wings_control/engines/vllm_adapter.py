@@ -1064,6 +1064,16 @@ def _parse_kv_mem_size_gb(value: Any) -> Optional[int]:
     return size_gb if size_gb >= 0 else None
 
 
+def _resolve_status_kv_mem_offload_node_size_gb(params: Dict[str, Any]) -> Optional[int]:
+    """Resolve page-visible KV memory offload capacity in node-level GB."""
+    raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+    if not raw_size:
+        return None
+    if raw_size.lower() == "auto":
+        return resolve_offload_cpu_capacity_gb(params)
+    return _parse_kv_mem_size_gb(raw_size)
+
+
 def resolve_effective_kv_mem_offload_size(
     params: Optional[Dict[str, Any]],
     engine: str,
@@ -1071,10 +1081,10 @@ def resolve_effective_kv_mem_offload_size(
 ) -> Optional[int]:
     """Return the effective KV memory offload size in GB for status reporting.
 
-    The returned value follows the engine-facing landing unit:
-      * LMCache reports the per-card value exported to LMCache.
+    The returned value follows the page-facing node-level capacity:
+      * LMCache reports the node-level value from KV_MEM_OFFLOAD_SIZE/auto.
       * Native vLLM reports the node-level value used by --kv-offloading-size.
-      * MemCache reports the DRAM value written to mmc_local.conf.
+      * MemCache reports the node-level value before per-card dram.size split.
       * Floor-disabled/discarded memory offload reports 0.
     """
     params = params or {}
@@ -1087,7 +1097,8 @@ def resolve_effective_kv_mem_offload_size(
     if "floor_disabled" in resolved_variant:
         return 0
     if resolved_variant == memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT:
-        return memcache_hybrid.resolve_memcache_dram_gb(params)
+        # 状态回显使用页面口径的节点总容量；MemCache 启动落地时仍按卡数拆分 dram.size。
+        return _resolve_status_kv_mem_offload_node_size_gb(params)
     if resolved_variant.startswith("native_kv_offloading_backend"):
         special = _classify_offload_special_case(params, engine)
         if special == _OFFLOAD_V4_FLASH_NATIVE:
@@ -1098,8 +1109,8 @@ def resolve_effective_kv_mem_offload_size(
             return None
         return max(0, int(size_gb))
     if resolved_variant.startswith("lmcache_cpu"):
-        _, max_cpu_size = _resolve_lmcache_cpu_env(params)
-        return _parse_kv_mem_size_gb(max_cpu_size)
+        # 状态回显不能复用 LMCACHE_MAX_LOCAL_CPU_SIZE，它是 engine-facing 的每卡容量。
+        return _resolve_status_kv_mem_offload_node_size_gb(params)
     return None
 
 
