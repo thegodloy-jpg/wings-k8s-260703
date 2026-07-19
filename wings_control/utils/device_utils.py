@@ -311,7 +311,7 @@ def _resolve_hardware_card_name(hardware_env: Dict[str, Any]) -> str:
 
 
 def _resolve_nvidia_card_token(name: str) -> str:
-    compact = re.sub(r"[^a-z0-9]+", "", name)
+    compact = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
     if "h20" in compact and "141" in compact:
         return "h20-141"
     if "h20" in compact and "96" in compact:
@@ -333,14 +333,9 @@ def _resolve_nvidia_h20_memory_token(hardware_env: Dict[str, Any], name: str) ->
     if not details or not isinstance(details[0], dict):
         return ""
     try:
-        model = is_h20_gpu(float(details[0].get("total_memory"))).lower()
+        return _resolve_nvidia_card_token(is_h20_gpu(float(details[0].get("total_memory"))))
     except (TypeError, ValueError):
         return ""
-    if model == "h20-96g":
-        return "h20-96"
-    if model == "h20-141g":
-        return "h20-141"
-    return ""
 
 
 def _resolve_platform_card_token() -> str:
