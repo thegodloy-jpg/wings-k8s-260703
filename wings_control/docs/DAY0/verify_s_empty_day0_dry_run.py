@@ -592,6 +592,25 @@ def _bool_env(enabled: bool) -> str:
     return "true" if enabled else "false"
 
 
+def _has_fp8_kv_cache_dtype(parsed: ParsedCommand) -> bool:
+    return str(parsed.flags.get("kv-cache-dtype") or "").strip().lower() == "fp8"
+
+
+def _reference_requests_sparse(parsed: ParsedCommand) -> bool:
+    # FP8 KV Cache 和 IndexCache 统一归入 sparse 验收桶；仅 fp8 值触发，避免 auto 误判。
+    return (
+        "sparse-config" in parsed.flags
+        or "hf-overrides" in parsed.flags
+        or _has_fp8_kv_cache_dtype(parsed)
+    )
+
+
+def _skip_features_off_reference_field(field: str, reference: ParsedCommand) -> bool:
+    return field in (FEATURE_CLI_FLAGS | INTERACTIVE_CLI_FLAGS) or (
+        field == "kv-cache-dtype" and _has_fp8_kv_cache_dtype(reference)
+    )
+
+
 def _set_reference_feature_inputs(case: Case, parsed_ref: ParsedCommand) -> dict[str, bool]:
     """Mirror the feature inputs implied by the reference command for this case."""
     features_on = case.mode == "features_on"
@@ -605,10 +624,7 @@ def _set_reference_feature_inputs(case: Case, parsed_ref: ParsedCommand) -> dict
     )
     feature_inputs = {
         "spec": features_on and "speculative-config" in parsed_ref.flags,
-        "sparse": features_on and (
-            "sparse-config" in parsed_ref.flags
-            or "hf-overrides" in parsed_ref.flags
-        ),
+        "sparse": features_on and _reference_requests_sparse(parsed_ref),
         "offload": native_offload or connector_offload,
         "native_offload": native_offload,
         "connector_offload": connector_offload,
@@ -885,7 +901,7 @@ def _compare_case(case: Case, reference: ParsedCommand, actual: ParsedCommand, s
     for field in comparable:
         if field not in reference.flags:
             continue
-        if case.mode == "features_off" and field in (FEATURE_CLI_FLAGS | INTERACTIVE_CLI_FLAGS):
+        if case.mode == "features_off" and _skip_features_off_reference_field(field, reference):
             continue
         expected = _normalize_expected_field(case, field, reference.flags[field])
         actual_value = _normalize_actual_field(field, expected, actual.flags.get(field))
@@ -908,6 +924,9 @@ def _compare_case(case: Case, reference: ParsedCommand, actual: ParsedCommand, s
         for field in sorted(FEATURE_CLI_FLAGS):
             checks.append(_check(field, None, actual.flags.get(field),
                                  field not in actual.flags, "feature_off_forbidden"))
+        actual_fp8 = _has_fp8_kv_cache_dtype(actual)
+        checks.append(_check("kv-cache-dtype:fp8", None, actual.flags.get("kv-cache-dtype"),
+                             not actual_fp8, "feature_off_forbidden"))
         for env_key in sorted(FEATURE_ENV_KEYS):
             present = env_key in actual.env or env_key in script
             checks.append(_check(f"env:{env_key}", None, "present" if present else None,

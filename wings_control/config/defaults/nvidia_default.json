@@ -306,6 +306,16 @@
             "context_length": 4096,
             "tool_call_parser": "deepseekv32"
           }
+        },
+        "DeepSeek-V3.2": {
+          "card_tokens": ["h20-96", "h20-141"],
+          "vllm": {
+            "trust_remote_code": true,
+            "max_model_len": 4096,
+            "tool_call_parser": "deepseek_v32",
+            "enable_expert_parallel": true,
+            "kv_cache_dtype": "fp8"
+          }
         }
       },
       "DeepseekV4ForCausalLM": {

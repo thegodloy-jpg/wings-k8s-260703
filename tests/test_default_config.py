@@ -1429,6 +1429,11 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     config = _model_deploy_config("nvidia")
     llm = config["llm"]
 
+    deepseek_v32 = llm["DeepseekV32ForCausalLM"]["DeepSeek-V3.2"]
+    assert deepseek_v32["card_tokens"] == ["h20-96", "h20-141"]
+    assert deepseek_v32["vllm"]["kv_cache_dtype"] == "fp8"
+    assert deepseek_v32["vllm"]["tool_call_parser"] == "deepseek_v32"
+
     deepseek_v3 = llm["DeepseekV3ForCausalLM"]
     for model_key in ("DeepSeek-R1", "DeepSeek-V3.1"):
         assert deepseek_v3[f"{model_key}-H20-96G"]["card_tokens"] == ["h20-96"]
@@ -1603,6 +1608,27 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
         "device": "nvidia",
         "details": [{"name": "G6550+RTX PRO 5000 * 8"}],
     }
+
+    deepseek_v32_arch = config["llm"]["DeepseekV32ForCausalLM"]
+    assert config_loader._match_model_engine_config(
+        deepseek_v32_arch,
+        "deepseek-ai/deepseek-v3.2",
+        "vllm",
+        scenario,
+        _FakeModelInfo("DeepSeek-V3.2", "DeepseekV32ForCausalLM"),
+        a100,
+    ) == {}
+    deepseek_v32_h20 = config_loader._match_model_engine_config(
+        deepseek_v32_arch,
+        "deepseek-ai/deepseek-v3.2",
+        "vllm",
+        scenario,
+        _FakeModelInfo("DeepSeek-V3.2", "DeepseekV32ForCausalLM"),
+        h20,
+    )
+    assert deepseek_v32_h20["kv_cache_dtype"] == "fp8"
+    assert deepseek_v32_h20["tool_call_parser"] == "deepseek_v32"
+    assert deepseek_v32_h20["enable_expert_parallel"] is True
 
     glm5_arch = config["llm"]["GlmMoeDsaForCausalLM"]
     assert config_loader._match_model_engine_config(

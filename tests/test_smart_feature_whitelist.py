@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,16 @@ class _FakeDeepSeekV4Identifier:
         self.model_type = model_type
 
 
+class _FakeDeepSeekV32Identifier:
+    model_architecture = "DeepseekV32ForCausalLM"
+    model_quantize = ""
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeQwen35Identifier:
     model_architecture = "Qwen3_5ForConditionalGeneration"
     model_quantize = ""
@@ -76,6 +87,23 @@ class _FakeQwen35Identifier:
         self.model_name = model_name
         self.model_path = model_path
         self.model_type = model_type
+
+
+def _load_s_empty_verifier():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "wings_control"
+        / "docs"
+        / "DAY0"
+        / "verify_s_empty_day0_dry_run.py"
+    )
+    spec = importlib.util.spec_from_file_location("verify_s_empty_day0_dry_run_for_test", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_default_smart_feature_whitelist_file_is_loaded():
@@ -107,6 +135,24 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/deepseek-ai/DeepSeek-V4-Flash",
         "rtxpro5000-72",
     ) == frozenset({"spec", "sparse"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "deepseek-ai/DeepSeek-V3.2",
+        "/models/deepseek-ai/DeepSeek-V3.2",
+        "h20-96",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "deepseek-ai/DeepSeek-V3.2",
+        "/models/deepseek-ai/DeepSeek-V3.2",
+        "h20-141",
+    ) == frozenset({"spec", "sparse", "offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm",
+        "deepseek-ai/DeepSeek-V3.2",
+        "/models/deepseek-ai/DeepSeek-V3.2",
+        "l20",
+    ) == frozenset()
 
     whitelist = json.loads(model_utils._SMART_WHITELIST_PATH.read_text(encoding="utf-8"))
     deepseek_tokens = [
@@ -583,6 +629,107 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
         "/harbor_data/Kimi-K2.7-Code",
         "910b",
     ) == frozenset()
+
+
+def test_deepseek_v32_h20_whitelist_enables_smart_trio(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    hardware = {
+        "device": "nvidia",
+        "details": [{"name": "G8600+H20 * 8", "total_memory": 141}],
+    }
+    params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V3.2",
+        "model_path": "/models/deepseek-ai/DeepSeek-V3.2",
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(params, hardware)
+
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["enable_sparse"] is True
+    assert params["enable_speculative_decode"] is True
+    assert params["_smart_card_token"] == "h20-141"
+
+
+def test_deepseek_v32_h20_sparse_whitelist_emits_indexcache_topk4(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    params = {
+        "model_name": "deepseek-ai/DeepSeek-V3.2",
+        "model_path": "/models/deepseek-ai/DeepSeek-V3.2",
+        "model_type": "llm",
+        "_smart_card_token": "h20-141",
+        "_smart_feats": ["sparse"],
+        "engine_config": {},
+    }
+
+    command = vllm_adapter._build_kv_sparse_cmd(params, "vllm")
+
+    assert command == ' --hf-overrides \'{"use_index_cache":true,"index_topk_freq":4}\''
+    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == "indexcache_use_index_cache_topk4"
+    assert params["engine_config"] == {}
+
+
+def test_deepseek_v32_h20_spec_whitelist_emits_mtp3(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    params = {
+        "model_name": "deepseek-ai/DeepSeek-V3.2",
+        "model_path": "/models/deepseek-ai/DeepSeek-V3.2",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_card_token": "h20-141",
+        "_smart_feats": ["spec"],
+        "engine_config": {},
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+
+    assert "--speculative-config" in command
+    assert '"method":"mtp"' in command
+    assert '"num_speculative_tokens":3' in command
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "mtp",
+        "num_speculative_tokens": 3,
+        "moe_backend": None,
+    }
+
+
+def test_deepseek_v32_h20_offload_whitelist_emits_native_backend(monkeypatch):
+    monkeypatch.delenv("CONFIG_FORCE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
+    params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V3.2",
+        "model_path": "/models/deepseek-ai/DeepSeek-V3.2",
+        "model_type": "llm",
+        "_smart_card_token": "h20-141",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm") == (
+        " --kv-offloading-backend native --kv-offloading-size 200"
+    )
+    assert vllm_adapter.resolve_offload_variant(params, "vllm") == (
+        "native_kv_offloading_backend"
+    )
+
+
+def test_s_empty_verifier_counts_fp8_kv_cache_as_sparse():
+    verifier = _load_s_empty_verifier()
+    fp8 = verifier.ParsedCommand(flags={"kv-cache-dtype": "fp8"})
+    auto = verifier.ParsedCommand(flags={"kv-cache-dtype": "auto"})
+    indexcache = verifier.ParsedCommand(flags={"hf-overrides": {"use_index_cache": True}})
+
+    assert verifier._reference_requests_sparse(fp8) is True
+    assert verifier._reference_requests_sparse(indexcache) is True
+    assert verifier._reference_requests_sparse(auto) is False
+    assert verifier._skip_features_off_reference_field("kv-cache-dtype", fp8) is True
+    assert verifier._skip_features_off_reference_field("kv-cache-dtype", auto) is False
 
 
 def test_offload_backend_lookup_respects_effective_smart_feats(monkeypatch):
@@ -1066,6 +1213,14 @@ def test_nvidia_card_token_only_normalizes_chip_names():
     }) == "h20-96"
     assert resolve_card_token({
         "device": "nvidia",
+        "details": [{"name": "G8600+H20 * 8", "total_memory": 141}],
+    }) == "h20-141"
+    assert resolve_card_token({
+        "device": "nvidia",
+        "details": [{"name": "G8600+H20 * 8", "total_memory": 96}],
+    }) == "h20-96"
+    assert resolve_card_token({
+        "device": "nvidia",
         "details": [{"name": "RTX PRO 5000 72GB"}],
     }) == "rtxpro5000-72"
     assert resolve_card_token({
@@ -1297,6 +1452,7 @@ def test_qwen_day0_910b_reference_script_without_offload_still_has_no_memcache()
         ("vllm", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", 10),
         ("vllm", "GLM-4.7-FP8", "/models/zai-org/GLM-4.7", "h20-141", 1),
+        ("vllm", "deepseek-ai/DeepSeek-V3.2", "/models/deepseek-ai/DeepSeek-V3.2", "h20-141", 3),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "h20-141", 1),
         ("vllm", "deepseek-ai/DeepSeek-V4-Flash", "/models/deepseek-ai/DeepSeek-V4-Flash", "rtxpro5000-72", 2),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
@@ -1399,6 +1555,20 @@ def test_qwen35_35b_pro5000_native_offload_has_no_spec_row():
         "Qwen/Qwen3.5-35B-A3B",
         "/models/Qwen/Qwen3.5-35B-A3B",
         "rtxpro5000-72",
+        "offload",
+    )
+
+    assert row is not None
+    assert row.get("backend") == "native"
+
+
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_deepseek_v32_h20_offload_backend_is_native(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "deepseek-ai/DeepSeek-V3.2",
+        "/models/deepseek-ai/DeepSeek-V3.2",
+        card_token,
         "offload",
     )
 

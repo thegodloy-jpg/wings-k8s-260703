@@ -325,6 +325,24 @@ def _resolve_nvidia_card_token(name: str) -> str:
     return ""
 
 
+def _resolve_nvidia_h20_memory_token(hardware_env: Dict[str, Any], name: str) -> str:
+    compact = re.sub(r"[^a-z0-9]+", "", name)
+    if "h20" not in compact:
+        return ""
+    details = (hardware_env or {}).get("details") or []
+    if not details or not isinstance(details[0], dict):
+        return ""
+    try:
+        model = is_h20_gpu(float(details[0].get("total_memory"))).lower()
+    except (TypeError, ValueError):
+        return ""
+    if model == "h20-96g":
+        return "h20-96"
+    if model == "h20-141g":
+        return "h20-141"
+    return ""
+
+
 def _resolve_platform_card_token() -> str:
     from core.version_util import engine_version_platform
     platform = engine_version_platform() or ""
@@ -361,7 +379,8 @@ def resolve_card_token(hardware_env: Dict[str, Any] = None) -> str:
 
     name = _resolve_hardware_card_name(hardware_env).strip().lower()
     if str((hardware_env or {}).get("device") or "").lower() == "nvidia":
-        return _resolve_nvidia_card_token(name) or name
+        # G8600+H20 这类展示名可能不带 96/141，SmartFeature 需要复用显存归一后的 H20 token。
+        return _resolve_nvidia_card_token(name) or _resolve_nvidia_h20_memory_token(hardware_env, name) or name
     # SmartFeature 白名单只维护 910b/910c 这种能力 token。裸 Ascend910
     # 在当前硬件口径下代表 910C，因此这里直接返回可被白名单子串命中的
     # ascend910c；带字母后缀的 910B/910B3/910A 已在 helper 内排除，避免
