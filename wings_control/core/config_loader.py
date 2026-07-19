@@ -1029,19 +1029,26 @@ def _set_qwen397b_ascend_dp_tensor_parallel(params, ctx) -> bool:
     return True
 
 
-def _should_skip_generic_tensor_parallelism(ctx) -> bool:
-    """判断 TP 是否已由专属路径接管，避免进入通用 _adjust_tensor_parallelism。"""
-    deepseek_v4_pro_identity = " ".join(
+def _ctx_model_identity(ctx) -> str:
+    return " ".join(
         str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
     )
+
+
+def _is_deepseek_v4_pro_ascend_distributed(ctx) -> bool:
+    if ctx.get("engine") != "vllm_ascend":
+        return False
+    if not ctx.get("distributed"):
+        return False
+    identity = _ctx_model_identity(ctx)
+    return "deepseek-v4-pro" in identity and "flash" not in identity
+
+
+def _should_skip_generic_tensor_parallelism(ctx) -> bool:
+    """判断 TP 是否已由专属路径接管，避免进入通用 _adjust_tensor_parallelism。"""
     # V4-Pro 双机拓扑由 adapter 按本机卡数推导；此时 distributed backend 可能尚未
     # 被 _handle_distributed 归一成 dp_deployment，不能先套通用全局 TP 公式。
-    if (
-        ctx.get("engine") == "vllm_ascend"
-        and ctx.get("distributed")
-        and "deepseek-v4-pro" in deepseek_v4_pro_identity
-        and "flash" not in deepseek_v4_pro_identity
-    ):
+    if _is_deepseek_v4_pro_ascend_distributed(ctx):
         return True
     # Ascend DeepSeek dp_deployment 后端 TP 语义是「节点内」，由 vllm_adapter 的
     # _default_deepseek_ascend_dp_tensor_parallel_size 按架构兜底；

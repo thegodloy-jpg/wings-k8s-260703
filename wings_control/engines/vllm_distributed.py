@@ -190,6 +190,53 @@ def _build_ray_worker_commands(params: Dict[str, Any], ctx: DistScriptCtx) -> Li
     return parts
 
 
+def _build_deepseek_v4_pro_dp_env_commands(net_if: str) -> List[str]:
+    """DeepSeek-V4-Pro 双机参考脚本要求固定的前置 export 集合。"""
+    return [
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+        f"export HCCL_IF_IP={_DEEPSEEK_V4_PRO_HCCL_IF_IP}",
+        f"export GLOO_SOCKET_IFNAME={net_if}",
+        f"export TP_SOCKET_IFNAME={net_if}",
+        f"export HCCL_SOCKET_IFNAME={net_if}",
+        "export HCCL_BUFFSIZE=2048",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export TASK_QUEUE_ENABLE=1",
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+    ]
+
+
+def _resolve_ascend_dp_env_defaults(is_glm5_dp: bool) -> tuple[str, str, str]:
+    if is_glm5_dp:
+        return "1", "1024", "1800"
+    return "100", "1024", "1800"
+
+
+def _build_common_ascend_dp_env_commands(
+    net_if: str,
+    omp_default: str,
+    buffsize_default: str,
+    connect_timeout_default: str,
+) -> List[str]:
+    return [
+        _SH_VLLM_HOST,
+        "export HCCL_WHITELIST_DISABLE=1",
+        "export HCCL_IF_IP=$VLLM_HOST_IP",
+        f"export GLOO_SOCKET_IFNAME={net_if}",
+        f"export TP_SOCKET_IFNAME={net_if}",
+        f"export HCCL_SOCKET_IFNAME={net_if}",
+        f"export HCCL_CONNECT_TIMEOUT={os.getenv('HCCL_CONNECT_TIMEOUT', connect_timeout_default)}",
+        f"export HCCL_EXEC_TIMEOUT={os.getenv('HCCL_EXEC_TIMEOUT', '7200')}",
+        "export OMP_PROC_BIND=false",
+        f"export OMP_NUM_THREADS={os.getenv('OMP_NUM_THREADS', omp_default)}",
+        f"export HCCL_BUFFSIZE={os.getenv('HCCL_BUFFSIZE', buffsize_default)}",
+        'echo "[wings-env] final HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-}"',
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+    ]
+
+
 def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
     """构造 Ascend dp_deployment 通信环境。
 
@@ -212,39 +259,9 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
     if is_v4_pro_dp:
         # DeepSeek-V4-Pro 双机对齐参考 start_1/start_2：前置 export 变量名必须一致，
         # 不继承通用 DP 的 whitelist/timeout，也不追加 multi-block/multi-groups/FUSED_MC2。
-        return [
-            'export HCCL_OP_EXPANSION_MODE="AIV"',
-            f"export HCCL_IF_IP={_DEEPSEEK_V4_PRO_HCCL_IF_IP}",
-            f"export GLOO_SOCKET_IFNAME={net_if}",
-            f"export TP_SOCKET_IFNAME={net_if}",
-            f"export HCCL_SOCKET_IFNAME={net_if}",
-            "export HCCL_BUFFSIZE=2048",
-            "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-            "export OMP_PROC_BIND=false",
-            "export OMP_NUM_THREADS=10",
-            "export TASK_QUEUE_ENABLE=1",
-            "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
-            "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
-        ]
-    if is_glm5_dp:
-        omp_default, buffsize_default, connect_timeout_default = "1", "1024", "1800"
-    else:
-        omp_default, buffsize_default, connect_timeout_default = "100", "1024", "1800"
-    env_commands = [
-        _SH_VLLM_HOST,
-        "export HCCL_WHITELIST_DISABLE=1",
-        "export HCCL_IF_IP=$VLLM_HOST_IP",
-        f"export GLOO_SOCKET_IFNAME={net_if}",
-        f"export TP_SOCKET_IFNAME={net_if}",
-        f"export HCCL_SOCKET_IFNAME={net_if}",
-        f"export HCCL_CONNECT_TIMEOUT={os.getenv('HCCL_CONNECT_TIMEOUT', connect_timeout_default)}",
-        f"export HCCL_EXEC_TIMEOUT={os.getenv('HCCL_EXEC_TIMEOUT', '7200')}",
-        "export OMP_PROC_BIND=false",
-        f"export OMP_NUM_THREADS={os.getenv('OMP_NUM_THREADS', omp_default)}",
-        f"export HCCL_BUFFSIZE={os.getenv('HCCL_BUFFSIZE', buffsize_default)}",
-        'echo "[wings-env] final HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-}"',
-        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-    ]
+        return _build_deepseek_v4_pro_dp_env_commands(net_if)
+    env_defaults = _resolve_ascend_dp_env_defaults(is_glm5_dp)
+    env_commands = _build_common_ascend_dp_env_commands(net_if, *env_defaults)
     if dp_arch in ("DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM"):
         env_commands.extend([
             "export ASCEND_CUSTOM_OPP_PATH=/usr/local/Ascend/ascend-toolkit/latest/opp/deepseek-v32/"
