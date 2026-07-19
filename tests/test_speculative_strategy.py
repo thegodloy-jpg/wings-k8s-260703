@@ -327,23 +327,29 @@ def test_deepseek_v4_flash_topology_ignores_explicit_platform_env(monkeypatch):
 def test_deepseek_v4_flash_pro5000_vllm_speculative_config_matches_tokenbox(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
 
-    command = vllm_adapter.build_speculative_cmd(
-        {
-            "engine": "vllm",
-            "model_name": "Deepseek-v4-Flash",
-            "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
-            "model_type": "llm",
-            "enable_speculative_decode": True,
-            "speculative_decode_model_path": "none",
-            "_smart_feats": ["spec", "sparse"],
-            "_smart_card_token": "rtxpro5000-72",
-        },
-        "vllm",
-    )
+    params = {
+        "engine": "vllm",
+        "model_name": "Deepseek-v4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec", "sparse"],
+        "_smart_card_token": "rtxpro5000-72",
+    }
 
-    assert '"method": "mtp"' in command
-    assert '"num_speculative_tokens": 2' in command
+    command = vllm_adapter.build_speculative_cmd(params, "vllm")
+
+    assert command == (
+        " --speculative-config "
+        "'{\"method\":\"mtp\",\"num_speculative_tokens\":2}'"
+    )
     assert '"enforce_eager": true' not in command
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "mtp",
+        "num_speculative_tokens": 2,
+        "moe_backend": None,
+    }
 
 
 def test_deepseek_v4_flash_h20_vllm_speculative_config_matches_day0_recipe(monkeypatch):

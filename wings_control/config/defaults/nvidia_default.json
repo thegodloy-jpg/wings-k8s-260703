@@ -356,7 +356,7 @@
             },
             "rtx_pro_5000_72G": {
               "use_vllm_serve": true,
-              "attention_backend": "FLASHMLA_SPARSE_DSV4",
+              "attention_backend": "FLASHINFER_MLA_SPARSE_SM120_DSV4",
               "kv_cache_dtype": "fp8",
               "block_size": 256,
               "max_model_len": 140000,
@@ -367,11 +367,18 @@
               "tokenizer_mode": "deepseek_v4",
               "tool_call_parser": "deepseek_v4",
               "compilation_config": {
-                "mode": 0,
                 "cudagraph_mode": "FULL_AND_PIECEWISE",
+                "custom_ops": ["all"],
                 "max_cudagraph_capture_size": 768
               },
-              "async_scheduling": true
+              "async_scheduling": true,
+              "enable_expert_parallel": true,
+              "all2all_backend": "allgather_reducescatter",
+              "enable_eplb": true,
+              "eplb_config": {
+                "num_redundant_experts": 2,
+                "use_async": true
+              }
             }
           },
           "vllm_distributed": {

@@ -49,6 +49,25 @@ def _as_dict(value):
     return value
 
 
+def _assert_deepseek_v4_flash_pro5000_profile(config):
+    assert config["use_vllm_serve"] is True
+    assert config["attention_backend"] == "FLASHINFER_MLA_SPARSE_SM120_DSV4"
+    assert config["enable_expert_parallel"] is True
+    assert config["all2all_backend"] == "allgather_reducescatter"
+    assert config["enable_eplb"] is True
+    assert _as_dict(config["eplb_config"]) == {
+        "num_redundant_experts": 2,
+        "use_async": True,
+    }
+    compilation_config = _as_dict(config["compilation_config"])
+    assert compilation_config == {
+        "cudagraph_mode": "FULL_AND_PIECEWISE",
+        "custom_ops": ["all"],
+        "max_cudagraph_capture_size": 768,
+    }
+    assert "mode" not in compilation_config
+
+
 def test_deepseek_v4_flash_repo_name_selects_pro5000_vllm_defaults():
     arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV4ForCausalLM"]
     scenario = config_loader._SpecialEngineScenario(
@@ -67,8 +86,7 @@ def test_deepseek_v4_flash_repo_name_selects_pro5000_vllm_defaults():
         },
     )
 
-    assert config["use_vllm_serve"] is True
-    assert config["attention_backend"] == "FLASHMLA_SPARSE_DSV4"
+    _assert_deepseek_v4_flash_pro5000_profile(config)
     assert "rtx_pro_5000_72G" not in config
 
 
@@ -175,8 +193,7 @@ def test_deepseek_v4_flash_repo_name_gets_pro5000_defaults_through_real_selector
         _FakeDeepSeekV4Info(),
     )
 
-    assert params["use_vllm_serve"] is True
-    assert params["attention_backend"] == "FLASHMLA_SPARSE_DSV4"
+    _assert_deepseek_v4_flash_pro5000_profile(params)
     assert "default" not in params
     assert "rtx_pro_5000_72G" not in params
 

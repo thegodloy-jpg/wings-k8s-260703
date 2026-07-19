@@ -2983,7 +2983,7 @@ def _apply_minimax_m27_nvfp4_nv_engine_defaults(
         logger.info("[MiniMax-M2.7-NVFP4-NV] data_parallel_size = %d (%d / %d)", dp, device_count, tp)
 
 
-# V4-Flash KV 稀疏路径（IndexCache / FLASHMLA_SPARSE_DSV4）要求 block_size 恒为 256，
+# V4-Flash KV 稀疏路径（IndexCache / FlashInfer MLA sparse backend）要求 block_size 恒为 256，
 # 与卡型无关。即使用户显式传入其它值也以 256 覆盖，
 # 避免 block_size 不匹配导致启动失败或性能劣化。
 _DEEPSEEK_V4_FLASH_NV_BLOCK_SIZE = 256
