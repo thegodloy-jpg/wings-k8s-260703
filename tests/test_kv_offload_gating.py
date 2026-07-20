@@ -477,6 +477,72 @@ def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch,
     assert wings_entry._has_advanced_features(params) is False
 
 
+def test_deepseek_v4_flash_auto_floor_drops_kv_transfer_config(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.delenv("ENABLE_KV_QAT", raising=False)
+    monkeypatch.delenv("ENABLE_COLD_START", raising=False)
+
+    ctx = {
+        "engine": "vllm_ascend",
+        "model": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_feats": ["offload"],
+    }
+    model_info = _FakeDeepSeekV4ProIdentifier(
+        ctx["model_name"],
+        ctx["model_path"],
+        ctx["model_type"],
+    )
+    engine_config = {}
+
+    config_loader._set_kv_cache_config(engine_config, dict(ctx), model_info)
+    script = vllm_adapter.build_start_script({**ctx, **engine_config})
+
+    # auto 丢弃后状态可以保留诊断 variant，但启动命令不能残留 LMCache connector。
+    assert engine_config == {}
+    assert "--kv-transfer-config" not in script
+    assert "LMCacheAscendConnectorV1Dynamic" not in script
+
+
+def test_disabled_offload_variant_drops_generic_kv_transfer_config(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.delenv("ENABLE_KV_QAT", raising=False)
+    monkeypatch.delenv("ENABLE_COLD_START", raising=False)
+
+    ctx = {
+        "engine": "vllm_ascend",
+        "model": "/models/generic",
+        "model_name": "Generic-Offload-Model",
+        "model_path": "/models/generic",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_feats": ["offload"],
+    }
+    engine_config = {}
+
+    config_loader._set_kv_cache_config(engine_config, dict(ctx))
+    script = vllm_adapter.build_start_script({**ctx, **engine_config})
+
+    # 源头状态为 disabled 时，通用 LMCacheConnectorV1 也不能被 raw 开关重新带回。
+    assert vllm_adapter.resolve_offload_variant(ctx, "vllm_ascend") == "disabled"
+    assert engine_config == {}
+    assert "--kv-transfer-config" not in script
+    assert "LMCacheConnectorV1" not in script
+
+
 def test_deepseek_v4_flash_ascend_auto_reports_node_lmcache_size(monkeypatch, tmp_path):
     _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
@@ -1325,13 +1391,18 @@ def test_memcache_backend_respects_effective_offload_switch(monkeypatch):
     ) == memcache_hybrid.empty_memcache_hybrid_fragment()
 
 
-def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch):
+def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch, tmp_path):
     """Qwen Day0 MemCache 复用通用 auto floor，容量不足时应关闭 offload。"""
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
     monkeypatch.delenv("LMCACHE_MAX_LOCAL_CPU_SIZE", raising=False)
     monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "40960")
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
 
     params = {
         "engine": "vllm_ascend",
@@ -1363,8 +1434,89 @@ def test_qwen_day0_memcache_auto_memory_below_floor_is_disabled(monkeypatch):
         "env": {},
     }
     assert "kv_transfer_config" not in engine_config
-    assert variant == "disabled"
-    assert resolved_size is None
+    assert variant == "memcache+auto+floor_disabled"
+    assert resolved_size == 0
+
+    # JSON 回显统一承载“请求过但 auto 被丢弃”：特性 false，variant 保留后端和原因，容量为 0。
+    wings_entry._write_advanced_features_json("vllm_ascend", params)
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is False
+    assert data["variants"]["kv_offload"] == "memcache+auto+floor_disabled"
+    assert data["others"]["kv_mem_offload_size"] == 0
+
+
+@pytest.mark.parametrize(
+    ("engine", "params", "expected_variant"),
+    [
+        (
+            "vllm_ascend",
+            {
+                "engine": "vllm_ascend",
+                "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+                "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+                "model_type": "llm",
+                "device_count": 8,
+                "tensor_parallel_size": 8,
+                "data_parallel_size": 1,
+                "_smart_feats": ["offload"],
+            },
+            "lmcache_cpu+auto+unavailable",
+        ),
+        (
+            "vllm",
+            {
+                "engine": "vllm",
+                "model_name": "Qwen3.5-397B-A17B-NVFP4",
+                "model_path": "/models/Qwen3.5-397B-NVFP4",
+                "model_type": "llm",
+                "device_count": 8,
+                "tensor_parallel_size": 8,
+                "data_parallel_size": 1,
+                "_smart_card_token": "rtxpro5000-72",
+                "_smart_feats": ["offload"],
+            },
+            "native_kv_offloading_backend+auto+unavailable",
+        ),
+        (
+            "vllm_ascend",
+            {
+                "engine": "vllm_ascend",
+                "model_name": "Kimi-K2.7-Code",
+                "model_path": "/harbor_data/Kimi-K2.7-Code",
+                "model_type": "llm",
+                "device_count": 16,
+                "tensor_parallel_size": 4,
+                "data_parallel_size": 4,
+                "_smart_feats": ["offload"],
+            },
+            "memcache+auto+unavailable",
+        ),
+    ],
+)
+def test_auto_unavailable_offload_status_uses_backend_variant_and_zero_size(
+    monkeypatch,
+    tmp_path,
+    engine,
+    params,
+    expected_variant,
+):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.delenv("AVAILABLE_POD_MEM_SIZE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / "advanced_features.json"),
+    )
+
+    wings_entry._write_advanced_features_json(engine, params)
+
+    data = json.loads((tmp_path / "advanced_features.json").read_text(encoding="utf-8"))
+    assert data["features"]["kv_offload"] is False
+    assert data["variants"]["kv_offload"] == expected_variant
+    assert data["others"]["kv_mem_offload_size"] == 0
 
 
 def test_kimi_k27_code_memcache_without_page_memory_is_disabled(monkeypatch):
@@ -1631,6 +1783,79 @@ def test_minimax_m25_pro5000_env_uses_v1_without_lmcache(monkeypatch):
     assert commands == ["export VLLM_USE_V1=1"]
     assert "export VLLM_USE_V1=1" in common_commands
     assert not any("LMCACHE_" in command for command in commands)
+
+
+@pytest.mark.parametrize(
+    ("available_pod_mem", "expected_variant"),
+    [
+        ("81920", "lmcache_cpu+auto+floor_disabled"),
+        (None, "lmcache_cpu+auto+unavailable"),
+    ],
+)
+def test_minimax_m27_pro5000_auto_drop_skips_lmcache_env(
+    monkeypatch,
+    available_pod_mem,
+    expected_variant,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    if available_pod_mem is None:
+        monkeypatch.delenv("AVAILABLE_POD_MEM_SIZE", raising=False)
+    else:
+        monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", available_pod_mem)
+    params = {
+        "engine": "vllm",
+        "model_name": "MiniMax/MiniMax-M2.7-NVFP4",
+        "model_path": "/models/MiniMax/MiniMax-M2.7-NVFP4",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 4,
+        "data_parallel_size": 2,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["offload"],
+    }
+
+    commands = vllm_adapter._build_model_env_commands(params, "vllm")
+    variant = vllm_adapter.resolve_offload_variant(params, "vllm")
+
+    # MiniMax 专属 env 分支不走通用 LMCache env builder，auto 丢弃后也不能残留 LMCACHE_*。
+    assert variant == expected_variant
+    assert commands == [
+        "export PYTHONHASHSEED=0",
+        "export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=900",
+    ]
+    assert not any("LMCACHE_" in command for command in commands)
+
+
+def test_minimax_m27_pro5000_valid_custom_keeps_lmcache_env(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.delenv("AVAILABLE_POD_MEM_SIZE", raising=False)
+    params = {
+        "engine": "vllm",
+        "model_name": "MiniMax/MiniMax-M2.7-NVFP4",
+        "model_path": "/models/MiniMax/MiniMax-M2.7-NVFP4",
+        "model_type": "llm",
+        "device_count": 8,
+        "tensor_parallel_size": 4,
+        "data_parallel_size": 2,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["offload"],
+    }
+
+    commands = vllm_adapter._build_model_env_commands(params, "vllm")
+
+    assert vllm_adapter.resolve_offload_variant(params, "vllm") == "lmcache_cpu+custom"
+    assert 'export LMCACHE_MAX_LOCAL_CPU_SIZE="10"' in commands
+    assert 'export LMCACHE_LOCAL_CPU="True"' in commands
+    assert "export LMCACHE_CHUNK_SIZE=256" in commands
+    assert any("LMCACHE_" in command for command in commands)
 
 
 def test_minimax_m3_pro5000_env_uses_v1_without_lmcache(monkeypatch):

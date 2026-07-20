@@ -830,6 +830,8 @@ def test_deepseek_v4_flash_kv_transfer_reuses_enabled_upper_offload_from_upstrea
     monkeypatch.delenv("ENGINE_VERSION", raising=False)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "80")
 
     params = {
         "engine": "vllm_ascend",

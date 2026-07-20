@@ -69,11 +69,11 @@ except ImportError:
     )
 try:
     from wings_control.engines.vllm_adapter import (
-        lmcache_auto_floor_disables_all_backends,
+        resolve_kv_offload_effective_state,
     )
 except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
-        lmcache_auto_floor_disables_all_backends,
+        resolve_kv_offload_effective_state,
     )
 logger = logging.getLogger(__name__)
 
@@ -1812,12 +1812,19 @@ def _set_kv_cache_config(params, ctx, model_info=None):
             )
         return
 
-    if lmcache_offload and lmcache_auto_floor_disables_all_backends(ctx):
-        logger.info(
-            "[KVCache Offload] auto memory offload capacity below floor and no "
-            "disk/QAT/cold-start backend is active; not injecting LMCache kv_transfer_config."
+    if lmcache_offload:
+        offload_active, offload_variant = resolve_kv_offload_effective_state(
+            ctx,
+            ctx.get("engine", ""),
         )
-        lmcache_offload = False
+        if not offload_active:
+            params.pop("kv_transfer_config", None)
+            logger.info(
+                "[KVCache Offload] offload variant=%s is inactive; "
+                "not injecting kv_transfer_config.",
+                offload_variant,
+            )
+            lmcache_offload = False
 
     if (
         lmcache_offload

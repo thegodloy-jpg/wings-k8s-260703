@@ -29,7 +29,7 @@ from core.start_args_compat import LaunchArgs
 from engines.vllm_adapter import (
     resolve_speculative_strategy,
     resolve_sparse_variant,
-    resolve_offload_variant,
+    resolve_kv_offload_effective_state,
     resolve_effective_kv_mem_offload_size,
     resolve_effective_speculative_details,
     prepare_params_for_startup_status,
@@ -735,24 +735,9 @@ def _is_kv_offload_requested(merged: dict | None = None) -> bool:
     return get_lmcache_env()
 
 
-def _offload_variant_has_active_backend(variant: str | None) -> bool:
-    """Return whether an offload variant represents a backend used by engine."""
-    if not variant or variant == "disabled":
-        return False
-    if variant in {
-        "lmcache_cpu+auto+floor_disabled",
-        "native_kv_offloading_backend+auto+floor_disabled",
-    }:
-        return False
-    return True
-
-
 def _resolve_kv_offload_state(engine: str, merged: dict) -> tuple[bool, str | None]:
     """Resolve effective KV offload state and diagnostic variant."""
-    if not _is_kv_offload_requested(merged):
-        return False, None
-    variant = resolve_offload_variant(merged, engine)
-    return _offload_variant_has_active_backend(variant), (variant or None)
+    return resolve_kv_offload_effective_state(merged, engine)
 
 
 def _write_advanced_features_json(engine: str, merged: dict) -> None:

@@ -677,14 +677,21 @@ def _parse_flags(command_line: str) -> dict[str, Any]:
 def _extract_engine_command(script: str) -> str:
     for raw in script.splitlines():
         line = raw.strip()
-        if "python3 -m vllm.entrypoints.openai.api_server" not in line:
+        if not (
+            "python3 -m vllm.entrypoints.openai.api_server" in line
+            or "vllm serve " in line
+        ):
             continue
         if line.startswith("echo "):
             continue
+        # 当前 vLLM 适配器可能渲染 `vllm serve`，旧脚本仍是 `python3 -m ...api_server`；
+        # dry-run 校验只需要拿到真实执行行，不能绑定单一启动入口。
+        if line.startswith("exec "):
+            line = line[len("exec "):].strip()
         if line.endswith("&"):
             line = line[:-1].rstrip()
         return line
-    raise RuntimeError("unable to locate final vLLM api_server command")
+    raise RuntimeError("unable to locate final vLLM engine command")
 
 
 def _json_flag(flags: dict[str, Any], key: str) -> Any:
