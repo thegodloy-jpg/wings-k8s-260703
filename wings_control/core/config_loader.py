@@ -3022,6 +3022,36 @@ class _SmartFeatureEffectContext:
     card: str
 
 
+@dataclass(frozen=True)
+class _SmartFeatureInitialRequests:
+    """SmartFeature 收口前的页面请求快照。"""
+
+    sparse: bool
+    spec: bool
+    offload: bool
+
+
+@dataclass(frozen=True)
+class _SmartFeatureEffectResult:
+    """SmartFeature 三个 helper 的收口结果。"""
+
+    sparse_req: bool
+    sparse_eff: bool
+    offload_req: bool
+    offload_eff: bool
+    spec_req: bool
+    spec_eff: bool
+
+
+def _snapshot_smart_feature_initial_requests(p: Dict[str, Any]) -> _SmartFeatureInitialRequests:
+    """在 PD veto 或白名单收口前保存三特性的请求状态。"""
+    return _SmartFeatureInitialRequests(
+        sparse=bool(p.get("enable_sparse")),
+        spec=bool(p.get("enable_speculative_decode")),
+        offload=get_lmcache_env(),
+    )
+
+
 def _apply_sparse_feature_effect(
     context: _SmartFeatureEffectContext,
 ) -> Tuple[bool, bool]:
@@ -3129,6 +3159,137 @@ def _apply_spec_feature_effect(
     return spec_req, spec_eff, spec_whitelisted
 
 
+def _build_smart_feature_pd_veto_gate_rows(
+    requests: _SmartFeatureInitialRequests,
+) -> Dict[str, Dict[str, Any]]:
+    """构造 PD 一票否决时的三特性 trace 行。"""
+    return {
+        "speculative_decode": {
+            "requested": requests.spec,
+            "whitelist": False,
+            "gate": False,
+            "reason": "pd_veto",
+        },
+        "sparse_kv": {
+            "requested": requests.sparse,
+            "whitelist": False,
+            "gate": False,
+            "reason": "pd_veto",
+        },
+        "kv_offload": {
+            "requested": requests.offload,
+            "whitelist": False,
+            "gate": False,
+            "reason": "pd_veto",
+        },
+    }
+
+
+def _set_smart_feature_pd_veto_trace(
+    p: Dict[str, Any],
+    requests: _SmartFeatureInitialRequests,
+) -> None:
+    """记录 PD veto 后的固定 trace，避免主流程内联大字典。"""
+    _set_smart_feature_gate_trace(
+        p,
+        allowed=set(),
+        forced=set(),
+        effective=set(),
+        feature_rows=_build_smart_feature_pd_veto_gate_rows(requests),
+    )
+
+
+def _apply_smart_feature_effects(context: _SmartFeatureEffectContext) -> _SmartFeatureEffectResult:
+    """按固定顺序执行 sparse/offload/spec 收口 helper。"""
+    sparse_req, sparse_eff = _apply_sparse_feature_effect(context)
+    offload_req, offload_eff = _apply_offload_feature_effect(context)
+    spec_req, spec_eff, _ = _apply_spec_feature_effect(context)
+    return _SmartFeatureEffectResult(
+        sparse_req=sparse_req,
+        sparse_eff=sparse_eff,
+        offload_req=offload_req,
+        offload_eff=offload_eff,
+        spec_req=spec_req,
+        spec_eff=spec_eff,
+    )
+
+
+def _smart_feature_whitelisted(context: _SmartFeatureEffectContext, smart_name: str) -> bool:
+    return smart_name in context.feats or smart_name in context.forced_feats
+
+
+def _build_smart_feature_gate_row(
+    feature: str,
+    *,
+    requested: bool,
+    whitelisted: bool,
+    gate: bool,
+    forced: bool,
+    model_type: str = "",
+) -> Dict[str, Any]:
+    return {
+        "requested": requested,
+        "whitelist": whitelisted,
+        "gate": gate,
+        "reason": _resolve_smart_feature_gate_reason(
+            feature,
+            requested=requested,
+            whitelisted=whitelisted,
+            gate=gate,
+            forced=forced,
+            model_type=model_type,
+        ),
+    }
+
+
+def _build_smart_feature_normal_gate_rows(
+    context: _SmartFeatureEffectContext,
+    result: _SmartFeatureEffectResult,
+) -> Dict[str, Dict[str, Any]]:
+    """构造正常白名单收口后的三特性 trace 行。"""
+    p = context.p
+    model_type = str(p.get("_resolved_model_type") or p.get("model_type") or "").strip().lower()
+    return {
+        "speculative_decode": _build_smart_feature_gate_row(
+            "speculative_decode",
+            requested=result.spec_req,
+            whitelisted=_smart_feature_whitelisted(context, "spec"),
+            gate=result.spec_eff,
+            forced="spec" in context.forced_feats,
+            model_type=model_type,
+        ),
+        "sparse_kv": _build_smart_feature_gate_row(
+            "sparse_kv",
+            requested=result.sparse_req,
+            whitelisted=_smart_feature_whitelisted(context, "sparse"),
+            gate=result.sparse_eff,
+            forced="sparse" in context.forced_feats,
+        ),
+        "kv_offload": _build_smart_feature_gate_row(
+            "kv_offload",
+            requested=result.offload_req,
+            whitelisted=_smart_feature_whitelisted(context, "offload"),
+            gate=result.offload_eff,
+            forced="offload" in context.forced_feats,
+        ),
+    }
+
+
+def _set_smart_feature_normal_gate_trace(
+    p: Dict[str, Any],
+    context: _SmartFeatureEffectContext,
+    result: _SmartFeatureEffectResult,
+) -> None:
+    """记录正常白名单收口后的 trace。"""
+    _set_smart_feature_gate_trace(
+        p,
+        allowed=context.feats,
+        forced=context.forced_feats,
+        effective=context.effective_feats,
+        feature_rows=_build_smart_feature_normal_gate_rows(context, result),
+    )
+
+
 def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str, Any]) -> None:
     """Smart 三特性「使能收口」：单一真相源，先于一切消费者（需求一 §2.0 C14）。
 
@@ -3155,37 +3316,10 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     p["_smart_feature_input_env"] = _snapshot_smart_feature_input_env()
     # PD veto 会把三特性直接置 false；这里先留住 veto 之前的请求状态，
     # 让日志能明确展示“页面请求了什么，但因 PD 角色被一票否决”。
-    original_sparse_req = bool(p.get("enable_sparse"))
-    original_spec_req = bool(p.get("enable_speculative_decode"))
-    original_offload_req = get_lmcache_env()
+    initial_requests = _snapshot_smart_feature_initial_requests(p)
 
     if _apply_smart_feature_pd_veto(p):
-        _set_smart_feature_gate_trace(
-            p,
-            allowed=set(),
-            forced=set(),
-            effective=set(),
-            feature_rows={
-                "speculative_decode": {
-                    "requested": original_spec_req,
-                    "whitelist": False,
-                    "gate": False,
-                    "reason": "pd_veto",
-                },
-                "sparse_kv": {
-                    "requested": original_sparse_req,
-                    "whitelist": False,
-                    "gate": False,
-                    "reason": "pd_veto",
-                },
-                "kv_offload": {
-                    "requested": original_offload_req,
-                    "whitelist": False,
-                    "gate": False,
-                    "reason": "pd_veto",
-                },
-            },
-        )
+        _set_smart_feature_pd_veto_trace(p, initial_requests)
         return
 
     _warn_unresolved_ascend_smart_card(engine, card)
@@ -3203,69 +3337,20 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
         card=card,
     )
 
-    sparse_req, sparse_eff = _apply_sparse_feature_effect(feature_context)
-    offload_req, offload_eff = _apply_offload_feature_effect(feature_context)
-    spec_req, spec_eff, _ = _apply_spec_feature_effect(feature_context)
+    effect_result = _apply_smart_feature_effects(feature_context)
     p["_smart_feats"] = sorted(effective_feats)
     # gate trace 记录“白名单收口后”的三特性状态，不直接等同于最终启动命令。
     # 例如 offload gate=true 之后仍可能因为 auto 可用内存低于 OFFLOAD_MIN_GB
     # 在 final resolve 阶段变成 json=false 且命令不注入任何 kv-transfer 字段。
-    model_type = str(p.get("_resolved_model_type") or p.get("model_type") or "").strip().lower()
-    sparse_whitelisted = "sparse" in feats or "sparse" in forced_feats
-    offload_whitelisted = "offload" in feats or "offload" in forced_feats
-    spec_whitelisted = "spec" in feats or "spec" in forced_feats
-    _set_smart_feature_gate_trace(
-        p,
-        allowed=feats,
-        forced=forced_feats,
-        effective=effective_feats,
-        feature_rows={
-            "speculative_decode": {
-                "requested": spec_req,
-                "whitelist": spec_whitelisted,
-                "gate": spec_eff,
-                "reason": _resolve_smart_feature_gate_reason(
-                    "speculative_decode",
-                    requested=spec_req,
-                    whitelisted=spec_whitelisted,
-                    gate=spec_eff,
-                    forced="spec" in forced_feats,
-                    model_type=model_type,
-                ),
-            },
-            "sparse_kv": {
-                "requested": sparse_req,
-                "whitelist": sparse_whitelisted,
-                "gate": sparse_eff,
-                "reason": _resolve_smart_feature_gate_reason(
-                    "sparse_kv",
-                    requested=sparse_req,
-                    whitelisted=sparse_whitelisted,
-                    gate=sparse_eff,
-                    forced="sparse" in forced_feats,
-                ),
-            },
-            "kv_offload": {
-                "requested": offload_req,
-                "whitelist": offload_whitelisted,
-                "gate": offload_eff,
-                "reason": _resolve_smart_feature_gate_reason(
-                    "kv_offload",
-                    requested=offload_req,
-                    whitelisted=offload_whitelisted,
-                    gate=offload_eff,
-                    forced="offload" in forced_feats,
-                ),
-            },
-        },
-    )
+    _set_smart_feature_normal_gate_trace(p, feature_context, effect_result)
 
     logger.info(
         "[SmartFeature] effective enablement: engine=%s card=%s allowed=%s effective=%s forced=%s | "
         "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix fallback only for generation models)",
         engine, card or "(empty)", sorted(feats), sorted(effective_feats), sorted(forced_feats),
-        sparse_req, sparse_eff, offload_req, offload_eff,
-        spec_req, spec_whitelisted,
+        effect_result.sparse_req, effect_result.sparse_eff,
+        effect_result.offload_req, effect_result.offload_eff,
+        effect_result.spec_req, _smart_feature_whitelisted(feature_context, "spec"),
     )
 
 

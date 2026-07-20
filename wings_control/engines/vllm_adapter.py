@@ -1053,6 +1053,89 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
     return env_commands
 
 
+def _resolve_memcache_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> Optional[str]:
+    """解析 MemCache 互斥路径的状态 variant。
+
+    MemCache 与 LMCache/native 路径互斥，提前单独处理可以让
+    ``resolve_offload_variant`` 只负责分派，避免把三套后端的容量语义揉在一起。
+    """
+    if not memcache_hybrid.is_memcache_hybrid_params(params, engine):
+        return None
+    auto_drop_modifier = _resolve_auto_kv_mem_offload_drop_modifier(params)
+    if auto_drop_modifier == "floor_disabled":
+        return _OFFLOAD_MEMCACHE_AUTO_FLOOR_VARIANT
+    if auto_drop_modifier == "unavailable":
+        return _OFFLOAD_MEMCACHE_AUTO_UNAVAILABLE_VARIANT
+    if memcache_hybrid.resolve_memcache_dram_gb(params):
+        return memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT
+    return "disabled"
+
+
+def _resolve_special_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> Optional[str]:
+    """解析模型特例路径的状态 variant。"""
+    special = _classify_offload_special_case(params, engine)
+    if not special:
+        return None
+    variant = _OFFLOAD_VARIANT_BY_SPECIAL[special]
+    if special == _OFFLOAD_V4_FLASH_NATIVE and _native_offload_auto_floor_disabled(params, special):
+        return f"{variant}+auto+floor_disabled"
+    return variant
+
+
+def _resolve_native_backend_variant(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+    backend: str,
+) -> Optional[str]:
+    """解析白名单声明 native backend 时的最终状态。"""
+    if backend != _OFFLOAD_NATIVE_BACKEND_VARIANT:
+        return None
+    size_gb = _resolve_native_backend_offload_gb(params or {}, engine)
+    if size_gb > 0:
+        return backend
+    if not _native_backend_auto_requested(params or {}, engine):
+        return "disabled"
+    auto_drop_modifier = _resolve_auto_kv_mem_offload_drop_modifier(params)
+    if auto_drop_modifier == "unavailable":
+        return f"{backend}+{_OFFLOAD_AUTO_UNAVAILABLE_MODIFIER}"
+    return f"{backend}+auto+floor_disabled"
+
+
+def _resolve_disabled_lmcache_variant(params: Optional[Dict[str, Any]], auto_cpu_floor_disabled: bool) -> str:
+    """解析 LMCache backend=disabled 时的诊断 variant。"""
+    if auto_cpu_floor_disabled:
+        return _OFFLOAD_AUTO_FLOOR_VARIANT
+    if _resolve_auto_kv_mem_offload_drop_modifier(params) == "unavailable":
+        return _OFFLOAD_LMCACHE_AUTO_UNAVAILABLE_VARIANT
+    return "disabled"
+
+
+def _build_lmcache_backend_variant(backend: str, cpu_mode: str, auto_cpu_floor_disabled: bool) -> str:
+    """拼接 LMCache 活跃后端的模式和能力修饰。"""
+    modifiers = [backend]
+    if cpu_mode and backend in ("lmcache_cpu", "lmcache_cpu_disk"):
+        modifiers.append(cpu_mode)
+    if auto_cpu_floor_disabled:
+        modifiers.append(_OFFLOAD_CPU_AUTO_FLOOR_MODIFIER)
+    if get_qat_env():
+        modifiers.append("qat")
+    if get_cold_start_env():
+        modifiers.append("cold_start")
+    return "+".join(modifiers)
+
+
+def _resolve_lmcache_or_native_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> str:
+    """解析普通 whitelist backend 路径的状态 variant。"""
+    backend, cpu_mode = _resolve_offload_backend(params, engine)
+    native_variant = _resolve_native_backend_variant(params, engine, backend)
+    if native_variant is not None:
+        return native_variant
+    auto_cpu_floor_disabled = is_kv_mem_offload_auto_floor_disabled(params)
+    if backend == "disabled":
+        return _resolve_disabled_lmcache_variant(params, auto_cpu_floor_disabled)
+    return _build_lmcache_backend_variant(backend, cpu_mode, auto_cpu_floor_disabled)
+
+
 def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> str:
     """纯函数：返回卸载 variant「后端[+模式][+修饰]」（advanced_features.json 监控用，无副作用）。
 
@@ -1067,56 +1150,14 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     """
     if not _is_kv_offload_requested(params):
         return ""
-    if memcache_hybrid.is_memcache_hybrid_params(params, engine):
-        auto_drop_modifier = _resolve_auto_kv_mem_offload_drop_modifier(params)
-        if auto_drop_modifier == "floor_disabled":
-            return _OFFLOAD_MEMCACHE_AUTO_FLOOR_VARIANT
-        if auto_drop_modifier == "unavailable":
-            return _OFFLOAD_MEMCACHE_AUTO_UNAVAILABLE_VARIANT
-        return (
-            memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT
-            if memcache_hybrid.resolve_memcache_dram_gb(params)
-            else "disabled"
-        )
-    # 守卫（与 _build_cache_env_commands 共用 _classify_offload_special_case，天然同序）：
-    # GLM-5.1·NV 强制关 → disabled；V4 → native 后端。
-    special = _classify_offload_special_case(params, engine)
-    if special:
-        variant = _OFFLOAD_VARIANT_BY_SPECIAL[special]
-        if special == _OFFLOAD_V4_FLASH_NATIVE and _native_offload_auto_floor_disabled(params, special):
-            return f"{variant}+auto+floor_disabled"
-        return variant
-    # LMCache 路径：CPU(auto/custom) / Disk / 分层（后端选择见 _resolve_offload_backend）
-    backend, cpu_mode = _resolve_offload_backend(params, engine)
-    if backend == _OFFLOAD_NATIVE_BACKEND_VARIANT:
-        # 与 _build_kv_offload_cmd 使用同一个 size resolver：
-        # size<=0 时状态上也视为禁用/熔断，避免 status JSON 报 active 而 CLI 未下发。
-        size_gb = _resolve_native_backend_offload_gb(params or {}, engine)
-        if size_gb <= 0:
-            if _native_backend_auto_requested(params or {}, engine):
-                auto_drop_modifier = _resolve_auto_kv_mem_offload_drop_modifier(params)
-                if auto_drop_modifier == "unavailable":
-                    return f"{backend}+{_OFFLOAD_AUTO_UNAVAILABLE_MODIFIER}"
-                return f"{backend}+auto+floor_disabled"
-            return "disabled"
-        return backend
-    auto_cpu_floor_disabled = is_kv_mem_offload_auto_floor_disabled(params)
-    if backend == "disabled":            # offload on 但无任何容量段（含熔断）
-        if auto_cpu_floor_disabled:
-            return _OFFLOAD_AUTO_FLOOR_VARIANT
-        if _resolve_auto_kv_mem_offload_drop_modifier(params) == "unavailable":
-            return _OFFLOAD_LMCACHE_AUTO_UNAVAILABLE_VARIANT
-        return "disabled"
-    variant = backend
-    if cpu_mode and backend in ("lmcache_cpu", "lmcache_cpu_disk"):
-        variant += "+" + cpu_mode
-    if auto_cpu_floor_disabled:
-        variant += "+" + _OFFLOAD_CPU_AUTO_FLOOR_MODIFIER
-    if get_qat_env():
-        variant += "+qat"
-    if get_cold_start_env():
-        variant += "+cold_start"
-    return variant
+    memcache_variant = _resolve_memcache_offload_variant(params, engine)
+    if memcache_variant is not None:
+        return memcache_variant
+    special_variant = _resolve_special_offload_variant(params, engine)
+    if special_variant is not None:
+        return special_variant
+    # LMCache 路径：CPU(auto/custom) / Disk / 分层（后端选择见 _resolve_offload_backend）。
+    return _resolve_lmcache_or_native_offload_variant(params, engine)
 
 
 def _parse_kv_mem_size_gb(value: Any) -> Optional[int]:
