@@ -3043,12 +3043,40 @@ class _SmartFeatureEffectResult:
     spec_eff: bool
 
 
+@dataclass(frozen=True)
+class _SmartFeatureGateSession:
+    """SmartFeature 收口入口阶段解析出的固定上下文。"""
+
+    engine: str
+    card: str
+    initial_requests: _SmartFeatureInitialRequests
+
+
 def _snapshot_smart_feature_initial_requests(p: Dict[str, Any]) -> _SmartFeatureInitialRequests:
     """在 PD veto 或白名单收口前保存三特性的请求状态。"""
     return _SmartFeatureInitialRequests(
         sparse=bool(p.get("enable_sparse")),
         spec=bool(p.get("enable_speculative_decode")),
         offload=get_lmcache_env(),
+    )
+
+
+def _start_smart_feature_gate_session(
+    p: Dict[str, Any],
+    hardware_env: Dict[str, Any],
+) -> _SmartFeatureGateSession:
+    """初始化 SmartFeature 收口会话并保存会被后续改写的输入快照。"""
+    engine = p.get("engine", "")
+    card = resolve_card_token(hardware_env)
+    p["_smart_card_token"] = card
+    # 必须先保存上层输入，再执行任何会改写 os.environ 的收口逻辑。
+    # 典型问题是 KV offload auto 被 final resolve 丢弃后，如果只看最终环境变量，
+    # 就无法判断页面到底有没有请求过 ENABLE_KV_OFFLOAD / KV_MEM_OFFLOAD_SIZE=auto。
+    p["_smart_feature_input_env"] = _snapshot_smart_feature_input_env()
+    return _SmartFeatureGateSession(
+        engine=engine,
+        card=card,
+        initial_requests=_snapshot_smart_feature_initial_requests(p),
     )
 
 
@@ -3290,68 +3318,66 @@ def _set_smart_feature_normal_gate_trace(
     )
 
 
-def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str, Any]) -> None:
-    """Smart 三特性「使能收口」：单一真相源，先于一切消费者（需求一 §2.0 C14）。
-
-    把「页面请求开关」收敛成「有效开关」，回写 params + os.environ，使下游全部消费者
-    （advanced_features.json / IndexCache 补丁聚合 / LMCache env 导出 / 崩溃回退命令）
-    自动一致，无需逐点再判白名单。须在 ``_auto_select_engine`` 之后、
-    ``_get_model_specific_config`` / ``_merge_vllm_params``→``_set_kv_cache_config`` 之前调用，
-    否则卸载/稀疏收不掉。
-
-    口径（§0 裁定1：只开关不强制，无 forced）：
-        有效使能 = 页面开关 on AND 特性 ∈ 白名单。白名单只收窄、永不强开。
-        唯一反向操作是 C6 PD 一票否决（force-OFF，仍属收窄）。
-
-    Args:
-        p:            cmd_known_params（就地修改）。
-        hardware_env: 硬件环境（取 details[0].name 解析卡型，收口点最准）。
-    """
-    engine = p.get("engine", "")
-    card = resolve_card_token(hardware_env)
-    p["_smart_card_token"] = card
-    # 必须先保存上层输入，再执行任何会改写 os.environ 的收口逻辑。
-    # 典型问题是 KV offload auto 被 final resolve 丢弃后，如果只看最终环境变量，
-    # 就无法判断页面到底有没有请求过 ENABLE_KV_OFFLOAD / KV_MEM_OFFLOAD_SIZE=auto。
-    p["_smart_feature_input_env"] = _snapshot_smart_feature_input_env()
-    # PD veto 会把三特性直接置 false；这里先留住 veto 之前的请求状态，
-    # 让日志能明确展示“页面请求了什么，但因 PD 角色被一票否决”。
-    initial_requests = _snapshot_smart_feature_initial_requests(p)
-
-    if _apply_smart_feature_pd_veto(p):
-        _set_smart_feature_pd_veto_trace(p, initial_requests)
-        return
-
-    _warn_unresolved_ascend_smart_card(engine, card)
-    feats, forced_feats = _resolve_smart_feature_matches(p, engine, card)
-    effective_feats = set()
+def _build_smart_feature_effect_context(
+    p: Dict[str, Any],
+    session: _SmartFeatureGateSession,
+) -> _SmartFeatureEffectContext:
+    """创建三特性 helper 共享的白名单收口上下文。"""
+    _warn_unresolved_ascend_smart_card(session.engine, session.card)
+    feats, forced_feats = _resolve_smart_feature_matches(p, session.engine, session.card)
     # 三类特性的判定必须共享同一批白名单结果和同一个 effective 集合：
     # sparse/offload/spec 的差异在各 helper 内处理，但最终状态统一沉淀到
     # p["_smart_feats"]，供 adapter、advanced_features.json 和 dry-run verifier 消费。
-    feature_context = _SmartFeatureEffectContext(
+    return _SmartFeatureEffectContext(
         p=p,
-        effective_feats=effective_feats,
+        effective_feats=set(),
         feats=feats,
         forced_feats=forced_feats,
-        engine=engine,
-        card=card,
+        engine=session.engine,
+        card=session.card,
     )
 
+
+def _log_smart_feature_effective_enablement(
+    context: _SmartFeatureEffectContext,
+    result: _SmartFeatureEffectResult,
+) -> None:
+    """打印原有的单行 SmartFeature 收口摘要。"""
+    logger.info(
+        "[SmartFeature] effective enablement: engine=%s card=%s allowed=%s effective=%s forced=%s | "
+        "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix fallback only for generation models)",
+        context.engine, context.card or "(empty)",
+        sorted(context.feats), sorted(context.effective_feats), sorted(context.forced_feats),
+        result.sparse_req, result.sparse_eff,
+        result.offload_req, result.offload_eff,
+        result.spec_req, _smart_feature_whitelisted(context, "spec"),
+    )
+
+
+def _apply_smart_feature_normal_gate(
+    p: Dict[str, Any],
+    session: _SmartFeatureGateSession,
+) -> None:
+    """执行非 PD 场景的白名单收口、trace 记录和摘要日志。"""
+    feature_context = _build_smart_feature_effect_context(p, session)
     effect_result = _apply_smart_feature_effects(feature_context)
-    p["_smart_feats"] = sorted(effective_feats)
+    p["_smart_feats"] = sorted(feature_context.effective_feats)
     # gate trace 记录“白名单收口后”的三特性状态，不直接等同于最终启动命令。
     # 例如 offload gate=true 之后仍可能因为 auto 可用内存低于 OFFLOAD_MIN_GB
     # 在 final resolve 阶段变成 json=false 且命令不注入任何 kv-transfer 字段。
     _set_smart_feature_normal_gate_trace(p, feature_context, effect_result)
+    _log_smart_feature_effective_enablement(feature_context, effect_result)
 
-    logger.info(
-        "[SmartFeature] effective enablement: engine=%s card=%s allowed=%s effective=%s forced=%s | "
-        "sparse %s->%s, offload %s->%s, spec req=%s (whitelist_spec=%s, suffix fallback only for generation models)",
-        engine, card or "(empty)", sorted(feats), sorted(effective_feats), sorted(forced_feats),
-        effect_result.sparse_req, effect_result.sparse_eff,
-        effect_result.offload_req, effect_result.offload_eff,
-        effect_result.spec_req, _smart_feature_whitelisted(feature_context, "spec"),
-    )
+
+def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str, Any]) -> None:
+    """Smart 三特性「使能收口」：单一真相源，先于一切消费者（需求一 §2.0 C14）。"""
+    session = _start_smart_feature_gate_session(p, hardware_env)
+    # PD veto 会把三特性直接置 false；这里先留住 veto 之前的请求状态，
+    # 让日志能明确展示“页面请求了什么，但因 PD 角色被一票否决”。
+    if _apply_smart_feature_pd_veto(p):
+        _set_smart_feature_pd_veto_trace(p, session.initial_requests)
+        return
+    _apply_smart_feature_normal_gate(p, session)
 
 
 def _record_selected_engine(engine: str) -> None:
