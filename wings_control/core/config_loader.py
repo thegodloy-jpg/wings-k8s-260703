@@ -2862,6 +2862,103 @@ _SMART_PD_VETO_ENVS = (
     "LMCACHE_OFFLOAD",
 )
 
+# 只记录页面上层直接下发、现场排查时最关心的一组 SmartFeature 环境变量。
+# 这里刻意不纳入 SD_ENABLE / SPARSE_ENABLE 等历史别名或派生字段：
+# - 日志块的 [Input Env] 表示“用户/页面原始意图”，不表示收口后的内部兼容变量；
+# - 别名会在 gate 阶段被同步改写，如果一起展示，容易把“输入”和“生效结果”混在一起。
+_SMART_FEATURE_INPUT_ENV_KEYS = (
+    "ENABLE_SPECULATIVE_DECODE",
+    "ENABLE_SPARSE",
+    "ENABLE_KV_OFFLOAD",
+    "LMCACHE_OFFLOAD",
+    "ENABLE_KV_MEM_OFFLOAD",
+    "KV_MEM_OFFLOAD_SIZE",
+    "AVAILABLE_POD_MEM_SIZE",
+    "ENABLE_KV_DISK_OFFLOAD",
+    "KV_DISK_OFFLOAD_SIZE",
+)
+
+
+def _snapshot_smart_feature_input_env() -> Dict[str, Optional[str]]:
+    """保存 SmartFeature 收口前的原始上层输入。
+
+    ``apply_effective_feature_enablement`` 会原地改写 params 和 os.environ。
+    因此这个快照必须在 PD veto、白名单收窄、suffix fallback 等逻辑之前完成，
+    否则后续审计日志只能看到“被改写后的结果”，无法解释页面实际下发了什么。
+    """
+    return {name: os.getenv(name) for name in _SMART_FEATURE_INPUT_ENV_KEYS}
+
+
+def _snapshot_smart_feature_post_gate_env() -> Dict[str, Optional[str]]:
+    """保存 gate 收口后的关键环境变量状态。
+
+    当前独立日志块默认展示收口前输入和最终状态；post_gate_env 留在 trace 中，
+    用于后续扩展或单测定位“哪个 gate helper 改写了环境变量”。
+    """
+    return {
+        "ENABLE_SPECULATIVE_DECODE": os.getenv("ENABLE_SPECULATIVE_DECODE"),
+        "ENABLE_SPARSE": os.getenv("ENABLE_SPARSE"),
+        "ENABLE_KV_OFFLOAD": os.getenv("ENABLE_KV_OFFLOAD"),
+        "LMCACHE_OFFLOAD": os.getenv("LMCACHE_OFFLOAD"),
+    }
+
+
+def _resolve_smart_feature_gate_reason(
+    feature: str,
+    *,
+    requested: bool,
+    whitelisted: bool,
+    gate: bool,
+    forced: bool,
+    model_type: str = "",
+) -> str:
+    """把白名单收口阶段的结果归一成稳定 reason 枚举。
+
+    日志消费的是枚举而不是长句，便于 kubectl/grep/日志平台按原因聚合。
+    注意这里描述的是 gate 阶段原因；例如 KV offload 的 auto 内存下限丢弃
+    发生在更晚的 final resolve 阶段，会在 wings_entry 的日志渲染中覆盖为
+    auto_floor_disabled。
+    """
+    if gate:
+        if forced and not requested:
+            return "forced_enabled"
+        if feature == "speculative_decode" and requested and not whitelisted:
+            return "suffix_fallback"
+        return "enabled"
+    if feature == "speculative_decode" and model_type in {"embedding", "rerank"}:
+        return "model_type_unsupported"
+    if not requested and not forced:
+        return "request_off"
+    if not whitelisted and not forced:
+        return "whitelist_miss"
+    return "suppressed"
+
+
+def _set_smart_feature_gate_trace(
+    p: Dict[str, Any],
+    *,
+    allowed: set,
+    forced: set,
+    effective: set,
+    feature_rows: Dict[str, Dict[str, Any]],
+) -> None:
+    """在 merged params 中沉淀三特性的 gate 轨迹。
+
+    这是 config_loader 与 wings_entry 之间的内部诊断契约：
+    - allowed/forced/effective 保留同一次白名单解析结果；
+    - features 固定包含 speculative_decode / sparse_kv / kv_offload 三行；
+    - post_gate_env 记录 helper 收口后的兼容环境变量，避免后续再猜测。
+
+    该字段只用于日志和测试，不写入 advanced_features.json，也不作为外部 API。
+    """
+    p["_smart_feature_gate_trace"] = {
+        "allowed": sorted(allowed),
+        "forced": sorted(forced),
+        "effective": sorted(effective),
+        "features": feature_rows,
+        "post_gate_env": _snapshot_smart_feature_post_gate_env(),
+    }
+
 
 def _apply_smart_feature_pd_veto(p: Dict[str, Any]) -> bool:
     """Disable smart features in PD mode and report whether the veto applied."""
@@ -3052,8 +3149,43 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
     engine = p.get("engine", "")
     card = resolve_card_token(hardware_env)
     p["_smart_card_token"] = card
+    # 必须先保存上层输入，再执行任何会改写 os.environ 的收口逻辑。
+    # 典型问题是 KV offload auto 被 final resolve 丢弃后，如果只看最终环境变量，
+    # 就无法判断页面到底有没有请求过 ENABLE_KV_OFFLOAD / KV_MEM_OFFLOAD_SIZE=auto。
+    p["_smart_feature_input_env"] = _snapshot_smart_feature_input_env()
+    # PD veto 会把三特性直接置 false；这里先留住 veto 之前的请求状态，
+    # 让日志能明确展示“页面请求了什么，但因 PD 角色被一票否决”。
+    original_sparse_req = bool(p.get("enable_sparse"))
+    original_spec_req = bool(p.get("enable_speculative_decode"))
+    original_offload_req = get_lmcache_env()
 
     if _apply_smart_feature_pd_veto(p):
+        _set_smart_feature_gate_trace(
+            p,
+            allowed=set(),
+            forced=set(),
+            effective=set(),
+            feature_rows={
+                "speculative_decode": {
+                    "requested": original_spec_req,
+                    "whitelist": False,
+                    "gate": False,
+                    "reason": "pd_veto",
+                },
+                "sparse_kv": {
+                    "requested": original_sparse_req,
+                    "whitelist": False,
+                    "gate": False,
+                    "reason": "pd_veto",
+                },
+                "kv_offload": {
+                    "requested": original_offload_req,
+                    "whitelist": False,
+                    "gate": False,
+                    "reason": "pd_veto",
+                },
+            },
+        )
         return
 
     _warn_unresolved_ascend_smart_card(engine, card)
@@ -3073,8 +3205,60 @@ def apply_effective_feature_enablement(p: Dict[str, Any], hardware_env: Dict[str
 
     sparse_req, sparse_eff = _apply_sparse_feature_effect(feature_context)
     offload_req, offload_eff = _apply_offload_feature_effect(feature_context)
-    spec_req, _, spec_whitelisted = _apply_spec_feature_effect(feature_context)
+    spec_req, spec_eff, _ = _apply_spec_feature_effect(feature_context)
     p["_smart_feats"] = sorted(effective_feats)
+    # gate trace 记录“白名单收口后”的三特性状态，不直接等同于最终启动命令。
+    # 例如 offload gate=true 之后仍可能因为 auto 可用内存低于 OFFLOAD_MIN_GB
+    # 在 final resolve 阶段变成 json=false 且命令不注入任何 kv-transfer 字段。
+    model_type = str(p.get("_resolved_model_type") or p.get("model_type") or "").strip().lower()
+    sparse_whitelisted = "sparse" in feats or "sparse" in forced_feats
+    offload_whitelisted = "offload" in feats or "offload" in forced_feats
+    spec_whitelisted = "spec" in feats or "spec" in forced_feats
+    _set_smart_feature_gate_trace(
+        p,
+        allowed=feats,
+        forced=forced_feats,
+        effective=effective_feats,
+        feature_rows={
+            "speculative_decode": {
+                "requested": spec_req,
+                "whitelist": spec_whitelisted,
+                "gate": spec_eff,
+                "reason": _resolve_smart_feature_gate_reason(
+                    "speculative_decode",
+                    requested=spec_req,
+                    whitelisted=spec_whitelisted,
+                    gate=spec_eff,
+                    forced="spec" in forced_feats,
+                    model_type=model_type,
+                ),
+            },
+            "sparse_kv": {
+                "requested": sparse_req,
+                "whitelist": sparse_whitelisted,
+                "gate": sparse_eff,
+                "reason": _resolve_smart_feature_gate_reason(
+                    "sparse_kv",
+                    requested=sparse_req,
+                    whitelisted=sparse_whitelisted,
+                    gate=sparse_eff,
+                    forced="sparse" in forced_feats,
+                ),
+            },
+            "kv_offload": {
+                "requested": offload_req,
+                "whitelist": offload_whitelisted,
+                "gate": offload_eff,
+                "reason": _resolve_smart_feature_gate_reason(
+                    "kv_offload",
+                    requested=offload_req,
+                    whitelisted=offload_whitelisted,
+                    gate=offload_eff,
+                    forced="offload" in forced_feats,
+                ),
+            },
+        },
+    )
 
     logger.info(
         "[SmartFeature] effective enablement: engine=%s card=%s allowed=%s effective=%s forced=%s | "

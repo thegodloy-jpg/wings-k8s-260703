@@ -477,6 +477,103 @@ def test_lmcache_auto_floor_reports_inactive_status_and_skips_patch(monkeypatch,
     assert wings_entry._has_advanced_features(params) is False
 
 
+def test_smart_feature_audit_log_formats_gb_env_and_final_command_state(monkeypatch):
+    # 页面请求 KV offload auto，但 pod 可用内存只有 80GB；当前规则下 auto
+    # 解析会因为低于 OFFLOAD_MIN_GB 之外的可分配空间而丢弃卸载。日志必须同时说明：
+    # 输入 env 仍是页面原始值、容量统一显示为 GB、最终 JSON=false、真实命令未注入 offload 字段。
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.setattr(
+        wings_entry,
+        "resolve_speculative_strategy",
+        lambda merged, engine: "suffix",
+    )
+    monkeypatch.setattr(
+        wings_entry,
+        "resolve_effective_speculative_details",
+        lambda merged, engine: None,
+    )
+
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "enable_sparse": False,
+        "device_count": 8,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 1,
+        "_smart_card_token": "910c",
+        "_smart_feats": ["offload", "spec"],
+        "_allowed_smart_feats": ["offload", "spec"],
+        "_forced_smart_feats": [],
+        "_smart_feature_input_env": {
+            "ENABLE_SPECULATIVE_DECODE": "true",
+            "ENABLE_SPARSE": "false",
+            "ENABLE_KV_OFFLOAD": "true",
+            "LMCACHE_OFFLOAD": "true",
+            "ENABLE_KV_MEM_OFFLOAD": "true",
+            "KV_MEM_OFFLOAD_SIZE": "auto",
+            "AVAILABLE_POD_MEM_SIZE": "81920",
+            "ENABLE_KV_DISK_OFFLOAD": "false",
+            "KV_DISK_OFFLOAD_SIZE": None,
+        },
+        "_smart_feature_gate_trace": {
+            "allowed": ["offload", "spec"],
+            "forced": [],
+            "effective": ["offload", "spec"],
+            "features": {
+                "speculative_decode": {
+                    "requested": True,
+                    "whitelist": True,
+                    "gate": True,
+                    "reason": "enabled",
+                },
+                "sparse_kv": {
+                    "requested": False,
+                    "whitelist": False,
+                    "gate": False,
+                    "reason": "request_off",
+                },
+                "kv_offload": {
+                    "requested": True,
+                    "whitelist": True,
+                    "gate": True,
+                    "reason": "enabled",
+                },
+            },
+        },
+    }
+
+    block = wings_entry._build_smart_feature_enablement_log_block(
+        "vllm_ascend",
+        params,
+        {"device": "ascend"},
+        "exec vllm serve --speculative-config '{}'",
+    )
+
+    assert "[SmartFeature]\n" in block
+    assert "=" * 80 in block
+    assert "AVAILABLE_POD_MEM_SIZE=80.00GB" in block
+    assert "available_pod_mem_gb=80.00" in block
+    assert "available_pod_mem_mib" not in block
+    assert "AVAILABLE_POD_MEM_SIZE=81920MiB" not in block
+    assert "SD_ENABLE" not in block
+    assert "SPARSE_ENABLE" not in block
+    assert "SPECULATIVE_DECODE_MODEL_PATH" not in block
+    assert (
+        "feature=kv_offload final=false "
+        "variant=lmcache_cpu+auto+floor_disabled "
+        "size_gb=0 emitted=false reason=auto_floor_disabled"
+    ) in block
+    assert "json features={speculative_decode:true,sparse_kv:false,kv_offload:false}" in block
+    assert "command emitted={speculative_decode:true,sparse_kv:false,kv_offload:false}" in block
+
+
 def test_deepseek_v4_flash_auto_floor_drops_kv_transfer_config(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")

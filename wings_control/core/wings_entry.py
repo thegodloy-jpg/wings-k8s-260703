@@ -46,7 +46,13 @@ from utils.vllm_helpers import (
     build_modelslim_quarot_patch_preamble,
     build_triton_patch_preamble,
 )
-from utils.env_utils import get_local_ip, get_lmcache_env, get_master_ip, validate_ip
+from utils.env_utils import (
+    OFFLOAD_MIN_GB,
+    get_local_ip,
+    get_lmcache_env,
+    get_master_ip,
+    validate_ip,
+)
 from utils.device_utils import resolve_card_token
 from utils.model_utils import (
     ModelIdentifier,
@@ -740,21 +746,12 @@ def _resolve_kv_offload_state(engine: str, merged: dict) -> tuple[bool, str | No
     return resolve_kv_offload_effective_state(merged, engine)
 
 
-def _write_advanced_features_json(engine: str, merged: dict) -> None:
-    """写入高级特性初始状态 JSON 到共享卷。
+def _resolve_advanced_feature_status(engine: str, merged: dict) -> dict:
+    """统一计算 advanced_features.json 与 SmartFeature 日志共用的最终状态。
 
-    4 个 bool 字段（features，类型不变，旧消费者继续读）：
-      - speculative_decode: 投机推理
-      - sparse_kv: KV 稀疏
-      - kv_offload: LMCache KV 卸载
-      - rag_acc: RAG 加速
-
-    variants 段（需求一 §4，纯新增）：bool 旁挂「具体走哪种变体」细粒度，仅
-    features[x]=true 有意义，false 给 null。变体由产出口同源纯函数推导
-    （resolve_speculative_strategy / resolve_sparse_variant / resolve_offload_variant）；
-    因本写入早于产出口在脚本生成阶段运行，故独立按 merged/env 推导，不依赖产出口先跑。
-    下游消费者＝health 接口 /v1/startup/accel（读 settings.ADVANCED_FEATURES_FILE 并透出
-    features + variants 给页面，见 proxy/health_service.py）；改字段须同步该端点。
+    这里是“最终承载形式”的单一入口：features 只回答 true/false，
+    variants/others 才承载具体策略和容量。日志块复用同一个结果，避免出现
+    advanced_features.json 已经是 false、但日志还按旧分支展示 enabled 的漂移。
     """
     kv_offload_effective, kv_offload_variant = _resolve_kv_offload_state(engine, merged)
     features = {
@@ -777,13 +774,35 @@ def _write_advanced_features_json(engine: str, merged: dict) -> None:
         ),
         "speculative_decode": resolve_effective_speculative_details(merged, engine),
     }
-    data = {"engine": engine, "features": features, "variants": variants, "others": others}
+    return {"engine": engine, "features": features, "variants": variants, "others": others}
+
+
+def _write_advanced_features_json(engine: str, merged: dict) -> None:
+    """写入高级特性初始状态 JSON 到共享卷。
+
+    4 个 bool 字段（features，类型不变，旧消费者继续读）：
+      - speculative_decode: 投机推理
+      - sparse_kv: KV 稀疏
+      - kv_offload: LMCache KV 卸载
+      - rag_acc: RAG 加速
+
+    variants 段（需求一 §4，纯新增）：bool 旁挂「具体走哪种变体」细粒度，仅
+    features[x]=true 有意义，false 给 null。变体由产出口同源纯函数推导
+    （resolve_speculative_strategy / resolve_sparse_variant / resolve_offload_variant）；
+    因本写入早于产出口在脚本生成阶段运行，故独立按 merged/env 推导，不依赖产出口先跑。
+    下游消费者＝health 接口 /v1/startup/accel（读 settings.ADVANCED_FEATURES_FILE 并透出
+    features + variants 给页面，见 proxy/health_service.py）；改字段须同步该端点。
+    """
+    data = _resolve_advanced_feature_status(engine, merged)
     ok = safe_write_file(
         _ADVANCED_FEATURES_FILE, data, is_json=True,
         options=WriteOptions(is_json=True, atomic=True),
     )
     if ok:
-        logger.info("Wrote advanced_features.json: features=%s variants=%s others=%s", features, variants, others)
+        logger.info(
+            "Wrote advanced_features.json: features=%s variants=%s others=%s",
+            data["features"], data["variants"], data["others"],
+        )
     else:
         logger.error("Failed to write advanced_features.json")
 
@@ -833,6 +852,408 @@ def _collect_active_feature_names(merged: dict, engine: str | None = None) -> li
     if effective:
         names.append("lmcache_offload")
     return names
+
+
+# SmartFeature 独立日志块只展示页面上层下发的主字段。
+# 不展示 SD_ENABLE、SPARSE_ENABLE、SPECULATIVE_DECODE_MODEL_PATH 等派生/历史字段，
+# 是为了让 [Input Env] 保持“原始请求口径”；这些派生字段可能已经被 gate helper
+# 改写，放在同一组里反而会干扰判断。
+_SMART_FEATURE_AUDIT_ENV_KEYS = (
+    "ENABLE_SPECULATIVE_DECODE",
+    "ENABLE_SPARSE",
+    "ENABLE_KV_OFFLOAD",
+    "LMCACHE_OFFLOAD",
+    "ENABLE_KV_MEM_OFFLOAD",
+    "KV_MEM_OFFLOAD_SIZE",
+    "AVAILABLE_POD_MEM_SIZE",
+    "ENABLE_KV_DISK_OFFLOAD",
+    "KV_DISK_OFFLOAD_SIZE",
+)
+
+
+def _format_bool(value) -> str:
+    return "true" if bool(value) else "false"
+
+
+def _format_list(values) -> str:
+    if not values:
+        return "[]"
+    return "[" + ",".join(str(v) for v in values) + "]"
+
+
+def _format_raw_env_value(value) -> str:
+    if value is None:
+        return "<unset>"
+    text = str(value).strip()
+    return text if text else "<empty>"
+
+
+def _format_size_env_gb(value) -> str:
+    """格式化卸载容量环境变量。
+
+    KV_MEM_OFFLOAD_SIZE / KV_DISK_OFFLOAD_SIZE 的数值语义本来就是 GB，
+    因此只补 GB 后缀；auto、空值和非法输入原样保留，避免日志误报。
+    """
+    text = _format_raw_env_value(value)
+    if text in {"<unset>", "<empty>"} or text.lower() == "auto":
+        return text
+    try:
+        return f"{int(text)}GB"
+    except (TypeError, ValueError):
+        return text
+
+
+def _format_available_pod_mem_gb(value, *, with_unit: bool) -> str:
+    """把 AVAILABLE_POD_MEM_SIZE 从 MiB 口径转成 GB 展示。
+
+    上层传入的 AVAILABLE_POD_MEM_SIZE 是 MiB 数字，例如 81920 表示 80GB。
+    日志统一转成 GB，是为了和 OFFLOAD_MIN_GB、resolved_node_size_gb 放在同一单位下比较。
+    """
+    text = _format_raw_env_value(value)
+    if text in {"<unset>", "<empty>"}:
+        return text
+    try:
+        formatted = f"{float(text) / 1024.0:.2f}"
+    except (TypeError, ValueError):
+        return text
+    return f"{formatted}GB" if with_unit else formatted
+
+
+def _format_smart_feature_env_value(name: str, value) -> str:
+    if name == "AVAILABLE_POD_MEM_SIZE":
+        return _format_available_pod_mem_gb(value, with_unit=True)
+    if name in {"KV_MEM_OFFLOAD_SIZE", "KV_DISK_OFFLOAD_SIZE"}:
+        return _format_size_env_gb(value)
+    return _format_raw_env_value(value)
+
+
+def _get_smart_feature_input_env(merged: dict) -> dict:
+    """优先使用 config_loader 保存的收口前快照。
+
+    正常链路中 ``_smart_feature_input_env`` 一定存在；fallback 只用于老路径、
+    单测直接调用或异常情况下的降级日志，不能反向影响实际使能逻辑。
+    """
+    snapshot = merged.get("_smart_feature_input_env")
+    if isinstance(snapshot, dict):
+        return snapshot
+    return {name: os.getenv(name) for name in _SMART_FEATURE_AUDIT_ENV_KEYS}
+
+
+def _get_smart_feature_gate_trace(merged: dict) -> dict:
+    trace = merged.get("_smart_feature_gate_trace")
+    return trace if isinstance(trace, dict) else {}
+
+
+def _get_engine_or_merged_value(merged: dict, key: str, default=None):
+    value = merged.get(key)
+    if value not in (None, ""):
+        return value
+    engine_config = merged.get("engine_config")
+    if isinstance(engine_config, dict):
+        value = engine_config.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _fallback_gate_row(merged: dict, feature_key: str, smart_name: str) -> dict:
+    """在缺少 gate trace 时按历史字段补一行可读的 gate 状态。
+
+    这不是新的判定入口，只是日志降级策略。正常启动路径应消费
+    ``config_loader.apply_effective_feature_enablement`` 写入的
+    ``_smart_feature_gate_trace``，从而保留 requested/whitelist/gate/reason 的完整链路。
+    """
+    allowed = set(merged.get("_allowed_smart_feats") or [])
+    forced = set(merged.get("_forced_smart_feats") or [])
+    smart_feats = set(merged.get("_smart_feats") or [])
+    if feature_key == "speculative_decode":
+        requested = bool(merged.get("enable_speculative_decode"))
+        gate = requested
+    elif feature_key == "sparse_kv":
+        requested = bool(merged.get("enable_sparse"))
+        gate = requested
+    else:
+        requested = _is_kv_offload_requested(merged)
+        gate = smart_name in smart_feats if merged.get("_smart_feats") is not None else requested
+    whitelisted = smart_name in allowed or smart_name in forced
+    if gate:
+        reason = "enabled"
+    elif not requested:
+        reason = "request_off"
+    elif not whitelisted:
+        reason = "whitelist_miss"
+    else:
+        reason = "suppressed"
+    return {
+        "requested": requested,
+        "whitelist": whitelisted,
+        "gate": gate,
+        "reason": reason,
+    }
+
+
+def _get_gate_row(merged: dict, feature_key: str, smart_name: str) -> dict:
+    trace = _get_smart_feature_gate_trace(merged)
+    features = trace.get("features") if isinstance(trace.get("features"), dict) else {}
+    row = features.get(feature_key)
+    return row if isinstance(row, dict) else _fallback_gate_row(merged, feature_key, smart_name)
+
+
+def _detect_speculative_command_emitted(command: str) -> bool:
+    """基于最终 start_command.sh 判断投机字段是否真的注入。"""
+    return "--speculative-config" in command or "speculative_config" in command
+
+
+def _detect_sparse_command_emitted(command: str, variant: str | None) -> bool:
+    """基于最终 start_command.sh 判断稀疏相关字段是否真的注入。"""
+    variant = variant or ""
+    if variant == "noop":
+        return False
+    if "indexcache" in variant:
+        return "index_topk_freq" in command or "use_index_cache" in command
+    if variant == "fp8":
+        return "--kv-cache-dtype fp8" in command or '"kv_cache_dtype": "fp8"' in command
+    return any(marker in command for marker in ("index_topk_freq", "use_index_cache"))
+
+
+def _detect_offload_command_emitted(command: str) -> bool:
+    """基于最终 start_command.sh 判断卸载相关字段是否真的注入。
+
+    这里故意不只看 gate/json 状态：KV offload 的 auto 场景可能先命中白名单，
+    后续因可用内存低于下限被丢弃。只有检查真实命令，才能发现
+    kv-transfer / LMCache / native offload 字段是否还被错误追加。
+    """
+    markers = (
+        "--kv-offloading-backend",
+        "LMCacheConnector",
+        "LMCacheAscendConnector",
+        "AscendStoreConnector",
+        "WINGS_MEMCACHE_DRAM_GB",
+        "LMCACHE_",
+    )
+    return any(marker in command for marker in markers)
+
+
+def _resolve_smart_feature_final_reason(
+    feature_key: str,
+    *,
+    final: bool,
+    variant: str | None,
+    gate_reason: str,
+) -> str:
+    """合并 gate reason 与 final resolve reason。
+
+    gate reason 解释“页面请求经过白名单后是否允许”；final reason 解释
+    “最终 JSON/命令为什么是这个状态”。当 offload auto 低于内存下限时，
+    final reason 必须覆盖 gate 的 enabled，避免日志误导为已经启用。
+    """
+    variant = variant or ""
+    if feature_key == "kv_offload":
+        if "floor_disabled" in variant:
+            return "auto_floor_disabled"
+        if "auto+unavailable" in variant:
+            return "auto_unavailable"
+        if variant == "disabled":
+            return "disabled"
+    if final:
+        if feature_key == "speculative_decode" and gate_reason == "suffix_fallback":
+            return "suffix_fallback"
+        if feature_key == "sparse_kv" and variant == "noop":
+            return "noop"
+        return "enabled"
+    return gate_reason or "disabled"
+
+
+def _build_smart_feature_final_rows(engine: str, merged: dict, command: str) -> dict:
+    """把最终 JSON 状态、变体和真实命令注入状态合成三特性行。
+
+    这一层是日志的关键对齐点：
+    - final 来自 advanced_features.json 同源计算；
+    - variant/size_gb 来自各特性最终解析；
+    - emitted 来自已经拼好的 start_command.sh；
+    - reason 优先说明 final 阶段的丢弃原因。
+    """
+    status = _resolve_advanced_feature_status(engine, merged)
+    features = status["features"]
+    variants = status["variants"]
+    spec_gate = _get_gate_row(merged, "speculative_decode", "spec")
+    sparse_gate = _get_gate_row(merged, "sparse_kv", "sparse")
+    offload_gate = _get_gate_row(merged, "kv_offload", "offload")
+    rows = {
+        "speculative_decode": {
+            "final": bool(features.get("speculative_decode")),
+            "variant": variants.get("speculative_decode") or "none",
+            "emitted": _detect_speculative_command_emitted(command),
+            "gate_reason": str(spec_gate.get("reason") or ""),
+        },
+        "sparse_kv": {
+            "final": bool(features.get("sparse_kv")),
+            "variant": variants.get("sparse_kv") or "none",
+            "emitted": _detect_sparse_command_emitted(command, variants.get("sparse_kv")),
+            "gate_reason": str(sparse_gate.get("reason") or ""),
+        },
+        "kv_offload": {
+            "final": bool(features.get("kv_offload")),
+            "variant": variants.get("kv_offload") or "none",
+            "emitted": _detect_offload_command_emitted(command),
+            "gate_reason": str(offload_gate.get("reason") or ""),
+            "size_gb": status["others"].get("kv_mem_offload_size"),
+        },
+    }
+    for key, row in rows.items():
+        row["reason"] = _resolve_smart_feature_final_reason(
+            key,
+            final=row["final"],
+            variant=row.get("variant"),
+            gate_reason=row.get("gate_reason", ""),
+        )
+    return {"status": status, "rows": rows}
+
+
+def _format_feature_gate_line(feature_key: str, row: dict) -> str:
+    return (
+        f"feature={feature_key} "
+        f"requested={_format_bool(row.get('requested'))} "
+        f"whitelist={_format_bool(row.get('whitelist'))} "
+        f"gate={_format_bool(row.get('gate'))} "
+        f"reason={row.get('reason') or 'unknown'}"
+    )
+
+
+def _format_feature_final_line(feature_key: str, row: dict) -> str:
+    pieces = [
+        f"feature={feature_key}",
+        f"final={_format_bool(row.get('final'))}",
+        f"variant={row.get('variant') or 'none'}",
+    ]
+    if feature_key == "kv_offload":
+        pieces.append(f"size_gb={row.get('size_gb')}")
+    pieces.extend([
+        f"emitted={_format_bool(row.get('emitted'))}",
+        f"reason={row.get('reason') or 'unknown'}",
+    ])
+    return " ".join(pieces)
+
+
+def _format_json_features(features: dict) -> str:
+    return (
+        "{"
+        f"speculative_decode:{_format_bool(features.get('speculative_decode'))},"
+        f"sparse_kv:{_format_bool(features.get('sparse_kv'))},"
+        f"kv_offload:{_format_bool(features.get('kv_offload'))}"
+        "}"
+    )
+
+
+def _format_command_emitted(rows: dict) -> str:
+    return (
+        "{"
+        f"speculative_decode:{_format_bool(rows['speculative_decode'].get('emitted'))},"
+        f"sparse_kv:{_format_bool(rows['sparse_kv'].get('emitted'))},"
+        f"kv_offload:{_format_bool(rows['kv_offload'].get('emitted'))}"
+        "}"
+    )
+
+
+def _build_smart_feature_enablement_log_block(
+    engine: str,
+    merged: dict,
+    hardware: dict,
+    command: str,
+) -> str:
+    """构造独立、可 grep 的 SmartFeature 使能日志块。
+
+    日志块按照“上层输入 -> 白名单收口 -> 最终解析 -> 输出承载”排列。
+    运行时仍走项目统一 LOG_FORMAT；调用方用一次 logger.info 输出整块文本，
+    这样第一行带有组件/函数/行号，后续换行保留块状结构，kubectl 中更容易定位。
+    """
+    input_env = _get_smart_feature_input_env(merged)
+    gate_trace = _get_smart_feature_gate_trace(merged)
+    final_payload = _build_smart_feature_final_rows(engine, merged, command)
+    status = final_payload["status"]
+    rows = final_payload["rows"]
+    gate_rows = {
+        "speculative_decode": _get_gate_row(merged, "speculative_decode", "spec"),
+        "sparse_kv": _get_gate_row(merged, "sparse_kv", "sparse"),
+        "kv_offload": _get_gate_row(merged, "kv_offload", "offload"),
+    }
+    separator = "=" * 80
+    available_pod_mem_gb = _format_available_pod_mem_gb(
+        input_env.get("AVAILABLE_POD_MEM_SIZE"),
+        with_unit=False,
+    )
+    kv_size = status["others"].get("kv_mem_offload_size")
+    kv_reason = rows["kv_offload"].get("reason") or "unknown"
+    lines = [
+        "[SmartFeature]",
+        separator,
+        "=                         SMART FEATURE ENABLEMENT                              =",
+        separator,
+        "",
+        "[Context]",
+        f"engine={engine}",
+        f"card={merged.get('_smart_card_token') or resolve_card_token(hardware) or '(empty)'}",
+        f"model={merged.get('model_name') or merged.get('model_path') or '<unset>'}",
+        f"model_type={merged.get('_resolved_model_type') or merged.get('model_type') or '<unset>'}",
+        f"device_count={merged.get('device_count', '<unset>')}",
+        f"tp={_get_engine_or_merged_value(merged, 'tensor_parallel_size', '<unset>')}",
+        f"dp={_get_engine_or_merged_value(merged, 'data_parallel_size', '<unset>')}",
+        "",
+        "[Input Env]",
+    ]
+    lines.extend(
+        f"{name}={_format_smart_feature_env_value(name, input_env.get(name))}"
+        for name in _SMART_FEATURE_AUDIT_ENV_KEYS
+    )
+    lines.extend([
+        "",
+        "[Whitelist Gate]",
+        f"allowed={_format_list(gate_trace.get('allowed') or merged.get('_allowed_smart_feats'))}",
+        f"forced={_format_list(gate_trace.get('forced') or merged.get('_forced_smart_feats'))}",
+        f"effective={_format_list(gate_trace.get('effective') or merged.get('_smart_feats'))}",
+        "",
+        _format_feature_gate_line("speculative_decode", gate_rows["speculative_decode"]),
+        _format_feature_gate_line("sparse_kv", gate_rows["sparse_kv"]),
+        _format_feature_gate_line("kv_offload", gate_rows["kv_offload"]),
+        "",
+        "[Final Resolve]",
+        "offload_capacity "
+        f"mode={_format_raw_env_value(input_env.get('KV_MEM_OFFLOAD_SIZE'))} "
+        f"available_pod_mem_gb={available_pod_mem_gb} "
+        f"floor_gb={OFFLOAD_MIN_GB} "
+        f"resolved_node_size_gb={kv_size} "
+        f"reason={kv_reason}",
+        "",
+        _format_feature_final_line("speculative_decode", rows["speculative_decode"]),
+        _format_feature_final_line("sparse_kv", rows["sparse_kv"]),
+        _format_feature_final_line("kv_offload", rows["kv_offload"]),
+        "",
+        "[Output]",
+        f"json features={_format_json_features(status['features'])}",
+        f"command emitted={_format_command_emitted(rows)}",
+        "",
+        separator,
+        "=                       SMART FEATURE ENABLEMENT END                            =",
+        separator,
+    ])
+    return "\n".join(lines)
+
+
+def _log_smart_feature_enablement(
+    engine: str,
+    merged: dict,
+    hardware: dict,
+    command: str,
+) -> None:
+    """在启动命令生成后打印 SmartFeature 审计日志。
+
+    必须放在 _assemble_startup_command 之后，因为 emitted 字段要读取真实命令。
+    如果提前打印，只能预测是否注入，无法覆盖 auto floor disabled 这类 late discard。
+    """
+    logger.info(
+        "\n%s",
+        _build_smart_feature_enablement_log_block(engine, merged, hardware, command),
+    )
 
 
 def _build_monitor_script(
@@ -1357,6 +1778,7 @@ def build_launcher_plan(launch_args: LaunchArgs, port_plan: PortPlan) -> Launche
     )
     command = _assemble_startup_command(engine, merged, hardware, script_body, monitor_script)
 
+    _log_smart_feature_enablement(engine, merged, hardware, command)
     logger.info("Generated start_command.sh (%d bytes)", len(command))
     logger.debug(
         "start_command.sh content:\n"

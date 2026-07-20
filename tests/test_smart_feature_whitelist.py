@@ -631,6 +631,71 @@ def test_nvidia_day0_unlisted_spec_keeps_legacy_spec_request(monkeypatch):
     ) == frozenset()
 
 
+def test_smart_feature_trace_preserves_upper_env_before_gate_rewrites(monkeypatch):
+    # 这个场景故意让页面同时请求 spec/sparse/offload，但白名单只允许 offload。
+    # sparse 会被 gate 改写为 false；审计日志仍必须保留改写前的 ENABLE_SPARSE=true，
+    # 否则现场无法区分“页面没开”和“页面开了但被白名单收窄”。
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "81920")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    monkeypatch.delenv("KV_DISK_OFFLOAD_SIZE", raising=False)
+    monkeypatch.setattr(
+        config_loader,
+        "resolve_feature_whitelist",
+        lambda engine, name, path, card: {"offload"},
+    )
+    monkeypatch.setattr(
+        config_loader,
+        "resolve_forced_feature_whitelist",
+        lambda engine, name, path, card: set(),
+    )
+    hardware = {"device": "nvidia", "details": [{"name": "NVIDIA L20"}]}
+    params = {
+        "engine": "vllm",
+        "model_name": "custom-model",
+        "model_path": "/models/custom-model",
+        "model_type": "llm",
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(params, hardware)
+
+    assert params["_smart_feature_input_env"] == {
+        "ENABLE_SPECULATIVE_DECODE": "true",
+        "ENABLE_SPARSE": "true",
+        "ENABLE_KV_OFFLOAD": "true",
+        "LMCACHE_OFFLOAD": "true",
+        "ENABLE_KV_MEM_OFFLOAD": "true",
+        "KV_MEM_OFFLOAD_SIZE": "auto",
+        "AVAILABLE_POD_MEM_SIZE": "81920",
+        "ENABLE_KV_DISK_OFFLOAD": "false",
+        "KV_DISK_OFFLOAD_SIZE": None,
+    }
+    assert os.environ["ENABLE_SPARSE"] == "false"
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
+    trace = params["_smart_feature_gate_trace"]
+    assert trace["allowed"] == ["offload"]
+    assert trace["effective"] == ["offload"]
+    assert trace["features"]["sparse_kv"] == {
+        "requested": True,
+        "whitelist": False,
+        "gate": False,
+        "reason": "whitelist_miss",
+    }
+    assert trace["features"]["speculative_decode"] == {
+        "requested": True,
+        "whitelist": False,
+        "gate": True,
+        "reason": "suffix_fallback",
+    }
+
+
 def test_deepseek_v32_h20_whitelist_enables_smart_trio(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
