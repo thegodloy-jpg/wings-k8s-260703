@@ -1591,6 +1591,24 @@ def test_deepseek_v4_flash_pro5000_spec_row_uses_explicit_mtp2():
 
 
 @pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_minimax_m25_w8a8_quarot_spec_rows_use_eagle3_with_suffix3(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "Eco-Tech/MiniMax-M2.5-w8a8-QuaRot",
+        "/models/Eco-Tech/MiniMax-M2.5-w8a8-QuaRot",
+        card_token,
+        "spec",
+    )
+
+    assert row is not None
+    assert row.get("draft_method") == "eagle3"
+    assert row.get("draft_num_speculative_tokens") == 3
+    assert row.get("draft_enforce_eager") is True
+    assert row.get("suffix_num_speculative_tokens") == 3
+    assert "mtp_method" not in row
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
 def test_minimax_m27_w8a8_quarot_spec_rows_are_draft_only(card_token):
     row = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend",

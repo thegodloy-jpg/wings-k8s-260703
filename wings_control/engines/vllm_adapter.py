@@ -3802,6 +3802,13 @@ def _resolve_whitelist_mtp_num_speculative_tokens(params: Dict[str, Any], engine
     return tokens
 
 
+def _resolve_whitelist_suffix_num_speculative_tokens(params: Dict[str, Any], engine: str) -> int:
+    """读取逐场景 suffix token；未声明或非法时保持历史默认值 5。"""
+    row = resolve_feature_whitelist_row_from_params(params, engine, "spec")
+    tokens = _safe_int(row.get("suffix_num_speculative_tokens")) if row else None
+    return tokens if tokens is not None and tokens > 0 else 5
+
+
 def _lmcache_requires_suffix_speculative_strategy(
     params: Dict[str, Any],
     engine: str,
@@ -4007,11 +4014,11 @@ def _handle_mtp_case(model_info: ModelIdentifier, mtp_support_models: List[Any],
     config.append('"num_speculative_tokens": 3')
 
 
-def _handle_suffix_case(config: List[str]) -> None:
+def _handle_suffix_case(config: List[str], token_count: int = 5) -> None:
     """处理 suffix 推测解码配置"""
     logger.info('--- Using the suffix speculative decoding approach ---')
     config.append('"method" : "suffix"')
-    config.append('"num_speculative_tokens": 5')
+    config.append(f'"num_speculative_tokens": {token_count}')
     config.append('"suffix_decoding_max_cached_requests": 1000')
 
 
@@ -4197,7 +4204,10 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         logger.info("[AdvFeature-SpecDecode] Architecture %s → suffix strategy",
                     model_info.model_architecture)
         speculative_config_temp = []
-        _handle_suffix_case(speculative_config_temp)
+        _handle_suffix_case(
+            speculative_config_temp,
+            _resolve_whitelist_suffix_num_speculative_tokens(params, engine),
+        )
         return _format_speculative_result(speculative_config_temp)
 
     if strategy == "mtp" or strategy.endswith("_mtp"):

@@ -527,6 +527,58 @@ def test_qwen_agentworld_pro5000_suffix_uses_whitelist_32_tokens(monkeypatch):
 
 
 @pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_minimax_m25_w8a8_quarot_eagle3_reuses_draft_path(monkeypatch, card_token):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    draft_path = "/path/to/weight/Eagle3/"
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/MiniMax-M2.5-w8a8-QuaRot",
+        "model_path": "/models/Eco-Tech/MiniMax-M2.5-w8a8-QuaRot",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": draft_path,
+        "_smart_feats": ["spec"],
+        "_smart_card_token": card_token,
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+    config = json.loads(command.split("'", 2)[1])
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "eagle3"
+    assert config == {
+        "method": "eagle3",
+        "model": draft_path,
+        "num_speculative_tokens": 3,
+        "enforce_eager": True,
+    }
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_minimax_m25_w8a8_quarot_without_eagle_uses_suffix3(monkeypatch, card_token):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeMiniMaxM2Identifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/MiniMax-M2.5-w8a8-QuaRot",
+        "model_path": "/models/Eco-Tech/MiniMax-M2.5-w8a8-QuaRot",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec"],
+        "_smart_card_token": card_token,
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+    config = json.loads(command.split("'", 2)[1])
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    assert config == {
+        "method": "suffix",
+        "num_speculative_tokens": 3,
+        "suffix_decoding_max_cached_requests": 1000,
+    }
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
 def test_minimax_m27_w8a8_quarot_eagle3_uses_draft_path_options(
     monkeypatch,
     tmp_path,
