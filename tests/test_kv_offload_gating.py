@@ -558,20 +558,50 @@ def test_smart_feature_audit_log_formats_gb_env_and_final_command_state(monkeypa
 
     assert "[SmartFeature]\n" in block
     assert "=" * 80 in block
+    assert "\nengine=vllm_ascend\n" not in block
+    assert "\ndp=1\n" in block
+    assert "LMCACHE_OFFLOAD=" not in block
     assert "AVAILABLE_POD_MEM_SIZE=80.00GB" in block
-    assert "available_pod_mem_gb=80.00" in block
+    assert "available_pod_mem_gb=" not in block
+    assert "mode=" not in block
     assert "available_pod_mem_mib" not in block
     assert "AVAILABLE_POD_MEM_SIZE=81920MiB" not in block
+    assert "KV_DISK_OFFLOAD_SIZE=0GB" in block
+    assert "<unset>" not in block
     assert "SD_ENABLE" not in block
     assert "SPARSE_ENABLE" not in block
     assert "SPECULATIVE_DECODE_MODEL_PATH" not in block
+    assert "offload_capacity floor_gb=20 resolved_node_size_gb=0" in block
     assert (
         "feature=kv_offload final=false "
         "variant=lmcache_cpu+auto+floor_disabled "
-        "size_gb=0 emitted=false reason=auto_floor_disabled"
+        "emitted=false reason=auto_floor_disabled"
     ) in block
     assert "json features={speculative_decode:true,sparse_kv:false,kv_offload:false}" in block
     assert "command emitted={speculative_decode:true,sparse_kv:false,kv_offload:false}" in block
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("ENABLE_SPECULATIVE_DECODE", "false"),
+        ("ENABLE_SPARSE", "false"),
+        ("ENABLE_KV_OFFLOAD", "false"),
+        ("ENABLE_KV_MEM_OFFLOAD", "false"),
+        ("ENABLE_KV_DISK_OFFLOAD", "false"),
+        ("KV_MEM_OFFLOAD_SIZE", "0GB"),
+        ("KV_DISK_OFFLOAD_SIZE", "0GB"),
+        ("AVAILABLE_POD_MEM_SIZE", "0.00GB"),
+    ],
+)
+def test_smart_feature_audit_env_missing_values_use_page_defaults(name, expected):
+    assert wings_entry._format_smart_feature_env_value(name, None) == expected
+    assert wings_entry._format_smart_feature_env_value(name, "") == expected
+
+
+def test_smart_feature_audit_env_keeps_auto_and_invalid_values_visible():
+    assert wings_entry._format_smart_feature_env_value("KV_MEM_OFFLOAD_SIZE", "auto") == "auto"
+    assert wings_entry._format_smart_feature_env_value("KV_MEM_OFFLOAD_SIZE", "invalid") == "invalid"
 
 
 def test_deepseek_v4_flash_auto_floor_drops_kv_transfer_config(monkeypatch):

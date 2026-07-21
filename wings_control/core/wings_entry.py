@@ -862,7 +862,6 @@ _SMART_FEATURE_AUDIT_ENV_KEYS = (
     "ENABLE_SPECULATIVE_DECODE",
     "ENABLE_SPARSE",
     "ENABLE_KV_OFFLOAD",
-    "LMCACHE_OFFLOAD",
     "ENABLE_KV_MEM_OFFLOAD",
     "KV_MEM_OFFLOAD_SIZE",
     "AVAILABLE_POD_MEM_SIZE",
@@ -920,6 +919,14 @@ def _format_available_pod_mem_gb(value, *, with_unit: bool) -> str:
 
 
 def _format_smart_feature_env_value(name: str, value) -> str:
+    # 展示层只补页面字段的缺省值，不回写 os.environ，也不改变后续使能判断。
+    # 非空非法值继续原样保留，避免把真实页面输入伪装成默认值。
+    if value is None or not str(value).strip():
+        if name == "AVAILABLE_POD_MEM_SIZE":
+            return "0.00GB"
+        if name in {"KV_MEM_OFFLOAD_SIZE", "KV_DISK_OFFLOAD_SIZE"}:
+            return "0GB"
+        return "false"
     if name == "AVAILABLE_POD_MEM_SIZE":
         return _format_available_pod_mem_gb(value, with_unit=True)
     if name in {"KV_MEM_OFFLOAD_SIZE", "KV_DISK_OFFLOAD_SIZE"}:
@@ -1126,8 +1133,6 @@ def _format_feature_final_line(feature_key: str, row: dict) -> str:
         f"final={_format_bool(row.get('final'))}",
         f"variant={row.get('variant') or 'none'}",
     ]
-    if feature_key == "kv_offload":
-        pieces.append(f"size_gb={row.get('size_gb')}")
     pieces.extend([
         f"emitted={_format_bool(row.get('emitted'))}",
         f"reason={row.get('reason') or 'unknown'}",
@@ -1178,12 +1183,8 @@ def _build_smart_feature_enablement_log_block(
         "kv_offload": _get_gate_row(merged, "kv_offload", "offload"),
     }
     separator = "=" * 80
-    available_pod_mem_gb = _format_available_pod_mem_gb(
-        input_env.get("AVAILABLE_POD_MEM_SIZE"),
-        with_unit=False,
-    )
     kv_size = status["others"].get("kv_mem_offload_size")
-    kv_reason = rows["kv_offload"].get("reason") or "unknown"
+    display_kv_size = 0 if kv_size is None else kv_size
     lines = [
         "[SmartFeature]",
         separator,
@@ -1191,13 +1192,12 @@ def _build_smart_feature_enablement_log_block(
         separator,
         "",
         "[Context]",
-        f"engine={engine}",
         f"card={merged.get('_smart_card_token') or resolve_card_token(hardware) or '(empty)'}",
         f"model={merged.get('model_name') or merged.get('model_path') or '<unset>'}",
-        f"model_type={merged.get('_resolved_model_type') or merged.get('model_type') or '<unset>'}",
-        f"device_count={merged.get('device_count', '<unset>')}",
-        f"tp={_get_engine_or_merged_value(merged, 'tensor_parallel_size', '<unset>')}",
-        f"dp={_get_engine_or_merged_value(merged, 'data_parallel_size', '<unset>')}",
+        f"model_type={merged.get('_resolved_model_type') or merged.get('model_type') or 'auto'}",
+        f"device_count={merged.get('device_count') or 1}",
+        f"tp={_get_engine_or_merged_value(merged, 'tensor_parallel_size', 1)}",
+        f"dp={_get_engine_or_merged_value(merged, 'data_parallel_size', 1)}",
         "",
         "[Input Env]",
     ]
@@ -1218,11 +1218,8 @@ def _build_smart_feature_enablement_log_block(
         "",
         "[Final Resolve]",
         "offload_capacity "
-        f"mode={_format_raw_env_value(input_env.get('KV_MEM_OFFLOAD_SIZE'))} "
-        f"available_pod_mem_gb={available_pod_mem_gb} "
         f"floor_gb={OFFLOAD_MIN_GB} "
-        f"resolved_node_size_gb={kv_size} "
-        f"reason={kv_reason}",
+        f"resolved_node_size_gb={display_kv_size}",
         "",
         _format_feature_final_line("speculative_decode", rows["speculative_decode"]),
         _format_feature_final_line("sparse_kv", rows["sparse_kv"]),
