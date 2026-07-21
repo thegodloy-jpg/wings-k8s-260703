@@ -891,6 +891,136 @@ def test_qwen35_397b_w8a8_mtp_uses_whitelist_driven_ascend_profile():
         assert config["max_num_batched_tokens"] == 8192
 
 
+def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
+    deepseek_arch = _model_deploy_config("ascend")["llm"]["DeepseekV3ForCausalLM"]
+    scenario = config_loader._SpecialEngineScenario()
+    expected = {
+        "trust_remote_code": True,
+        "max_model_len": 16192,
+        "dtype": "auto",
+        "kv_cache_dtype": "auto",
+        "gpu_memory_utilization": 0.97,
+        "enable_chunked_prefill": True,
+        "max_num_batched_tokens": 4096,
+        "block_size": 16,
+        "max_num_seqs": 32,
+        "seed": 42,
+        "enable_prefix_caching": True,
+        "tool_call_parser": "deepseek_v3",
+    }
+
+    config_910c = {}
+    for model_name in (
+        "DeepSeek-Coder-V2-Instruct",
+        "DeepSeek-Coder-V2-Instruct-BF16",
+        "deepseek-ai/DeepSeek-Coder-V2-Instruct",
+    ):
+        model_info = _FakeModelInfo(model_name, "DeepseekV3ForCausalLM")
+        config_910c = config_loader._match_model_engine_config(
+            deepseek_arch,
+            model_name.lower(),
+            "vllm_ascend",
+            scenario,
+            model_info,
+            {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+            f"/models/{model_name}".lower(),
+        )
+        assert config_910c == expected
+
+    model_info = _FakeModelInfo(
+        "DeepSeek-Coder-V2-Instruct",
+        "DeepseekV3ForCausalLM",
+    )
+    config_910b = config_loader._match_model_engine_config(
+        deepseek_arch,
+        "deepseek-coder-v2-instruct",
+        "vllm_ascend",
+        scenario,
+        model_info,
+        {"device": "ascend", "details": [{"name": "Ascend910B_64G"}]},
+        "/usr/local/serving/models",
+    )
+
+    assert config_910b == {}
+    # 端口、模型路径和 TP/DP 继续由运行时输入与通用拓扑逻辑负责，避免模板固化部署形态。
+    for key in (
+        "host",
+        "port",
+        "served_model_name",
+        "model",
+        "tensor_parallel_size",
+        "data_parallel_size",
+    ):
+        assert key not in config_910c
+
+
+def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monkeypatch):
+    monkeypatch.setattr(config_loader, "check_pcie_cards", lambda *_args: (False, None))
+    model_info = _FakeModelInfo(
+        "DeepSeek-Coder-V2-Instruct",
+        "DeepseekV3ForCausalLM",
+    )
+    params = {
+        "engine": "vllm_ascend",
+        "distributed": False,
+        "device_count": 8,
+        "nnodes": 1,
+        "model_name": "DeepSeek-Coder-V2-Instruct",
+        "model_path": "/usr/local/serving/models/",
+        "host": "10.254.125.48",
+        "port": 17000,
+    }
+    hardware = {
+        "device": "ascend",
+        "count": 8,
+        "details": [{"name": "Ascend910C"}],
+    }
+
+    config = config_loader._get_model_specific_config(hardware, params, model_info)
+
+    assert config["max_model_len"] == 16192
+    assert config["gpu_memory_utilization"] == 0.97
+    assert config["tensor_parallel_size"] == 8
+    assert "data_parallel_size" not in config
+    assert "enable_expert_parallel" not in config
+    # parser 只声明能力；页面未开启 Function Call 时不能污染基础启动命令。
+    assert "tool_call_parser" not in config
+    assert "enable_auto_tool_choice" not in config
+
+    command = vllm_adapter._build_vllm_cmd_parts(
+        {**params, "engine_config": config, "_explicit_cli_keys": []}
+    )
+    for fragment in (
+        "--max-model-len 16192",
+        "--dtype auto",
+        "--kv-cache-dtype auto",
+        "--gpu-memory-utilization 0.97",
+        "--enable-chunked-prefill",
+        "--max-num-batched-tokens 4096",
+        "--block-size 16",
+        "--max-num-seqs 32",
+        "--seed 42",
+        "--enable-prefix-caching",
+        "--host 10.254.125.48",
+        "--port 17000",
+        "--served-model-name DeepSeek-Coder-V2-Instruct",
+        "--model /usr/local/serving/models/",
+        "--tensor-parallel-size 8",
+    ):
+        assert fragment in command
+    assert "--data-parallel-size" not in command
+    assert "--enable-expert-parallel" not in command
+    assert "--tool-call-parser" not in command
+
+    function_call_config = config_loader._get_model_specific_config(
+        hardware,
+        {**params, "enable_auto_tool_choice": True},
+        model_info,
+    )
+    assert function_call_config["tool_call_parser"] == "deepseek_v3"
+    assert function_call_config["enable_auto_tool_choice"] is True
+
+
 def test_qwen35_day0_single_node_topology_uses_generic_tp_rule(monkeypatch):
     monkeypatch.setattr(
         config_loader,
