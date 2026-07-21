@@ -35,7 +35,7 @@ ock.mmc.meta_service_url = tcp://127.0.0.1:5000
 ock.mmc.local_service.config_store_url = tcp://127.0.0.1:6000
 ock.mmc.log_level = error
 ock.mmc.local_service.world_size = 256
-ock.mmc.local_service.protocol = device_rdma
+ock.mmc.local_service.protocol = device_sdma
 ock.mmc.local_service.dram.size = <page offload memory>GB
 ```
 

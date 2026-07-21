@@ -1114,6 +1114,7 @@ def test_memcache_fragment_uses_effective_smart_feats_when_env_not_synced(monkey
             "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
+            "_smart_card_token": "910c",
             "_smart_feats": ["offload"],
         },
     )
@@ -1224,6 +1225,7 @@ def test_kimi_k27_code_memcache_skips_lmcache_env(monkeypatch):
             "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
+            "_smart_card_token": "910c",
             "_smart_feats": ["offload"],
         },
     )
@@ -1279,6 +1281,7 @@ def test_kimi_k27_code_memcache_engine_prelude_uses_per_card_page_offload_memory
             "model_path": "/harbor_data/Kimi-K2.7-Code",
             "model_type": "llm",
             "device_count": 16,
+            "_smart_card_token": "910c",
             "_smart_feats": ["offload"],
         },
     )
@@ -1307,12 +1310,14 @@ def test_kimi_k26_memcache_engine_prelude_uses_per_card_page_offload_memory(monk
             "model_path": "/models/Eco-Tech/Kimi-K2.6-W4A8",
             "model_type": "llm",
             "device_count": 16,
+            "_smart_card_token": "910c",
             "_smart_feats": ["offload"],
         },
     )
 
     assert fragment["enabled"] is True
     assert 'export WINGS_MEMCACHE_DRAM_GB="2"' in fragment["engine_prelude"]
+    assert 'export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_sdma}"' in fragment["engine_prelude"]
     assert "AscendStore" not in fragment["engine_prelude"]
 
 
@@ -1369,10 +1374,10 @@ def test_memcache_auto_memory_is_evenly_split_per_card(monkeypatch):
     ),
     [
         ("Qwen/Qwen3.5-27B", "910c", 50051, 50061, "device_sdma"),
-        ("Qwen/Qwen3.6-27B", "910c", 50071, 50081, "device_rdma"),
-        ("Eco-Tech/Qwen3.6-27B-w8a8", "910c", 50071, 50081, "device_rdma"),
-        ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081, "device_rdma"),
-        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c", 50071, 50081, "device_rdma"),
+        ("Qwen/Qwen3.6-27B", "910c", 50071, 50081, "device_sdma"),
+        ("Eco-Tech/Qwen3.6-27B-w8a8", "910c", 50071, 50081, "device_sdma"),
+        ("Qwen/Qwen3.6-35B-A3B", "910c", 50071, 50081, "device_sdma"),
+        ("Eco-Tech/Qwen3.6-35B-A3B-w8a8", "910c", 50071, 50081, "device_sdma"),
     ],
 )
 def test_qwen_day0_memcache_profile_uses_static_scene_defaults(
@@ -1383,11 +1388,11 @@ def test_qwen_day0_memcache_profile_uses_static_scene_defaults(
     expected_config_port,
     expected_protocol,
 ):
-    """Qwen Day0 MemCache 端口和协议来自代码侧场景默认。
+    """Qwen Day0 MemCache 端口按模型选择，协议按昇腾卡型选择。
 
     页面仍然可以通过 WINGS_MEMCACHE_META_SERVICE_URL 和
     WINGS_MEMCACHE_CONFIG_STORE_URL、WINGS_MEMCACHE_PROTOCOL 覆盖最终值。
-    页面未覆盖时，不能用全局 RDMA 默认值覆盖 Qwen3.5 的 SDMA 标准。
+    页面未覆盖时，910C 必须统一使用 SDMA，910B 必须统一使用 RDMA。
     白名单只负责命中 memcache backend，不承载端口和协议。
     """
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
@@ -1425,7 +1430,7 @@ def test_qwen_day0_memcache_profile_uses_static_scene_defaults(
     ("model_name", "expected_protocol"),
     [
         ("Qwen/Qwen3.5-27B", None),
-        ("Qwen/Qwen3.5-35B-A3B", "device_sdma"),
+        ("Qwen/Qwen3.5-35B-A3B", "device_rdma"),
         ("Qwen/Qwen3.5-122B-A10B", None),
         ("Qwen/Qwen3.6-27B", None),
         ("Eco-Tech/Qwen3.6-27B-w8a8", "device_rdma"),

@@ -80,11 +80,20 @@ class Scenario:
     enable_expert_parallel: bool = False
     offload: bool = False
     memcache_ports: tuple[int, int] | None = None
-    memcache_protocol: str = "device_rdma"
+    memcache_protocol: str = ""
     language_model_only: bool = False
     seed: int = 1024
     is_reuse: bool = False
     notes: str = ""
+
+
+def _memcache_protocol_for_card(card: str) -> str:
+    """与运行时一致：910C 使用 SDMA，910B 使用 RDMA。"""
+    if card == "910c":
+        return "device_sdma"
+    if card == "910b":
+        return "device_rdma"
+    raise ValueError(f"Unsupported Ascend card token for MemCache: {card}")
 
 
 def _dense(
@@ -108,7 +117,7 @@ def _dense(
     quantization: str | None = None,
     offload: bool = False,
     memcache_ports: tuple[int, int] | None = None,
-    memcache_protocol: str = "device_rdma",
+    memcache_protocol: str | None = None,
     is_reuse: bool = False,
     notes: str = "",
 ) -> Scenario:
@@ -131,7 +140,7 @@ def _dense(
         quantization=quantization,
         offload=offload,
         memcache_ports=memcache_ports,
-        memcache_protocol=memcache_protocol,
+        memcache_protocol=memcache_protocol or _memcache_protocol_for_card(card),
         language_model_only=not qwen36,
         source_row=source_row,
         source_column=source_column,
@@ -162,7 +171,7 @@ def _moe(
     quantization: str | None = None,
     offload: bool = False,
     memcache_ports: tuple[int, int] | None = None,
-    memcache_protocol: str = "device_rdma",
+    memcache_protocol: str | None = None,
     is_reuse: bool = False,
     notes: str = "",
 ) -> Scenario:
@@ -186,7 +195,7 @@ def _moe(
         enable_expert_parallel=True,
         offload=offload,
         memcache_ports=memcache_ports,
-        memcache_protocol=memcache_protocol,
+        memcache_protocol=memcache_protocol or _memcache_protocol_for_card(card),
         language_model_only=not qwen36,
         source_row=source_row,
         source_column=source_column,
@@ -212,7 +221,6 @@ STANDARD_SCENARIOS: list[Scenario] = [
         mtp_tokens=1,
         offload=True,
         memcache_ports=(50051, 50061),
-        memcache_protocol="device_sdma",
         source_row=2,
         source_column="910C optimized",
         source_cell_refs=("G2", "J2"),
@@ -427,7 +435,6 @@ REUSE_SCENARIOS: list[Scenario] = [
         mtp_tokens=1,
         offload=True,
         memcache_ports=(50051, 50061),
-        memcache_protocol="device_sdma",
         source_row=3,
         source_column="910B reuse of row3 910C optimized + MemCache",
         source_cell_refs=("G3", "J2"),

@@ -11,6 +11,10 @@ Target usage:
 - `Kimi-K2.6-W4A8`: MemCache KV offload, optionally combined with DFlash speculative decoding
 - `Kimi-K2.7-Code`: MemCache KV offload only
 
+Both current Kimi MemCache whitelist rows target Ascend 910C, so their default
+transport protocol is `device_sdma`. Ascend 910B MemCache deployments use
+`device_rdma`; an explicit `WINGS_MEMCACHE_PROTOCOL` still overrides the default.
+
 The vLLM connector is still an engine config / CLI concern:
 
 ```json
@@ -127,7 +131,7 @@ export WINGS_MEMCACHE_META_SERVICE_URL="${WINGS_MEMCACHE_META_SERVICE_URL:-tcp:/
 export WINGS_MEMCACHE_CONFIG_STORE_URL="${WINGS_MEMCACHE_CONFIG_STORE_URL:-tcp://127.0.0.1:6000}"
 export WINGS_MEMCACHE_LOG_LEVEL="${WINGS_MEMCACHE_LOG_LEVEL:-error}"
 export WINGS_MEMCACHE_WORLD_SIZE="${WINGS_MEMCACHE_WORLD_SIZE:-256}"
-export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_rdma}"
+export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_sdma}"
 export WINGS_MEMCACHE_DRAM_GB="<resolved_memcache_memory>"
 ```
 
@@ -169,7 +173,7 @@ export WINGS_MEMCACHE_META_SERVICE_URL="${WINGS_MEMCACHE_META_SERVICE_URL:-tcp:/
 export WINGS_MEMCACHE_CONFIG_STORE_URL="${WINGS_MEMCACHE_CONFIG_STORE_URL:-tcp://127.0.0.1:6000}"
 export WINGS_MEMCACHE_LOG_LEVEL="${WINGS_MEMCACHE_LOG_LEVEL:-error}"
 export WINGS_MEMCACHE_WORLD_SIZE="${WINGS_MEMCACHE_WORLD_SIZE:-256}"
-export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_rdma}"
+export WINGS_MEMCACHE_PROTOCOL="${WINGS_MEMCACHE_PROTOCOL:-device_sdma}"
 export WINGS_MEMCACHE_DRAM_GB="<resolved_memcache_memory>"
 
 mkdir -p "${WINGS_MEMCACHE_DIR}"

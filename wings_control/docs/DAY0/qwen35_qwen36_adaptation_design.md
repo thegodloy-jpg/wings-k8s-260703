@@ -41,7 +41,7 @@
 - `num_speculative_tokens` 按表逐场景使用。
 - `Offload=是` 才能生成 MemCache 相关片段。
 - `Offload=否` 的场景必须禁止 `MMC_LOCAL_CONFIG_PATH`、`AscendStoreConnector`、`--kv-transfer-config`。
-- Qwen3.6-27B-w8a8、Qwen3.6-35B-A3B-w8a8、Qwen3.5-35B-A3B 这三个 910B 场景复用 910C MemCache 卸载方式，白名单按 `backend=memcache` 单独放行；其他 Qwen3.5 / Qwen3.6 910B 场景仍保持 `Offload=否`，不允许回退到 LMCache。
+- Qwen3.6-27B-w8a8、Qwen3.6-35B-A3B-w8a8、Qwen3.5-35B-A3B 这三个 910B 场景复用 MemCache 服务和端口方案，但协议按 910B 使用 `device_rdma`；白名单按 `backend=memcache` 单独放行，其他 Qwen3.5 / Qwen3.6 910B 场景仍保持 `Offload=否`，不允许回退到 LMCache。
 - 页面下发的 MemCache 内存是节点总容量，和 LMCache 一样按 `device_count` 均分后，才写入单卡 `WINGS_MEMCACHE_DRAM_GB`。
 - Function Call 全部为 `是`，`tool_call_parser` 固定为 `qwen3_coder`。
 - Sparse 全部为 `否`，不进入 `sparse` 白名单。
@@ -149,7 +149,7 @@ QwenDay0Scenario = {
         "role": "kv_both",
         "meta_service_port": 50071,
         "config_store_port": 50081,
-        "protocol": "device_rdma",
+        "protocol": "device_sdma",
         "world_size": 256,
     },
     "defaults": {
@@ -296,13 +296,13 @@ Qwen MemCache profile 只覆盖：
 - `Qwen3.5-27B-910C`：`50051/50061`
 - Qwen3.6 910C：`50071/50081`
 
-协议按原始标准配置文件：
+协议按昇腾卡型统一选择：
 
-- `Qwen3.5-27B-910C`：`device_sdma`
-- Qwen3.6 910C 四个 offload 场景：`device_rdma`
+- 所有 910C MemCache 场景：`device_sdma`
+- 白名单明确放行的 910B MemCache 场景：`device_rdma`
 
-协议与端口一样属于模型+芯片场景数据，必须放在同一条 offload 白名单/profile
-中解析。禁止用全局 `device_rdma` 默认值覆盖 Qwen3.5 的 `device_sdma`。
+端口仍由模型 profile 选择；协议由标准化后的 `910c` / `910b` 卡型解析。
+白名单只负责限定模型和卡型是否允许进入 MemCache，不承载协议值。
 
 ### 配置文件和服务生命周期
 
