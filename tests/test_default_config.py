@@ -863,7 +863,7 @@ def test_qwen35_35b_a3b_ascend_defaults_match_day0_script():
             assert "data_parallel_size" not in engine_config
 
 
-def test_qwen35_397b_w8a8_mtp_uses_whitelist_driven_ascend_profile():
+def test_qwen35_397b_w8a8_mtp_uses_card_specific_ascend_profile():
     moe = _model_deploy_config("ascend")["llm"]["Qwen3_5MoeForConditionalGeneration"]
     scenario = config_loader._SpecialEngineScenario()
     model_info = _FakeModelInfo(
@@ -891,7 +891,14 @@ def test_qwen35_397b_w8a8_mtp_uses_whitelist_driven_ascend_profile():
         assert config["max_num_batched_tokens"] == 8192
 
 
-def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
+def test_deepseek_coder_v2_uses_910c_exact_baseline_only(monkeypatch):
+    # Ascend defaults 只依赖模型名和全局卡型；Smart 白名单 miss 不得阻断基础字段。
+    monkeypatch.setattr(
+        config_loader,
+        "resolve_feature_whitelist_row",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
     deepseek_arch = _model_deploy_config("ascend")["llm"]["DeepseekV2ForCausalLM"]
     scenario = config_loader._SpecialEngineScenario()
     expected = {
@@ -913,6 +920,7 @@ def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
     for model_name in (
         "DeepSeek-Coder-V2-Instruct",
         "DeepSeek-Coder-V2-Instruct-BF16",
+        "DeepSeek-Coder-V2-Instruct-Ascend910C",
         "deepseek-ai/DeepSeek-Coder-V2-Instruct",
     ):
         model_info = _FakeModelInfo(model_name, "DeepseekV2ForCausalLM")
@@ -942,6 +950,17 @@ def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
     )
 
     assert config_910b == {}
+
+    config_wrong_profile = config_loader._match_model_engine_config(
+        deepseek_arch,
+        "deepseek-coder-v2-instruct-ascend910c",
+        "vllm_ascend",
+        scenario,
+        model_info,
+        {"device": "ascend", "details": [{"name": "Ascend910B_64G"}]},
+        "/models/deepseek-coder-v2-instruct-ascend910c",
+    )
+    assert config_wrong_profile == {}
     # 端口、模型路径和 TP/DP 继续由运行时输入与通用拓扑逻辑负责，避免模板固化部署形态。
     for key in (
         "host",
@@ -952,6 +971,60 @@ def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
         "data_parallel_size",
     ):
         assert key not in config_910c
+
+
+def test_all_ascend_card_profiles_select_without_smart_whitelist(monkeypatch):
+    # 用配置全集锁定解耦契约：Smart 白名单不可用时，所有 B/C profile 仍按全局卡型命中。
+    monkeypatch.setattr(
+        config_loader,
+        "resolve_feature_whitelist_row",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    model_deploy_config = _model_deploy_config("ascend")
+    card_names = {
+        "-ascend910b": "Ascend910B_64G",
+        "-ascend910c": "Ascend910C",
+    }
+    profile_count = 0
+    engine_config_count = 0
+
+    for model_type, architectures in model_deploy_config.items():
+        for architecture, arch_dict in architectures.items():
+            for config_key, profile in arch_dict.items():
+                config_key_lower = config_key.lower()
+                suffix = next(
+                    (item for item in card_names if config_key_lower.endswith(item)),
+                    "",
+                )
+                if not suffix:
+                    continue
+                profile_count += 1
+                model_name = config_key[:-len(suffix)]
+                model_info = _FakeModelInfo(model_name, architecture, model_type)
+                hardware = {
+                    "device": "ascend",
+                    "details": [{"name": card_names[suffix]}],
+                }
+
+                for engine_key in ("vllm_ascend", "vllm_ascend_distributed"):
+                    expected = profile.get(engine_key)
+                    if not expected:
+                        continue
+                    engine_config_count += 1
+                    actual = config_loader._match_model_engine_config(
+                        arch_dict,
+                        model_name.lower(),
+                        engine_key,
+                        config_loader._SpecialEngineScenario(),
+                        model_info,
+                        hardware,
+                        f"/models/{model_name}".lower(),
+                    )
+                    assert actual == expected, (architecture, config_key, engine_key)
+
+    assert profile_count == 23
+    assert engine_config_count == 45
 
 
 def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monkeypatch):

@@ -42,7 +42,7 @@ from utils.env_utils import get_master_ip, get_node_ips, get_lmcache_env, get_pd
 from utils.file_utils import check_torch_dtype, get_directory_size, check_permission_640, load_json_config
 from utils.model_utils import (ModelIdentifier,
                                is_glm_moe_dsa_glm51, is_glm52_single_node_even, resolve_thinking_off_policy,
-                               resolve_feature_whitelist, resolve_feature_whitelist_row,
+                               resolve_feature_whitelist,
                                resolve_forced_feature_whitelist, feature_allowed,
                                resolve_offload_whitelist_backend,
                                is_deepseek_v4_flash_rtx_pro_5000,
@@ -3914,61 +3914,80 @@ def _standard_ascend_card_token(hardware_env: Dict[str, Any] | None) -> str:
     return ""
 
 
-def _resolve_ascend_whitelist_config_key(
+def _parse_ascend_card_profile_key(config_key_lower: str) -> tuple[str, str]:
+    """解析 ``<model>-Ascend910B/C`` profile key，返回模型部分和标准卡型。"""
+    for card_token in ("910b", "910c"):
+        suffix = f"-ascend{card_token}"
+        if config_key_lower.endswith(suffix):
+            return config_key_lower[:-len(suffix)], card_token
+    return config_key_lower, ""
+
+
+def _ascend_profile_model_matches_lookup_names(
+    profile_model_key: str,
+    lookup_names: list[str],
+) -> bool:
+    """匹配 Ascend profile 的基础模型名，并局部兼容 Coder V2 的 BF16 后缀。"""
+    if _model_config_key_matches_lookup_names(profile_model_key, lookup_names):
+        return True
+    if profile_model_key != "deepseek-coder-v2-instruct":
+        return False
+    return any(
+        _model_name_contains_config_token(name, profile_model_key)
+        for name in lookup_names
+    )
+
+
+def _resolve_ascend_card_profile_config_key(
     arch_dict: Dict[str, Any],
-    model_name_lower: str,
-    model_path_lower: str,
+    lookup_names: list[str],
     engine_key: str,
     hardware_env: Dict[str, Any] | None,
 ) -> str:
+    """仅依据模型名和全局 Ascend 卡型选择 910B/910C defaults profile。"""
     card_token = _standard_ascend_card_token(hardware_env)
     if not card_token:
         return ""
-    row = resolve_feature_whitelist_row(
-        "vllm_ascend",
-        model_name_lower,
-        model_path_lower,
-        card_token,
-        "spec",
-    )
-    if not row:
-        return ""
-    suffix = f"ascend{card_token}"
-    for token in row.get("name_tokens", ()):
-        model_token = str(token).lower().rstrip("/").rsplit("/", 1)[-1]
-        if not model_token:
+
+    for config_key, config in arch_dict.items():
+        config_key_lower = config_key.lower()
+        profile_model_key, profile_card_token = _parse_ascend_card_profile_key(
+            config_key_lower
+        )
+        if profile_card_token != card_token:
             continue
-        candidate = f"{model_token}-{suffix}"
-        for config_key in arch_dict:
-            if config_key.lower() == candidate:
-                logger.info(
-                    "Using whitelist-driven Ascend config '%s' from smart feature row "
-                    "(engine_key=%s)",
-                    config_key,
-                    engine_key,
-                )
-                return config_key
+        if not config.get(engine_key):
+            continue
+        if not (
+            config_key_lower in lookup_names
+            or _ascend_profile_model_matches_lookup_names(
+                profile_model_key,
+                lookup_names,
+            )
+        ):
+            continue
+        logger.info(
+            "Using card-specific Ascend config '%s' (card_token=%s, engine_key=%s)",
+            config_key,
+            card_token,
+            engine_key,
+        )
+        return config_key
     return ""
 
 
-def _resolve_whitelist_ascend_config_key(
-    arch_dict: Dict[str, Any],
-    lookup_names: list,
-    model_path_lower: str,
+def _ascend_profile_key_matches_hardware(
+    config_key_lower: str,
     engine_key: str,
     hardware_env: Dict[str, Any] | None,
-) -> str:
-    for name in lookup_names:
-        config_key = _resolve_ascend_whitelist_config_key(
-            arch_dict,
-            name,
-            model_path_lower,
-            engine_key,
-            hardware_env,
-        )
-        if config_key:
-            return config_key
-    return ""
+) -> bool:
+    """防止完整 profile 名绕过卡型选择，在错误 B/C 卡上直接命中。"""
+    if engine_key not in {"vllm_ascend", "vllm_ascend_distributed"}:
+        return True
+    _, profile_card_token = _parse_ascend_card_profile_key(config_key_lower)
+    if not profile_card_token:
+        return True
+    return profile_card_token == _standard_ascend_card_token(hardware_env)
 
 
 @dataclass
@@ -4008,17 +4027,15 @@ def _build_model_config_lookup_names(model_name_lower: str, model_info=None) -> 
 def _resolve_preferred_ascend_engine_config(
     arch_dict: Dict[str, Any],
     lookup_names: list[str],
-    model_path_lower: str,
     engine_key: str,
     hardware_env: Dict[str, Any] | None,
 ) -> Optional[Dict[str, Any]]:
-    """解析白名单精确配置及 DeepSeek-V4-Flash Ascend 兼容配置。"""
+    """解析卡型专属 profile 及 DeepSeek-V4-Flash Ascend 兼容配置。"""
     if engine_key not in {"vllm_ascend", "vllm_ascend_distributed"}:
         return None
-    config_key = _resolve_whitelist_ascend_config_key(
+    config_key = _resolve_ascend_card_profile_config_key(
         arch_dict,
         lookup_names,
-        model_path_lower,
         engine_key,
         hardware_env,
     )
@@ -4106,7 +4123,6 @@ def _match_model_engine_config(
     preferred_config = _resolve_preferred_ascend_engine_config(
         arch_dict,
         lookup_names,
-        model_path_lower,
         engine_key,
         hardware_env,
     )
@@ -4122,6 +4138,12 @@ def _match_model_engine_config(
             _model_config_key_matches_lookup_names(model_key, lookup_names)
             or _model_profile_key_matches_lookup_names(model_key, lookup_names, config)
         ):
+            continue
+        if not _ascend_profile_key_matches_hardware(model_key, engine_key, hardware_env):
+            logger.info(
+                "Skipping engine config for model '%s' because its Ascend profile does not match current hardware",
+                model,
+            )
             continue
         if not _model_config_card_tokens_match(config, hardware_env):
             logger.info(
