@@ -38,13 +38,21 @@
 #   2) 否则在 config[engine] 按【精确匹配】命中非 default 专属键 → 取该值；
 #   3) 否则取 config[engine].default；都没有 → 不注入。
 #   全程纯精确匹配，无 token 子串匹配（子串匹配仅存在于 default.json 的 _match_model_engine_config，与本表无关）。
-#   DeepSeek V3/V3.2 架构默认 deepseek_v3；R1 系列在 models 块直接给 deepseek_r1；Coder-V2 给 null（不启用）。
+#   DeepSeek V3/V3.2 架构默认 deepseek_v3；R1 系列在 models 块直接给 deepseek_r1；Coder-V2 按真实 V2 架构给 null（不启用）。
 
 feature: reasoning_parser
 field: reasoning_parser
 engines: [vllm, vllm_ascend]
 
 architectures:
+
+  - name: DeepseekV2ForCausalLM
+    config:
+      vllm:        {default: null}
+      vllm_ascend: {default: null}
+    models:
+      DeepSeek-Coder-V2-Instruct:      {vllm: null, vllm_ascend: null}
+      DeepSeek-Coder-V2-Instruct-w8a8: {vllm: null, vllm_ascend: null}
 
   - name: DeepseekV3ForCausalLM
     config:
@@ -56,13 +64,11 @@ architectures:
       DeepSeek-V3:                     {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
       DeepSeek-V3-0324:                {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
       DeepSeek-V3.1:                   {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
-      DeepSeek-Coder-V2-Instruct:      {vllm: null, vllm_ascend: null}
       DeepSeek-R1-w8a8:                {vllm: deepseek_r1, vllm_ascend: deepseek_r1}
       DeepSeek-R1-0528-w8a8:           {vllm: deepseek_r1, vllm_ascend: deepseek_r1}
       DeepSeek-V3-w8a8:                {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
       DeepSeek-V3-0324-w8a8:           {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
       DeepSeek-V3.1-w8a8:              {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
-      DeepSeek-Coder-V2-Instruct-w8a8: {vllm: null, vllm_ascend: null}
 
   - name: DeepseekV4ForCausalLM
     config:

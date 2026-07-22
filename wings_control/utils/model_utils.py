@@ -9,7 +9,7 @@
     - 模型类型分类: llm/embedding/rerank
 
 支持的模型架构:
-    - LLM:       DeepseekV3ForCausalLM, DeepseekV32ForCausalLM,
+    - LLM:       DeepseekV2ForCausalLM, DeepseekV3ForCausalLM, DeepseekV32ForCausalLM,
                  GlmMoeDsaForCausalLM,
                  Glm4ForCausalLM, Glm4MoeForCausalLM,
                  Qwen2ForCausalLM, Qwen3ForCausalLM, Qwen3MoeForCausalLM,
@@ -644,19 +644,23 @@ def is_minimax_m3_rtx_pro_5000_vllm(source: Optional[dict], engine: Optional[str
 
 #
 _LLM_MODELS = {
+    # DeepSeek-Coder-V2 的 config.json 实际上报 DeepseekV2ForCausalLM；
+    # 独立登记该架构，确保模型支持校验和架构级默认配置使用同一真实标识。
+    "DeepseekV2ForCausalLM": [
+        "DeepSeek-Coder-V2-Instruct",
+        "DeepSeek-Coder-V2-Instruct-w8a8",
+        ],
     "DeepseekV3ForCausalLM": [
         "DeepSeek-R1",
         "DeepSeek-R1-0528",
         "DeepSeek-V3",
         "DeepSeek-V3-0324",
         "DeepSeek-V3.1",
-        "DeepSeek-Coder-V2-Instruct",
         "DeepSeek-R1-w8a8",
         "DeepSeek-R1-0528-w8a8",
         "DeepSeek-V3-w8a8",
         "DeepSeek-V3-0324-w8a8",
         "DeepSeek-V3.1-w8a8",
-        "DeepSeek-Coder-V2-Instruct-w8a8"
         ],
     # DeepSeek-V4 系列权重的 ``config.json -> architectures[0]`` 为
     # ``DeepseekV4ForCausalLM``。独立架构键保证 ascend_default.json 下的

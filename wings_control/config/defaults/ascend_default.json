@@ -21,6 +21,24 @@
           "maxIterTimes": 2048
         }
       },
+      "DeepseekV2ForCausalLM": {
+        "DeepSeek-Coder-V2-Instruct-Ascend910C": {
+          "vllm_ascend": {
+            "trust_remote_code": true,
+            "max_model_len": 16192,
+            "dtype": "auto",
+            "kv_cache_dtype": "auto",
+            "gpu_memory_utilization": 0.97,
+            "enable_chunked_prefill": true,
+            "max_num_batched_tokens": 4096,
+            "block_size": 16,
+            "max_num_seqs": 32,
+            "seed": 42,
+            "enable_prefix_caching": true,
+            "tool_call_parser": "deepseek_v3"
+          }
+        }
+      },
       "DeepseekV3ForCausalLM": {
         "default": {
           "vllm_ascend": {
@@ -48,22 +66,6 @@
             "maxIterTimes": 2048,
             "mindie_model_type": "deepseekv2",
             "mindie_tool_call_parser": "deepseekv3"
-          }
-        },
-        "DeepSeek-Coder-V2-Instruct-Ascend910C": {
-          "vllm_ascend": {
-            "trust_remote_code": true,
-            "max_model_len": 16192,
-            "dtype": "auto",
-            "kv_cache_dtype": "auto",
-            "gpu_memory_utilization": 0.97,
-            "enable_chunked_prefill": true,
-            "max_num_batched_tokens": 4096,
-            "block_size": 16,
-            "max_num_seqs": 32,
-            "seed": 42,
-            "enable_prefix_caching": true,
-            "tool_call_parser": "deepseek_v3"
           }
         },
         "DeepSeek-R1-w8a8": {

@@ -302,7 +302,7 @@ def _scenarios() -> list[Scenario]:
                  "DeepseekV4ForCausalLM", "vllm_ascend", "ascend", "Ascend910C",
                  "Ascend910C", 16, simple, "w8a8"),
         Scenario(40, "row40-deepseek-coder-910c", "DeepSeek-Coder-V2-Instruct",
-                 "DeepseekV3ForCausalLM", "vllm_ascend", "ascend", "Ascend910C",
+                 "DeepseekV2ForCausalLM", "vllm_ascend", "ascend", "Ascend910C",
                  "Ascend910C", 8, simple),
         Scenario(41, "row41-deepseek-v4-pro-910c-dual", "DeepSeek-V4-Pro-w4a8-mtp",
                  "DeepseekV4ForCausalLM", "vllm_ascend", "ascend", "Ascend910C",

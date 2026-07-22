@@ -892,7 +892,7 @@ def test_qwen35_397b_w8a8_mtp_uses_whitelist_driven_ascend_profile():
 
 
 def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
-    deepseek_arch = _model_deploy_config("ascend")["llm"]["DeepseekV3ForCausalLM"]
+    deepseek_arch = _model_deploy_config("ascend")["llm"]["DeepseekV2ForCausalLM"]
     scenario = config_loader._SpecialEngineScenario()
     expected = {
         "trust_remote_code": True,
@@ -915,7 +915,7 @@ def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
         "DeepSeek-Coder-V2-Instruct-BF16",
         "deepseek-ai/DeepSeek-Coder-V2-Instruct",
     ):
-        model_info = _FakeModelInfo(model_name, "DeepseekV3ForCausalLM")
+        model_info = _FakeModelInfo(model_name, "DeepseekV2ForCausalLM")
         config_910c = config_loader._match_model_engine_config(
             deepseek_arch,
             model_name.lower(),
@@ -929,7 +929,7 @@ def test_deepseek_coder_v2_uses_910c_exact_baseline_only():
 
     model_info = _FakeModelInfo(
         "DeepSeek-Coder-V2-Instruct",
-        "DeepseekV3ForCausalLM",
+        "DeepseekV2ForCausalLM",
     )
     config_910b = config_loader._match_model_engine_config(
         deepseek_arch,
@@ -958,7 +958,7 @@ def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monk
     monkeypatch.setattr(config_loader, "check_pcie_cards", lambda *_args: (False, None))
     model_info = _FakeModelInfo(
         "DeepSeek-Coder-V2-Instruct",
-        "DeepseekV3ForCausalLM",
+        "DeepseekV2ForCausalLM",
     )
     params = {
         "engine": "vllm_ascend",

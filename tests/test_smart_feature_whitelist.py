@@ -447,6 +447,19 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
 
 
+def test_deepseek_coder_v2_spec_row_uses_model_config_architecture():
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "DeepSeek-Coder-V2-Instruct-BF16",
+        "/models/DeepSeek-Coder-V2-Instruct-BF16",
+        "910c",
+        "spec",
+    )
+
+    assert row is not None
+    assert row["arch"] == "DeepseekV2ForCausalLM"
+
+
 @pytest.mark.parametrize("card_token", ["l20", "h20-96", "h20-141"])
 @pytest.mark.parametrize(
     ("model_name", "expected_features", "mtp_tokens", "mtp_moe_backend"),

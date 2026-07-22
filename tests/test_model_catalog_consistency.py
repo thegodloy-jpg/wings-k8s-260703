@@ -32,3 +32,12 @@ def test_llm_catalog_models_are_registered_in_reasoning_parser_models():
         if arch not in reasoning_models:
             continue
         assert set(expected_models) <= reasoning_models[arch]
+
+
+def test_deepseek_coder_v2_catalog_uses_model_config_architecture():
+    assert "DeepSeek-Coder-V2-Instruct" in model_utils._LLM_MODELS["DeepseekV2ForCausalLM"]
+    assert "DeepSeek-Coder-V2-Instruct" not in model_utils._LLM_MODELS["DeepseekV3ForCausalLM"]
+
+    reasoning_models = _reasoning_models_by_arch()
+    assert "DeepSeek-Coder-V2-Instruct" in reasoning_models["DeepseekV2ForCausalLM"]
+    assert "DeepSeek-Coder-V2-Instruct" not in reasoning_models["DeepseekV3ForCausalLM"]
