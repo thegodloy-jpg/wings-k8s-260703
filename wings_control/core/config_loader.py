@@ -3990,6 +3990,19 @@ def _ascend_profile_key_matches_hardware(
     return profile_card_token == _standard_ascend_card_token(hardware_env)
 
 
+def _ascend_profile_lookup_matches_hardware(
+    lookup_names: list[str],
+    hardware_env: Dict[str, Any] | None,
+) -> bool:
+    """显式 B/C profile 名与实际卡型冲突时，不允许进入历史兼容 fallback。"""
+    current_card_token = _standard_ascend_card_token(hardware_env)
+    for name in lookup_names:
+        _, profile_card_token = _parse_ascend_card_profile_key(name)
+        if profile_card_token and profile_card_token != current_card_token:
+            return False
+    return True
+
+
 @dataclass
 class _SpecialEngineScenario:
     """DeepSeek + 引擎 + NVIDIA 的特殊卡型选配场景标记。"""
@@ -4032,6 +4045,8 @@ def _resolve_preferred_ascend_engine_config(
 ) -> Optional[Dict[str, Any]]:
     """解析卡型专属 profile 及 DeepSeek-V4-Flash Ascend 兼容配置。"""
     if engine_key not in {"vllm_ascend", "vllm_ascend_distributed"}:
+        return None
+    if not _ascend_profile_lookup_matches_hardware(lookup_names, hardware_env):
         return None
     config_key = _resolve_ascend_card_profile_config_key(
         arch_dict,

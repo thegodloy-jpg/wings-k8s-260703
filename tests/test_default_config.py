@@ -1023,6 +1023,28 @@ def test_all_ascend_card_profiles_select_without_smart_whitelist(monkeypatch):
                     )
                     assert actual == expected, (architecture, config_key, engine_key)
 
+                    wrong_suffix = (
+                        "-ascend910c" if suffix == "-ascend910b" else "-ascend910b"
+                    )
+                    wrong_hardware = {
+                        "device": "ascend",
+                        "details": [{"name": card_names[wrong_suffix]}],
+                    }
+                    wrong_card_config = config_loader._match_model_engine_config(
+                        arch_dict,
+                        config_key_lower,
+                        engine_key,
+                        config_loader._SpecialEngineScenario(),
+                        model_info,
+                        wrong_hardware,
+                        f"/models/{config_key}".lower(),
+                    )
+                    assert wrong_card_config == {}, (
+                        architecture,
+                        config_key,
+                        engine_key,
+                    )
+
     assert profile_count == 23
     assert engine_config_count == 45
 
