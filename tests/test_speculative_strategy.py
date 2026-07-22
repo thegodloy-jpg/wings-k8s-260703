@@ -32,6 +32,16 @@ class _FakeDeepSeekV4Identifier:
         self.model_type = model_type
 
 
+class _FakeDeepSeekV2Identifier:
+    model_architecture = "DeepseekV2ForCausalLM"
+    model_quantize = ""
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeGlm51Identifier:
     model_architecture = "GlmMoeDsaForCausalLM"
     model_quantize = "w8a8"
@@ -206,6 +216,30 @@ def test_qwen35_35b_a3b_ascend_mtp_matches_day0_recipe(monkeypatch, card_token):
         " --speculative-config "
         "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":1,\"enforce_eager\":true}'"
     )
+
+
+def test_deepseek_coder_v2_ascend_uses_whitelist_suffix_default(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV2Identifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-Coder-V2-Instruct-BF16",
+        "model_path": "/models/DeepSeek-Coder-V2-Instruct-BF16",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_card_token": "910c",
+        "_smart_feats": ["spec"],
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+    config = json.loads(command.split("'", 2)[1])
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend") == "suffix"
+    assert config == {
+        "method": "suffix",
+        "num_speculative_tokens": 5,
+        "suffix_decoding_max_cached_requests": 1000,
+    }
 
 
 def test_deepseek_v4_flash_ascend_speculative_config_uses_vllm_021_mtp(monkeypatch):

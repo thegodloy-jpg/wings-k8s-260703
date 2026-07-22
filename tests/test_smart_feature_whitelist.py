@@ -458,6 +458,9 @@ def test_deepseek_coder_v2_spec_row_uses_model_config_architecture():
 
     assert row is not None
     assert row["arch"] == "DeepseekV2ForCausalLM"
+    assert row["suffix_num_speculative_tokens"] == 5
+    assert "mtp_method" not in row
+    assert "mtp_num_speculative_tokens" not in row
 
 
 @pytest.mark.parametrize("card_token", ["l20", "h20-96", "h20-141"])
@@ -1538,7 +1541,6 @@ def test_qwen_day0_910b_reference_script_without_offload_still_has_no_memcache()
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910c", 1),
         ("vllm_ascend", "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp", "910b", 1),
         ("vllm_ascend", "DeepSeek-V4-Pro-w4a8-mtp", "/models/DeepSeek-V4-Pro-w4a8-mtp", "910c", 1),
-        ("vllm_ascend", "DeepSeek-Coder-V2-Instruct-BF16", "/models/DeepSeek-Coder-V2-Instruct-BF16", "910c", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.2-w8a8", "/models/Eco-Tech/GLM-5.2-w8a8", "910c", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910b", 3),
         ("vllm_ascend", "Eco-Tech/GLM-5.1-w8a8", "/models/Eco-Tech/GLM-5.1-w8a8", "910c", 3),
