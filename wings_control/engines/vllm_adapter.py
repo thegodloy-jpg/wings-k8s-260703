@@ -910,6 +910,38 @@ def _resolve_offload_backend(params: Optional[Dict[str, Any]], engine: str = "")
     return backend, cpu_mode
 
 
+def _build_deepseek_v4_flash_lmcache_numa_runtime_guard() -> List[str]:
+    """在 engine 容器内按实际 NUMA 可用节点决定是否启用 LMCache NUMA auto。"""
+    configured_numa_mode = os.getenv("LMCACHE_NUMA_MODE", "auto").strip()
+    commands = [
+        "# DeepSeek-V4-Flash LMCache NUMA guard: this block must run in the engine container.",
+        "wings_configure_lmcache_numa_mode() {",
+        f"    local configured_numa_mode={shlex.quote(configured_numa_mode)}",
+        '    local mems_allowed_list=""',
+        "    mems_allowed_list=\"$(awk '/^Mems_allowed_list:/ { print $2; exit }' "
+        "/proc/self/status 2>/dev/null || true)\"",
+        '    if [[ ! "$mems_allowed_list" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then',
+        "        printf '%s\\n' \"[KVCache Offload] WARNING: engine-side Mems_allowed_list="
+        "${mems_allowed_list:-<missing>} could not be parsed; keeping the configured LMCache NUMA mode.\" >&2",
+        # /proc 使用内核规范化的节点列表；连续节点会合并为区间，出现逗号即表示存在间断。
+        '    elif [[ "$mems_allowed_list" == *","* ]]; then',
+        "        unset LMCACHE_NUMA_MODE",
+        "        printf '%s\\n' \"[KVCache Offload] WARNING: engine-side Mems_allowed_list="
+        "${mems_allowed_list} is non-contiguous; unset LMCACHE_NUMA_MODE before launching vLLM.\" >&2",
+        "        return 0",
+        "    fi",
+    ]
+    if configured_numa_mode:
+        commands.append(f"    export LMCACHE_NUMA_MODE={shlex.quote(configured_numa_mode)}")
+    commands.extend([
+        "    return 0",
+        "}",
+        "wings_configure_lmcache_numa_mode",
+        "unset -f wings_configure_lmcache_numa_mode",
+    ])
+    return commands
+
+
 def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any]]) -> List[str]:
     """Build vLLM-Ascend 0.21 LMCache dynamic offload env for DeepSeek-V4-Flash."""
     env_commands = ["export PYTHONHASHSEED=0"]
@@ -938,7 +970,7 @@ def _build_deepseek_v4_flash_lmcache_env_commands(params: Optional[Dict[str, Any
     _append_lmcache_cold_start_native_exports(env_commands)
     _append_lmcache_env_export(env_commands, "LMCACHE_LOG_LEVEL", os.getenv("LMCACHE_LOG_LEVEL", "INFO"))
     _append_lmcache_env_export(env_commands, "LMCACHE_USE_LAYERWISE", os.getenv("LMCACHE_USE_LAYERWISE", "False"))
-    _append_lmcache_env_export(env_commands, "LMCACHE_NUMA_MODE", os.getenv("LMCACHE_NUMA_MODE", "auto"))
+    env_commands.extend(_build_deepseek_v4_flash_lmcache_numa_runtime_guard())
     _append_lmcache_env_export(env_commands, "LMCACHE_CHUNK_SIZE", os.getenv("LMCACHE_CHUNK_SIZE", "1024"))
     _append_lmcache_env_export(
         env_commands,

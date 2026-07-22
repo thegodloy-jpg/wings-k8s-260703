@@ -214,9 +214,48 @@ def test_deepseek_v4_flash_ascend_lmcache_env_uses_021_local_cpu_switches(monkey
     assert "export LMCACHE_TRACK_USAGE=false" in rendered
     assert "export LMCACHE_USE_LAYERWISE=False" in rendered
     assert "export LMCACHE_NUMA_MODE=auto" in rendered
+    # NUMA 拓扑只能读取 engine 容器自己的 /proc；非连续节点必须在启动 vLLM 前彻底 unset。
+    assert "wings_configure_lmcache_numa_mode()" in rendered
+    assert "/proc/self/status" in rendered
+    assert "Mems_allowed_list" in rendered
+    assert '[[ "$mems_allowed_list" == *","* ]]' in rendered
+    assert "unset LMCACHE_NUMA_MODE" in rendered
+    assert "engine-side Mems_allowed_list=" in rendered
+    assert "is non-contiguous" in rendered
     assert "export LMCACHE_CHUNK_SIZE=1024" in rendered
     assert "export LMCACHE_LOOKUP_SERVER_WORKER_IDS=0,1,2,3" in rendered
     assert "CPUOffloadingConnector" not in rendered
+
+
+def test_deepseek_v4_flash_lmcache_numa_guard_is_in_engine_start_script(monkeypatch):
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENABLE_KV_DISK_OFFLOAD", "false")
+    _clear_deepseek_v4_flash_lmcache_env(monkeypatch)
+    model_path = "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp"
+
+    script = vllm_adapter.build_start_script(
+        {
+            "engine": "vllm_ascend",
+            "model": model_path,
+            "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+            "model_path": model_path,
+            "model_type": "llm",
+            "device_count": 8,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "_smart_feats": ["offload"],
+        }
+    )
+
+    guard_index = script.index("wings_configure_lmcache_numa_mode()")
+    unset_index = script.index("unset LMCACHE_NUMA_MODE")
+    engine_index = script.index("\nexec python3 -m vllm")
+    assert guard_index < unset_index < engine_index
+    assert "/proc/self/status" in script
+    assert "engine-side Mems_allowed_list=" in script
 
 
 def test_lmcache_custom_size_is_computed_per_card(monkeypatch):
@@ -240,6 +279,7 @@ def test_lmcache_custom_size_is_computed_per_card(monkeypatch):
     rendered = "\n".join(commands)
     assert "export LMCACHE_LOCAL_CPU=True" in rendered
     assert "export LMCACHE_MAX_LOCAL_CPU_SIZE=25" in rendered
+    assert "wings_configure_lmcache_numa_mode" not in rendered
     # 页面/门控变量只参与 launcher 内部判断，不能再写进 engine 侧脚本和日志。
     assert "export ENABLE_KV_OFFLOAD" not in rendered
     assert "export ENABLE_KV_MEM_OFFLOAD" not in rendered
