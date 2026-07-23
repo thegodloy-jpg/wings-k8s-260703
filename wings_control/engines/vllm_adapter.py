@@ -1806,11 +1806,16 @@ def _match_ascend_platform(value: Any) -> str:
 
 
 def _ascend_platform_from_runtime(params: Dict[str, Any]) -> str:
-    """Return Ascend platform from hardware-info first, then ENGINE_VERSION."""
+    """Return Ascend platform from hardware info, card token, then ENGINE_VERSION."""
     for detail in params.get("device_details") or []:
         platform = _match_ascend_platform(detail.get("name"))
         if platform:
             return platform
+    # config_loader 已基于 hardware_env 生成标准卡型；最终参数未必继续携带
+    # device_details，因此 adapter 在 ENGINE_VERSION 兜底前复用该硬件结论。
+    platform = _match_ascend_platform(params.get("_smart_card_token"))
+    if platform:
+        return platform
     return engine_version_platform() or "a2"
 
 

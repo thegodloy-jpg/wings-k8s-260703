@@ -1672,6 +1672,82 @@ def test_ascend910c_single_node_day0_topology_is_adapter_owned(monkeypatch):
         assert params["engine_config"]["data_parallel_size"] == expected_dp
 
 
+def test_glm47_ascend910c_card_token_restores_single_node_day0_command(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0")
+    params = {
+        "engine": "vllm_ascend",
+        "distributed": False,
+        "device_count": 16,
+        "nnodes": 1,
+        "model_name": "GLM-4.7-W8A8-floatmtp",
+        "model_path": "/models/GLM-4.7-W8A8-floatmtp",
+        "_smart_card_token": "ascend910c_64g",
+        "engine_config": {"use_vllm_serve": True},
+        "_explicit_cli_keys": set(),
+    }
+    config_loader._set_parallelism_params(params["engine_config"], params)
+    assert params["engine_config"]["tensor_parallel_size"] == 16
+
+    command = vllm_adapter._build_vllm_cmd_parts(params)
+
+    assert "--tensor-parallel-size 8" in command
+    assert "--data-parallel-size 2" in command
+    assert params["engine_config"]["tensor_parallel_size"] == 8
+    assert params["engine_config"]["data_parallel_size"] == 2
+
+
+def test_ascend_runtime_platform_preserves_hardware_resolution_priority(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a2")
+    assert vllm_adapter._ascend_platform_from_runtime({
+        "_smart_card_token": "ascend910c_64g",
+    }) == "a3"
+    assert vllm_adapter._ascend_platform_from_runtime({
+        "device_details": [{"name": "Ascend910B_64G"}],
+        "_smart_card_token": "ascend910c_64g",
+    }) == "a2"
+
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    assert vllm_adapter._ascend_platform_from_runtime({
+        "_smart_card_token": "unknown",
+    }) == "a3"
+
+
+@pytest.mark.parametrize(
+    ("card_token", "explicit_keys", "expected_tp", "expected_dp"),
+    [
+        ("ascend910b_64g", set(), 16, None),
+        ("ascend910c_64g", {"tensor_parallel_size"}, 16, 1),
+    ],
+)
+def test_glm47_card_token_recipe_keeps_platform_and_explicit_topology_boundaries(
+    monkeypatch,
+    card_token,
+    explicit_keys,
+    expected_tp,
+    expected_dp,
+):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0")
+    params = {
+        "engine": "vllm_ascend",
+        "distributed": False,
+        "device_count": 16,
+        "nnodes": 1,
+        "model_name": "GLM-4.7-W8A8-floatmtp",
+        "model_path": "/models/GLM-4.7-W8A8-floatmtp",
+        "_smart_card_token": card_token,
+        "engine_config": {"tensor_parallel_size": 16},
+        "_explicit_cli_keys": explicit_keys,
+    }
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["tensor_parallel_size"] == expected_tp
+    if expected_dp is None:
+        assert "data_parallel_size" not in prepared
+    else:
+        assert prepared["data_parallel_size"] == expected_dp
+
+
 @pytest.mark.parametrize(
     ("params", "tp_size", "initial_dp", "expected_dp"),
     [
