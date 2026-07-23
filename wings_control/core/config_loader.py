@@ -1210,7 +1210,7 @@ def _get_pd_config(ctx, pd_role):
     return config
 
 
-def _get_pd_external_lb_params():
+def _get_pd_external_lb_params(device_count=1):
     """读取上层下发的 external-lb DP 参数；PD_ROLE 未设置时返回 None。
 
     触发 external-lb（模式 A，pod 内 fork 多 service）需 PD_ROLE∈{P,D}。
@@ -1263,10 +1263,17 @@ def _get_pd_external_lb_params():
     if dp_size < 1:
         return None  # 非法值
 
-    # tp_size 仅由 PD_* 环境契约决定（独立于标准推理 device_count 路径）：
-    #   TP_SIZE > PD_TP_SIZE > PD_{PREFILL|DECODE}_TP_SIZE > 缺省 1
-    # 与 _set_pd_parallelism_params / _get_pd_config 保持一致。
-    tp_size = _int("1", "TP_SIZE", "PD_TP_SIZE", f"PD_{role_prefix}_TP_SIZE")
+    # 显式 PD 拓扑仍具最高优先级；仅 1P1D 单 service 漏传 TP 时，用本 pod 卡数兜底，
+    # 避免 device_count>1 却因 TP 缺省为 1 而只暴露首卡。多 DP 场景保持原缺省 1，
+    # 防止把节点总卡数误当成每个 service 的 TP，造成卡数超订。
+    raw_tp = _first_env("TP_SIZE", "PD_TP_SIZE", f"PD_{role_prefix}_TP_SIZE")
+    if raw_tp is None and dp_size == 1:
+        try:
+            tp_size = max(1, int(device_count or 1))
+        except (ValueError, TypeError):
+            tp_size = 1
+    else:
+        tp_size = _int("1", "TP_SIZE", "PD_TP_SIZE", f"PD_{role_prefix}_TP_SIZE")
     # dp_size_local：优先 env 显式下发；否则由 tp_size 推导（单 pod 最多塞几个 service）。
     # 注意：不再依赖 DEVICE_COUNT，直接用 tp_size 和硬件探测数推导。
     _dp_local_raw = _first_env("DP_SIZE_LOCAL", "PD_DP_SIZE_LOCAL")
@@ -1541,7 +1548,7 @@ def _apply_pd_external_lb(cmd_known_params, model_info, hardware_env=None):
             engine or "<unknown>",
         )
         return
-    ext = _get_pd_external_lb_params()
+    ext = _get_pd_external_lb_params(cmd_known_params.get("device_count", 1))
     if not ext:
         # _get_pd_external_lb_params 返回 None 时，若 PD_ROLE 已设但缺少 DP_SIZE/TP_SIZE
         # 等 env var，仍应确保 PD 拓扑参数（tensor_parallel_size / data_parallel_size）

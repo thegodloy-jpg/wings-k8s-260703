@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
+from core import config_loader  # noqa: E402
 from core.engine_manager import start_engine_service  # noqa: E402
 from core.port_plan import PortPlan  # noqa: E402
 from core.start_args_compat import parse_launch_args  # noqa: E402
@@ -79,6 +80,18 @@ _CLEAR_ENV = (
 _PREFILL_IP = "10.254.124.131"
 _DECODE_IP = "10.254.124.182"
 _VLLM_START_PORT = 7100
+
+
+def test_pd_external_lb_1p1d_missing_tp_uses_device_count(monkeypatch):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PD_ROLE", "P")
+
+    ext = config_loader._get_pd_external_lb_params(device_count=2)
+
+    assert ext["tp_size"] == 2
+    assert ext["dp_size"] == 1
+    assert ext["dp_size_local"] == 1
 
 
 def _write_deepseek_v4_config(model_dir: Path) -> None:
