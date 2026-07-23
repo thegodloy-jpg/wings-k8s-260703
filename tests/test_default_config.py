@@ -1986,19 +1986,25 @@ def test_config_file_engine_native_tp_dp_are_marked_explicit(monkeypatch):
                     "tensor_parallel_size": 8,
                     "data_parallel_size": 3,
                 },
+                "env": {
+                    "CONFIG_FILE_TEST_ENV": "enabled",
+                },
             },
             engine="vllm",
             engine_config=None,
             distributed=False,
             device_count=8,
+            _explicit_cli_keys={"max_model_len"},
         ),
     )
 
     assert merged["engine_config"]["tensor_parallel_size"] == 8
     assert merged["engine_config"]["data_parallel_size"] == 3
+    assert merged["_config_file_env"] == {"CONFIG_FILE_TEST_ENV": "enabled"}
     assert set(merged["_explicit_cli_keys"]) >= {
         "tensor_parallel_size",
         "data_parallel_size",
+        "max_model_len",
     }
     assert vllm_adapter._prepare_engine_config(merged)["data_parallel_size"] == 3
 

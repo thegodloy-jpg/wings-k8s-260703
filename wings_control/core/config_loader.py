@@ -4495,6 +4495,115 @@ def _apply_pd_final_guard(engine_config: Dict[str, Any],
         final_engine_params.setdefault("_pd_engine_overrides", {})[k] = v
 
 
+@dataclass(frozen=True)
+class _ConfigFileLayers:
+    """config-file 拆分后参与后续合并的三个配置层。"""
+
+    params: Dict[str, Any]
+    env: Dict[str, Any]
+    engine_params: Dict[str, Any]
+
+
+def _prepare_config_file_layers(
+    config: Any,
+    cmd_known_params: Dict[str, Any],
+) -> _ConfigFileLayers:
+    """加载 config-file，并按 CLI 范围和引擎原生范围完成分层注入。"""
+    raw_user_config = _load_user_config(config)
+    user_env: Dict[str, Any] = {}
+    config_file_params: Dict[str, Any] = {}
+    if isinstance(raw_user_config, dict) and "_params" in raw_user_config:
+        # 新格式 {"_params": {...}, "_env": {...}}
+        user_env = raw_user_config.get("_env", {})
+        config_file_params = raw_user_config.get("_params", {})
+        if user_env:
+            logger.info("Extracted env vars from config-file: %s", list(user_env.keys()))
+    else:
+        # 旧格式：平铺结构，全部视为 CLI 参数
+        config_file_params = raw_user_config
+
+    engine_hint = config_file_params.get("engine") if config_file_params else None
+    explicit_cli_keys = _detect_explicit_cli_keys(engine_hint)
+    config_file_engine_params: Dict[str, Any] = {}
+    parallel_engine_keys = {
+        "tensor_parallel_size",
+        "data_parallel_size",
+    }
+    # config-file 等价于用户显式传参：CLI 范围字段先进入 cmd_known_params，
+    # 其余字段保留到 engine_config 合并阶段，并单独传递 TP/DP 的显式性。
+    config_file_cli_keys: set = set()
+    if config_file_params:
+        logger.info("Processing config-file params, keys: %s", list(config_file_params.keys()))
+        for key, value in config_file_params.items():
+            if key in cmd_known_params:
+                if key not in explicit_cli_keys:
+                    cmd_known_params[key] = value
+                    config_file_cli_keys.add(key)
+                    logger.debug("  [CLI scope] %s = %s (from config-file)", key, value)
+                else:
+                    logger.debug("  [CLI scope] %s = %s (CLI explicitly set, skipping config-file)", key, value)
+            else:
+                config_file_engine_params[key] = value
+                if key in parallel_engine_keys:
+                    config_file_cli_keys.add(key)
+                logger.debug("  [engine scope] %s = %s (will merge to engine_config)", key, value)
+    if config_file_cli_keys:
+        cmd_known_params["_config_file_cli_keys"] = config_file_cli_keys
+
+    return _ConfigFileLayers(
+        params=config_file_params,
+        env=user_env,
+        engine_params=config_file_engine_params,
+    )
+
+
+def _finalize_merged_engine_params(
+    final_engine_params: Dict[str, Any],
+    model_info: ModelIdentifier,
+    hardware_env: Dict[str, Any],
+    user_env: Dict[str, Any],
+    inherited_explicit_keys: set,
+) -> None:
+    """挂载最终附加配置，并按原顺序执行特性注入、PD 守卫和拓扑诊断。"""
+    engine_config = final_engine_params["engine_config"]
+    if user_env:
+        final_engine_params["_config_file_env"] = user_env
+    if inherited_explicit_keys:
+        explicit_keys = set(final_engine_params.get("_explicit_cli_keys") or [])
+        explicit_keys.update(inherited_explicit_keys)
+        final_engine_params["_explicit_cli_keys"] = sorted(explicit_keys)
+
+    # 这些特性必须在 engine_config 完成全部合并后注入，避免被默认配置覆盖。
+    if final_engine_params.get("enable_smartqos"):
+        _inject_smartqos_engine_params(final_engine_params)
+    if final_engine_params.get("enable_otlp_traces"):
+        _inject_trace_engine_params(final_engine_params)
+    if final_engine_params.get("enable_metrics"):
+        _inject_metrics_engine_params(final_engine_params)
+
+    # PD external-lb 必须在显式键终定后执行，最终守卫随后重申角色 TP/DP。
+    _apply_pd_external_lb(final_engine_params, model_info, hardware_env)
+    logger.info("Final engine_config keys: %s", list(engine_config.keys()))
+    _apply_pd_final_guard(engine_config, final_engine_params)
+
+    pd_diag = {}
+    diag_keys = (
+        "tensor_parallel_size",
+        "data_parallel_size",
+        "data_parallel_size_local",
+        "data_parallel_start_rank",
+    )
+    for key in diag_keys:
+        if key in engine_config:
+            pd_diag[key] = engine_config.get(key)
+    if pd_diag:
+        logger.info(
+            "Final engine_config PD topology values (PD_ROLE=%s): %s",
+            get_pd_role_env() or "<unset>",
+            pd_diag,
+        )
+
+
 def load_and_merge_configs(
     hardware_env: Dict[str, Any],
     known_args: argparse.Namespace
@@ -4537,66 +4646,10 @@ def load_and_merge_configs(
     #     等标准处理链路，而非直接合并到 engine_config。
     #     加载时机：在 _process_cmd_args 之后、VRAM 检查 / _auto_select_engine 之前，
     #     确保 config-file 中的 model_path / engine 等参数能参与引擎自动选择和校验。
-    config = known_args.config_file
-    raw_user_config = _load_user_config(config)
-
-    # ── 分离新格式的 params 和 env ──
-    user_env: Dict[str, Any] = {}
-    config_file_params: Dict[str, Any] = {}
-    if isinstance(raw_user_config, dict) and "_params" in raw_user_config:
-        # 新格式 {"_params": {...}, "_env": {...}}
-        user_env = raw_user_config.get("_env", {})
-        config_file_params = raw_user_config.get("_params", {})
-        if user_env:
-            logger.info("Extracted env vars from config-file: %s", list(user_env.keys()))
-    else:
-        # 旧格式：平铺结构，全部视为 CLI 参数
-        config_file_params = raw_user_config
-
-    # 将 config-file 参数分类注入：
-    #   - CLI 范围内的参数（cmd_known_params 中已存在的 key）→ 注入 cmd_known_params，
-    #     走 _auto_select_engine / _merge_cmd_params 等标准处理链路
-    #   - CLI 范围外的参数（cmd_known_params 中不存在的 key）→ 暂存到
-    #     _config_file_engine_params，后续直接合并到 engine_config，
-    #     作为引擎原生参数拼接到启动命令中
-    #
-    # 优先级规则：CLI 显式传参 > config-file > argparse 默认值
-    # config-file 等价于 CLI 传参，应覆盖 argparse 的默认值。
-    # 先检测用户显式指定的 CLI/ENV key，用于区分"用户显式传参"和"argparse 默认值"。
-    _config_file_engine_hint = config_file_params.get("engine") if config_file_params else None
-    explicit_cli_keys = _detect_explicit_cli_keys(_config_file_engine_hint)
-
-    config_file_engine_params: Dict[str, Any] = {}
-    parallel_engine_keys = {
-        "tensor_parallel_size",
-        "data_parallel_size",
-    }
-    # 记录 config-file 显式声明的 key，供下游默认注入器和脚本拓扑解析器
-    # 识别这些参数为"显式设置"。
-    _config_file_cli_keys: set = set()
-    if config_file_params:
-        logger.info("Processing config-file params, keys: %s", list(config_file_params.keys()))
-        for key, value in config_file_params.items():
-            if key in cmd_known_params:
-                # CLI 范围内的参数：注入 cmd_known_params
-                # 仅当用户未通过 CLI/ENV 显式指定时才覆盖
-                if key not in explicit_cli_keys:
-                    cmd_known_params[key] = value
-                    _config_file_cli_keys.add(key)
-                    logger.debug("  [CLI scope] %s = %s (from config-file)", key, value)
-                else:
-                    logger.debug("  [CLI scope] %s = %s (CLI explicitly set, skipping config-file)", key, value)
-            else:
-                # CLI 范围外的参数：暂存，后续直接合并到 engine_config
-                config_file_engine_params[key] = value
-                # TP/DP 可能以引擎原生字段写入 config-file，仍需向后传递显式性，
-                # 防止模型默认或最终拓扑计算覆盖用户值。
-                if key in parallel_engine_keys:
-                    _config_file_cli_keys.add(key)
-                logger.debug("  [engine scope] %s = %s (will merge to engine_config)", key, value)
-    # 将 config-file 显式 key 存入 cmd_known_params，供下游识别
-    if _config_file_cli_keys:
-        cmd_known_params["_config_file_cli_keys"] = _config_file_cli_keys
+    config_file_layers = _prepare_config_file_layers(known_args.config_file, cmd_known_params)
+    user_env = config_file_layers.env
+    config_file_params = config_file_layers.params
+    config_file_engine_params = config_file_layers.engine_params
 
     # VRAM 检查
     if cmd_known_params.get("model_path"):
@@ -4684,51 +4737,12 @@ def load_and_merge_configs(
 
     # 5.
     final_engine_params = _merge_final_config(engine_config, cmd_known_params)
-
-    # ── 将 config-file 中的 env 挂载到返回字典 ──
-    if user_env:
-        final_engine_params["_config_file_env"] = user_env
-    if inherited_explicit_keys:
-        explicit_keys = set(final_engine_params.get("_explicit_cli_keys") or [])
-        explicit_keys.update(inherited_explicit_keys)
-        final_engine_params["_explicit_cli_keys"] = sorted(explicit_keys)
-
-    # 5.1 SmartQoS: 在 engine_config 合并完成后注入引擎侧 priority 调度参数
-    #     必须在 _merge_final_config 之后执行，因为此时 engine_config 已挂载到
-    #     final_engine_params["engine_config"]，且所有合并（user_config、CLI 覆盖、
-    #     raw_engine_config）已完成，注入的默认值不会覆盖用户显式指定的参数。
-    #     与 _set_spec_decoding_config / _set_sparse_config 不同，这些参数需要
-    #     注入到 engine_config 子字典中，因为 engine 适配器（_build_vllm_cmd_parts /
-    #     _build_sglang_cmd_parts）读取的是 engine_config，而不是 params 顶层。
-    if final_engine_params.get("enable_smartqos"):
-        _inject_smartqos_engine_params(final_engine_params)
-
-    # 5.2 EnableTrace: 在 engine_config 合并完成后注入引擎侧 OTLP trace 参数
-    if final_engine_params.get("enable_otlp_traces"):
-        _inject_trace_engine_params(final_engine_params)
-
-    # 5.3 EnableMetrics: 在 engine_config 合并完成后注入引擎侧 metrics 监控参数
-    #     仅对 SGLang 引擎有效，vLLM 默认开启 metrics。
-    if final_engine_params.get("enable_metrics"):
-        _inject_metrics_engine_params(final_engine_params)
-
-    # 6. PD external-lb：检测并应用 PD 模型配置注册表（pd_config.json）。
-    #    必须在所有合并 + explicit_keys 终定之后，确保不覆盖用户显式键。
-    _apply_pd_external_lb(final_engine_params, model_info, hardware_env)
-
-    logger.info("Final engine_config keys: %s", list(engine_config.keys()))
-
-    # PD 最终守卫：无条件从 PD_* env 覆盖当前角色 TP/DP
-    _apply_pd_final_guard(engine_config, final_engine_params)
-
-    # 打印 PD 关键拓扑值用于诊断
-    _pd_diag = {}
-    diag_keys = ("tensor_parallel_size", "data_parallel_size", "data_parallel_size_local", "data_parallel_start_rank")
-    for k in diag_keys:
-        if k in engine_config:
-            _pd_diag[k] = engine_config.get(k)
-    if _pd_diag:
-        logger.info("Final engine_config PD topology values (PD_ROLE=%s): %s",
-                     get_pd_role_env() or "<unset>", _pd_diag)
+    _finalize_merged_engine_params(
+        final_engine_params,
+        model_info,
+        hardware_env,
+        user_env,
+        inherited_explicit_keys,
+    )
     logger.info("Config merging completed.")
     return final_engine_params
