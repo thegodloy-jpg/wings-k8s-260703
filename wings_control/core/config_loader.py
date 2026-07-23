@@ -4534,19 +4534,19 @@ def _prepare_config_file_layers(
     config_file_cli_keys: set = set()
     if config_file_params:
         logger.info("Processing config-file params, keys: %s", list(config_file_params.keys()))
-        for key, value in config_file_params.items():
-            if key in cmd_known_params:
-                if key not in explicit_cli_keys:
-                    cmd_known_params[key] = value
-                    config_file_cli_keys.add(key)
-                    logger.debug("  [CLI scope] %s = %s (from config-file)", key, value)
-                else:
-                    logger.debug("  [CLI scope] %s = %s (CLI explicitly set, skipping config-file)", key, value)
-            else:
-                config_file_engine_params[key] = value
-                if key in parallel_engine_keys:
-                    config_file_cli_keys.add(key)
-                logger.debug("  [engine scope] %s = %s (will merge to engine_config)", key, value)
+    for key, value in config_file_params.items():
+        if key not in cmd_known_params:
+            config_file_engine_params[key] = value
+            if key in parallel_engine_keys:
+                config_file_cli_keys.add(key)
+            logger.debug("  [engine scope] %s = %s (will merge to engine_config)", key, value)
+            continue
+        if key in explicit_cli_keys:
+            logger.debug("  [CLI scope] %s = %s (CLI explicitly set, skipping config-file)", key, value)
+            continue
+        cmd_known_params[key] = value
+        config_file_cli_keys.add(key)
+        logger.debug("  [CLI scope] %s = %s (from config-file)", key, value)
     if config_file_cli_keys:
         cmd_known_params["_config_file_cli_keys"] = config_file_cli_keys
 
