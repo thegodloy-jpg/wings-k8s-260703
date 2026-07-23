@@ -4567,8 +4567,12 @@ def load_and_merge_configs(
     explicit_cli_keys = _detect_explicit_cli_keys(_config_file_engine_hint)
 
     config_file_engine_params: Dict[str, Any] = {}
-    # 记录 config-file 注入到 cmd_known_params 的 key，供下游函数
-    # （_set_sequence_length / _set_common_params 等）识别这些参数为"显式设置"
+    parallel_engine_keys = {
+        "tensor_parallel_size",
+        "data_parallel_size",
+    }
+    # 记录 config-file 显式声明的 key，供下游默认注入器和脚本拓扑解析器
+    # 识别这些参数为"显式设置"。
     _config_file_cli_keys: set = set()
     if config_file_params:
         logger.info("Processing config-file params, keys: %s", list(config_file_params.keys()))
@@ -4585,8 +4589,12 @@ def load_and_merge_configs(
             else:
                 # CLI 范围外的参数：暂存，后续直接合并到 engine_config
                 config_file_engine_params[key] = value
+                # TP/DP 可能以引擎原生字段写入 config-file，仍需向后传递显式性，
+                # 防止模型默认或最终拓扑计算覆盖用户值。
+                if key in parallel_engine_keys:
+                    _config_file_cli_keys.add(key)
                 logger.debug("  [engine scope] %s = %s (will merge to engine_config)", key, value)
-    # 将 config-file 注入的 CLI key 存入 cmd_known_params，供下游识别
+    # 将 config-file 显式 key 存入 cmd_known_params，供下游识别
     if _config_file_cli_keys:
         cmd_known_params["_config_file_cli_keys"] = _config_file_cli_keys
 

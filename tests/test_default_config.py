@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1669,6 +1670,261 @@ def test_ascend910c_single_node_day0_topology_is_adapter_owned(monkeypatch):
         assert prepared["data_parallel_size"] == expected_dp
         assert params["engine_config"]["tensor_parallel_size"] == expected_tp
         assert params["engine_config"]["data_parallel_size"] == expected_dp
+
+
+@pytest.mark.parametrize(
+    ("params", "tp_size", "initial_dp", "expected_dp"),
+    [
+        ({"device_count": 16, "distributed": False, "nnodes": 1}, 16, 2, 1),
+        ({"device_count": 8, "distributed": False, "nnodes": 1}, 2, 2, 4),
+        ({"device_count": 8, "distributed": True, "nnodes": 2}, 4, 2, 4),
+    ],
+)
+def test_final_tp_aligns_implicit_dp(params, tp_size, initial_dp, expected_dp):
+    params.update({
+        "engine": "vllm",
+        "engine_config": {
+            "tensor_parallel_size": tp_size,
+            "data_parallel_size": initial_dp,
+        },
+        "_explicit_cli_keys": {"tensor_parallel_size"},
+    })
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["data_parallel_size"] == expected_dp
+
+
+@pytest.mark.parametrize(
+    ("params", "recipe_tp", "expected_tp", "expected_dp"),
+    [
+        (
+            {
+                "device_count": 4,
+                "distributed": False,
+                "nnodes": 1,
+            },
+            8,
+            4,
+            1,
+        ),
+        (
+            {
+                "device_count": 4,
+                "distributed": True,
+                "distributed_executor_backend": "dp_deployment",
+                "nnodes": 2,
+            },
+            8,
+            4,
+            2,
+        ),
+        (
+            {
+                "device_count": 4,
+                "distributed": True,
+                "distributed_executor_backend": "ray",
+                "nnodes": 2,
+            },
+            8,
+            8,
+            1,
+        ),
+        (
+            {
+                "device_count": 4,
+                "distributed": True,
+                "distributed_executor_backend": "ray",
+                "nnodes": 2,
+            },
+            16,
+            4,
+            2,
+        ),
+    ],
+)
+def test_final_tp_fallback_uses_backend_capacity(
+    params,
+    recipe_tp,
+    expected_tp,
+    expected_dp,
+):
+    params.update({
+        "engine": "vllm",
+        "engine_config": {
+            "tensor_parallel_size": recipe_tp,
+            "data_parallel_size": 1,
+        },
+        "_explicit_cli_keys": set(),
+    })
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["tensor_parallel_size"] == expected_tp
+    assert prepared["data_parallel_size"] == expected_dp
+
+
+def test_final_tp_fallback_updates_existing_dp_deployment_rank_fields():
+    params = {
+        "engine": "vllm",
+        "device_count": 4,
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "nnodes": 2,
+        "node_rank": 1,
+        "engine_config": {
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 1,
+            "data_parallel_size_local": 2,
+            "data_parallel_start_rank": 2,
+        },
+        "_explicit_cli_keys": set(),
+    }
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["tensor_parallel_size"] == 4
+    assert prepared["data_parallel_size"] == 2
+    assert prepared["data_parallel_size_local"] == 1
+    assert prepared["data_parallel_start_rank"] == 1
+
+
+def test_final_tp_fallback_does_not_override_explicit_dp_deployment_tp():
+    with pytest.raises(ValueError, match="tp_capacity=4"):
+        vllm_adapter._prepare_engine_config({
+            "engine": "vllm",
+            "device_count": 4,
+            "distributed": True,
+            "distributed_executor_backend": "dp_deployment",
+            "nnodes": 2,
+            "engine_config": {
+                "tensor_parallel_size": 8,
+                "data_parallel_size": 1,
+            },
+            "_explicit_cli_keys": {"tensor_parallel_size"},
+        })
+
+
+def test_final_tp_alignment_preserves_explicit_dp():
+    params = {
+        "engine": "vllm",
+        "device_count": 16,
+        "distributed": False,
+        "nnodes": 1,
+        "engine_config": {
+            "tensor_parallel_size": 16,
+            "data_parallel_size": 99,
+        },
+        "_explicit_cli_keys": {
+            "tensor_parallel_size",
+            "data_parallel_size",
+        },
+    }
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["data_parallel_size"] == 99
+
+
+def test_final_tp_alignment_does_not_inject_missing_dp():
+    params = {
+        "engine": "vllm",
+        "device_count": 8,
+        "distributed": False,
+        "nnodes": 1,
+        "engine_config": {"tensor_parallel_size": 2},
+        "_explicit_cli_keys": {"tensor_parallel_size"},
+    }
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert "data_parallel_size" not in prepared
+
+
+@pytest.mark.parametrize(
+    ("marker", "value"),
+    [
+        ("_pd_engine_overrides", {"data_parallel_size": 9}),
+        ("_pd_external_lb", {"role": "D"}),
+    ],
+)
+def test_final_tp_alignment_does_not_change_pd_topology(marker, value):
+    params = {
+        "engine": "vllm",
+        "device_count": 8,
+        "distributed": False,
+        "nnodes": 1,
+        "engine_config": {
+            "tensor_parallel_size": 4,
+            "data_parallel_size": 9,
+        },
+        "_explicit_cli_keys": set(),
+        marker: value,
+    }
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["data_parallel_size"] == 9
+
+
+def test_final_tp_alignment_rejects_non_divisible_capacity():
+    with pytest.raises(ValueError, match="TP capacity to be divisible"):
+        vllm_adapter._prepare_engine_config({
+            "engine": "vllm",
+            "device_count": 16,
+            "distributed": False,
+            "nnodes": 1,
+            "engine_config": {
+                "tensor_parallel_size": 3,
+                "data_parallel_size": 2,
+            },
+            "_explicit_cli_keys": {"tensor_parallel_size"},
+        })
+
+
+def test_config_file_engine_native_tp_dp_are_marked_explicit(monkeypatch):
+    class _FakeModelIdentifier:
+        def __init__(self, *_args):
+            pass
+
+        @staticmethod
+        def identify_model_type():
+            return "llm"
+
+    monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeModelIdentifier)
+    monkeypatch.setattr(config_loader, "_auto_select_engine", lambda _hw, params, _model: params)
+    monkeypatch.setattr(config_loader, "apply_effective_feature_enablement", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_get_model_specific_config", lambda *_args: {})
+    monkeypatch.setattr(config_loader, "_validate_embedding_rerank_params", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_enforce_native_offload_no_kv_transfer_config", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_enforce_glm51_nvidia_no_kv_offload", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_apply_pd_external_lb", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_apply_pd_final_guard", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "get_config_force_env", lambda: False)
+
+    merged = config_loader.load_and_merge_configs(
+        {"device": "nvidia", "count": 8, "details": []},
+        SimpleNamespace(
+            config_file={
+                "params": {
+                    "tensor_parallel_size": 8,
+                    "data_parallel_size": 3,
+                },
+            },
+            engine="vllm",
+            engine_config=None,
+            distributed=False,
+            device_count=8,
+        ),
+    )
+
+    assert merged["engine_config"]["tensor_parallel_size"] == 8
+    assert merged["engine_config"]["data_parallel_size"] == 3
+    assert set(merged["_explicit_cli_keys"]) >= {
+        "tensor_parallel_size",
+        "data_parallel_size",
+    }
+    assert vllm_adapter._prepare_engine_config(merged)["data_parallel_size"] == 3
 
 
 @pytest.mark.parametrize(

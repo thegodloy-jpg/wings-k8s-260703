@@ -420,6 +420,18 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     dp_rpc_port = str(params.get("rpc_port", os.getenv('VLLM_DP_RPC_PORT', '13355')))
     model_info = ModelIdentifier(params.get("model_name"), params.get("model_path"), params.get("model_type"))
     topology = _resolve_dp_deployment_topology(params, ctx, model_info)
+    engine_config = params.get("engine_config") or {}
+    explicit_keys = set(params.get("_explicit_cli_keys") or ())
+    if "data_parallel_size" in explicit_keys:
+        raw_dp = engine_config.get("data_parallel_size")
+        if raw_dp in (None, ""):
+            raw_dp = params.get("data_parallel_size")
+        if raw_dp in (None, ""):
+            raw_dp = os.getenv("DATA_PARALLEL_SIZE")
+        explicit_dp = _safe_int(raw_dp)
+        if not explicit_dp or explicit_dp <= 0:
+            raise ValueError(f"dp_deployment requires positive data_parallel_size: {raw_dp!r}")
+        topology = topology._replace(dp_size=str(explicit_dp))
     dp_cmd = _strip_dp_cli_flags(_transform_dp_cmd(ctx.cmd))
     speculative_extra = ""
     if vllm_adapter.should_append_auto_speculative_config(params):
