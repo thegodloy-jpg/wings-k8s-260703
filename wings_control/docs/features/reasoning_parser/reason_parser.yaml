@@ -90,6 +90,7 @@ architectures:
       DeepSeek-V3.2:      {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
       DeepSeek-V3.2-w8a8: {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
       DeepSeek-V3.2-Exp:  {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
+      DeepSeek-V3.2-Exp-W8A8: {vllm: deepseek_v3, vllm_ascend: deepseek_v3}
 
   - name: KimiK25ForConditionalGeneration
     config:

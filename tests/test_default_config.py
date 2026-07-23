@@ -1074,8 +1074,8 @@ def test_all_ascend_card_profiles_select_without_smart_whitelist(monkeypatch):
                         engine_key,
                     )
 
-    assert profile_count == 23
-    assert engine_config_count == 45
+    assert profile_count == 25
+    assert engine_config_count == 49
 
 
 def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monkeypatch):
@@ -1542,6 +1542,49 @@ def test_glm47_ascend_exact_defaults_use_card_specific_cudagraph_sizes():
         assert "data_parallel_size" not in config
 
 
+def test_glm47_runtime_keeps_config_loader_engine_config(monkeypatch):
+    class _FakeGlm47W8A8Identifier:
+        model_architecture = "Glm4MoeForCausalLM"
+        model_quantize = "w8a8"
+
+        def __init__(self, *_args):
+            pass
+
+    expected = {
+        "max_model_len": 777,
+        "additional_config": {"user_key": True},
+        "compilation_config": {"cudagraph_capture_sizes": [7]},
+    }
+    params = {
+        "engine": "vllm_ascend",
+        "distributed": False,
+        "device_count": 8,
+        "nnodes": 1,
+        "model_name": "GLM-4.7-W8A8-floatmtp",
+        "model_path": "/models/GLM-4.7-W8A8-floatmtp",
+        "engine_config": {
+            "max_model_len": 777,
+            "additional_config": {"user_key": True},
+            "compilation_config": {"cudagraph_capture_sizes": [7]},
+        },
+        "_explicit_cli_keys": set(),
+    }
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm47W8A8Identifier)
+    monkeypatch.setattr(vllm_adapter, "_build_vllm_cmd_parts", lambda _params: "vllm serve /models/glm")
+    monkeypatch.setattr(vllm_adapter, "_build_vllm_common_env_cmds", lambda *_args: [])
+    monkeypatch.setattr(
+        vllm_adapter,
+        "_build_vllm_single_script",
+        lambda _params, cmd, _env, _engine, _sparse: cmd,
+    )
+    monkeypatch.setattr(vllm_adapter, "_inject_env_echo", lambda script: script)
+
+    vllm_adapter.build_start_script(params)
+
+    # GLM 静态默认由 config loader 负责，adapter 只保留 910C 16 卡运行时拓扑 recipe。
+    assert params["engine_config"] == expected
+
+
 def test_minimax_m27_quarot_ascend_defaults_use_card_specific_profiles():
     minimax_arch = _model_deploy_config("ascend")["llm"]["MiniMaxM2ForCausalLM"]
     scenario = config_loader._SpecialEngineScenario()
@@ -1684,6 +1727,23 @@ def test_deepseek_v32_w8a8_ascend_defaults_match_official_profile(
     assert "speculative_config" not in config
     assert "tensor_parallel_size" not in config
     assert "data_parallel_size" not in config
+
+
+def test_deepseek_v32_w8a8_reuses_arch_env_builder_with_512(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V3.2-W8A8",
+        "model_path": "/models/DeepSeek-V3.2-W8A8",
+        "model_type": "llm",
+        "engine_config": {},
+    }
+
+    commands = vllm_adapter._build_model_env_commands(params, "vllm_ascend")
+
+    assert commands == vllm_adapter._build_deepseekv32_ascend_env("DeepseekV32ForCausalLM")
+    assert "export HCCL_BUFFSIZE=512" in commands
+    assert "export HCCL_BUFFSIZE=200" not in commands
 
 
 def test_deepseek_v32_w8a8_ascend910c_single_node_uses_official_tp_dp(monkeypatch):

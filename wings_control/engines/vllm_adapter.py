@@ -49,8 +49,7 @@ except ImportError:
     from features.kv_offload.memcache import hybrid as memcache_hybrid  # type: ignore
 from utils.vllm_helpers import (
     _format_cli_arg, _safe_int, _is_w8a8_quantize, _is_w4a8_quantize, _deep_merge_user_priority,
-    _is_empty_engine_config_value, _parse_dict_like_config, Glm47DefaultMergeResult, Glm47InjectionStats,
-    DistScriptCtx, DpDeploymentTopology,
+    _parse_dict_like_config, DistScriptCtx, DpDeploymentTopology,
 )
 
 try:
@@ -1641,22 +1640,6 @@ def _build_deepseekv32_ascend_env(arch: str) -> List[str]:
     ]
 
 
-def _build_deepseek_v32_official_env(params: Dict[str, Any]) -> List[str]:
-    """按 DeepSeek-V3.2-W8A8 官方单机 recipe 收口模型环境变量。"""
-    platform = _ascend_platform_from_runtime(params)
-    logger.info("[DeepSeek-V3.2-W8A8] Set official Ascend %s environment variables", platform or "unknown")
-    return [
-        "export HCCL_OP_EXPANSION_MODE=AIV",
-        "export OMP_PROC_BIND=false",
-        "export OMP_NUM_THREADS=10",
-        "export VLLM_USE_V1=1",
-        "export HCCL_BUFFSIZE=200",
-        "export VLLM_ASCEND_ENABLE_MLAPO=1",
-        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
-    ]
-
-
 def _build_llama_ascend_env(arch: str) -> List[str]:
     """构建 LLaMA3.1 (LlamaForCausalLM) Ascend 环境变量命令。"""
     logger.info("[LLaMA3.1] Set Ascend environment variables for %s", arch)
@@ -2204,8 +2187,6 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
-    if _is_deepseek_v32_w8a8_official_scope(params, model_info):
-        return _build_deepseek_v32_official_env(params)
     if _is_deepseek_v4_flash_params(params, model_info):
         return _build_deepseek_v4_flash_env(params)
     if is_deepseek_v4_pro_adapted_scope(params, model_info):
@@ -3425,89 +3406,8 @@ def is_deepseek_ascend_dp_deployment(params: Dict[str, Any]) -> bool:
     return _is_deepseek_ascend_dp_deployment(params)
 
 
-# ── GLM-4.7-W8A8 引擎参数注入（仅针对量化变体，避免污染同架构 BF16 模型）──
-# 触发条件：架构 == Glm4MoeForCausalLM 且 config.json 量化字段命中 W8A8 别名表
-# 合并策略：
-#   * 标量字段：用户已显式给出则不覆盖（user > injected）
-#   * dict 字段（additional_config / compilation_config）：
-#       做 **深合并**，用户给出的 sub-key 优先，未给出的 sub-key 注入
-_GLM47_W8A8_ENGINE_DEFAULTS: Dict[str, Any] = {
-    "use_vllm_serve": True,
-    # TP/DP 不放在 GLM-4.7 静态默认里；910C 单机 16 卡由
-    # _apply_ascend910c_single_node_16_tp_dp_recipe 按运行时拓扑注入。
-    "enable_expert_parallel": True,
-    "async_scheduling": True,
-    "quantization": "ascend",
-    "seed": 1024,
-    "max_model_len": 133000,
-    "max_num_batched_tokens": 8192,
-    "max_num_seqs": 16,
-    "gpu_memory_utilization": 0.9,
-    "additional_config": {
-        # 官方 GLM-4.7-W8A8 强推荐
-        "enable_shared_expert_dp": True,
-        "ascend_fusion_config": {"fusion_ops_gmmswigluquant": False},
-    },
-    # 推测解码不在此处承载：完全交由"上层开关 + launcher 自动合成"路径产出，
-    # 避免在 ascend 默认 / 架构指纹注入这条"第三入口"上再硬编码任何 spec 字段。
-    # 编译图：cudagraph 全量解码模式，覆盖常用并发档位
-    "compilation_config": {
-        "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64, 128],
-        "cudagraph_mode": "FULL_DECODE_ONLY",
-    },
-}
-
-# 需要做 dict 深合并的字段（不能整体覆盖）
-_GLM47_W8A8_DEEP_MERGE_KEYS = {
-    "additional_config",
-    "compilation_config",
-}
-
-
-
-
-
-def _merge_glm47_dict_default(existing: Any, default_val: Dict[str, Any]) -> Glm47DefaultMergeResult:
-    """Merge a GLM-4.7 W8A8 dict default."""
-    if _is_empty_engine_config_value(existing):
-        return Glm47DefaultMergeResult(dict(default_val), "injected")
-    parsed_existing = _parse_dict_like_config(existing)
-    if parsed_existing is not None:
-        merged = _deep_merge_user_priority(parsed_existing, default_val)
-        action = "deep_merged" if merged != existing else "unchanged"
-        return Glm47DefaultMergeResult(merged if merged != existing else None, action)
-    return Glm47DefaultMergeResult(None, "skipped_non_dict")
-
-
-def _apply_glm47_w8a8_default(
-    engine_config: Dict[str, Any],
-    key: str,
-    default_val: Any,
-    explicit_keys: Optional[set] = None,
-    force_non_explicit: bool = False,
-) -> str:
-    """Apply one GLM-4.7 W8A8 default while preserving explicit user values."""
-    explicit_keys = explicit_keys or set()
-    if key in explicit_keys:
-        return "skipped"
-    existing = engine_config.get(key)
-    if key in _GLM47_W8A8_DEEP_MERGE_KEYS and isinstance(default_val, dict):
-        result = _merge_glm47_dict_default(existing, default_val)
-        if result.value is not None:
-            engine_config[key] = result.value
-        return result.action
-    if force_non_explicit:
-        action = "overridden" if not _is_empty_engine_config_value(existing) else "injected"
-        engine_config[key] = default_val
-        return action
-    if not _is_empty_engine_config_value(existing):
-        return "skipped"
-    engine_config[key] = default_val
-    return "injected"
-
-
 def _get_glm47_w8a8_model_info(params: Dict[str, Any]) -> Optional[ModelIdentifier]:
-    """Return model info when params describe a GLM-4.7 W8A8 vLLM model."""
+    """Return model info for the GLM-4.7 W8A8 runtime topology recipe."""
     engine = params.get("engine", "vllm")
     if engine not in ("vllm", "vllm_ascend"):
         return None
@@ -3523,83 +3423,12 @@ def _get_glm47_w8a8_model_info(params: Dict[str, Any]) -> Optional[ModelIdentifi
             params.get("model_type", "auto"),
         )
     except Exception as e:  # noqa: BLE001
-        logger.debug("[GLM-4.7-W8A8] Skip injection, ModelIdentifier failed: %s", e)
+        logger.debug("[GLM-4.7-W8A8] Skip topology recipe; ModelIdentifier failed: %s", e)
         return None
 
     if info.model_architecture != "Glm4MoeForCausalLM":
         return None
     return info if _is_w8a8_quantize(info.model_quantize) else None
-
-
-def _record_glm47_default_action(
-    engine_config: Dict[str, Any],
-    key: str,
-    action: str,
-    stats: Glm47InjectionStats,
-) -> None:
-    """Record and log the result of applying one GLM-4.7 W8A8 default."""
-    if action == "injected":
-        stats.injected.append(key)
-    elif action == "deep_merged":
-        stats.deep_merged.append(key)
-    elif action == "skipped_non_dict":
-        logger.warning(
-            "[GLM-4.7-W8A8] %s already present as non-dict (%s); "
-            "keeping user value and skipping default injection for this key.",
-            key, type(engine_config.get(key)).__name__,
-        )
-        stats.skipped.append(key)
-    elif action == "skipped":
-        stats.skipped.append(key)
-
-
-def _log_glm47_w8a8_summary(
-    info: ModelIdentifier,
-    engine_config: Dict[str, Any],
-    stats: Glm47InjectionStats,
-) -> None:
-    """Log GLM-4.7 W8A8 engine_config injection summary."""
-    if not stats.injected and not stats.deep_merged:
-        return
-    logger.info(
-        "[GLM-4.7-W8A8] Engine config tuning for arch=%s quantize=%s | "
-        "injected=%s | deep_merged=%s | user_kept=%s",
-        info.model_architecture, info.model_quantize, stats.injected, stats.deep_merged, stats.skipped,
-    )
-    try:
-        summary = {k: engine_config.get(k) for k in _GLM47_W8A8_ENGINE_DEFAULTS.keys()}
-        logger.info(
-            "[GLM-4.7-W8A8] Final engine_config for tuned keys:\n%s",
-            json.dumps(summary, ensure_ascii=False, indent=2, default=str),
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[GLM-4.7-W8A8] Skip summary dump: %s", e)
-
-
-def _inject_glm47_w8a8_engine_config(params: Dict[str, Any], force_non_explicit: bool = False) -> None:
-    """检测 GLM-4.7-W8A8 模型，**就地**向 engine_config 追加调优默认字段。
-
-    设计要点：
-      * 仅当 (架构 == Glm4MoeForCausalLM) 且 (quantize 命中 W8A8) 时触发
-      * 标量字段：用户优先；dict 字段：深合并，用户的 sub-key 优先
-      * BF16 / 同架构非量化变体（如 GLM-4.5）不会被影响
-      * 仅对 vllm / vllm_ascend 引擎生效
-      * 不承载推测解码：spec 完全交给"上层开关 + launcher 自动合成"两入口
-    """
-    info = _get_glm47_w8a8_model_info(params)
-    if info is None:
-        return
-
-    engine_config = params.setdefault("engine_config", {})
-    explicit_keys = set(params.get("_explicit_cli_keys") or [])
-    stats = Glm47InjectionStats()
-    for key, default_val in _GLM47_W8A8_ENGINE_DEFAULTS.items():
-        action = _apply_glm47_w8a8_default(
-            engine_config, key, default_val, explicit_keys, force_non_explicit,
-        )
-        _record_glm47_default_action(engine_config, key, action, stats)
-
-    _log_glm47_w8a8_summary(info, engine_config, stats)
 
 
 def _build_vllm_cmd_parts(params: Dict[str, Any]) -> str:
@@ -5047,8 +4876,6 @@ def build_start_script(params: Dict[str, Any]) -> str:
     # 「有效开关」（开关 on 且命中白名单才为真，无 forced）。原 _force_kv_sparse_* 已按 §0 裁定1 删除。
     should_emit_sparse = bool(params.get("enable_sparse"))
     sparse_args = _build_kv_sparse_cmd(params, engine) if should_emit_sparse else ""
-    # GLM-4.7-W8A8 引擎参数注入（必须在 _build_vllm_cmd_parts 之前，且只动 W8A8 量化变体）
-    _inject_glm47_w8a8_engine_config(params, force_non_explicit=True)
     cmd = _build_vllm_cmd_parts(params)
     is_distributed = params.get("distributed", False)
     nnodes = params.get("nnodes", 1)
