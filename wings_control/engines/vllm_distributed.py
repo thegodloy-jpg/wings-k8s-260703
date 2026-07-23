@@ -260,7 +260,7 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
         # DeepSeek-V4-Pro 双机对齐参考 start_1/start_2：前置 export 变量名必须一致，
         # 不继承通用 DP 的 whitelist/timeout，也不追加 multi-block/multi-groups/FUSED_MC2。
         return _build_deepseek_v4_pro_dp_env_commands(net_if)
-    if vllm_adapter._is_deepseek_v32_w8a8_official_scope(params):
+    if vllm_adapter.is_deepseek_v32_w8a8_official_scope(params):
         return _build_deepseek_v32_official_dp_env_commands(params, net_if)
     env_defaults = _resolve_ascend_dp_env_defaults(is_glm5_dp)
     env_commands = _build_common_ascend_dp_env_commands(net_if, *env_defaults)
@@ -287,7 +287,7 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
 def _build_deepseek_v32_official_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
     """按项目现有 DP 逻辑补齐 DeepSeek-V3.2-W8A8 双机关键 env recipe。"""
     vllm_adapter = _import_vllm_adapter()
-    platform = vllm_adapter._ascend_platform_from_runtime(params)
+    platform = vllm_adapter.ascend_platform_from_runtime(params)
     omp_default = "100" if platform == "a2" else "10"
     connect_timeout_default = "120" if platform == "a2" else "1800"
     env_commands = _build_common_ascend_dp_env_commands(

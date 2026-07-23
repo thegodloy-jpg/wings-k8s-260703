@@ -1814,6 +1814,11 @@ def _ascend_platform_from_runtime(params: Dict[str, Any]) -> str:
     return engine_version_platform() or "a2"
 
 
+def ascend_platform_from_runtime(params: Dict[str, Any]) -> str:
+    """Return the normalized Ascend runtime platform for external adapters."""
+    return _ascend_platform_from_runtime(params)
+
+
 def _is_deepseek_v32_w8a8_official_scope(
     params: Dict[str, Any],
     model_info: Optional[ModelIdentifier] = None,
@@ -1833,17 +1838,20 @@ def _is_deepseek_v32_w8a8_official_scope(
     if info.model_architecture != "DeepseekV32ForCausalLM":
         return False
     engine_config = params.get("engine_config") or {}
-    identity = " ".join(
-        str(value or "").lower()
-        for value in (
-            params.get("model_name"),
-            params.get("model_path"),
-            params.get("served_model_name"),
-            engine_config.get("served_model_name"),
-            engine_config.get("model"),
-        )
+    identity_values = (
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("served_model_name"),
+        engine_config.get("served_model_name"),
+        engine_config.get("model"),
     )
+    identity = " ".join(str(value or "").lower() for value in identity_values)
     return "deepseek-v3.2" in identity and "w8a8" in identity
+
+
+def is_deepseek_v32_w8a8_official_scope(params: Dict[str, Any]) -> bool:
+    """Return whether params match the DeepSeek-V3.2-W8A8 Ascend recipe."""
+    return _is_deepseek_v32_w8a8_official_scope(params)
 
 
 _DEEPSEEK_V4_IDENTITY_CONFIG_KEYS = (
@@ -2449,21 +2457,6 @@ def _apply_generic_deepseek_ascend_dp_defaults(
     if model_architecture == "GlmMoeDsaForCausalLM" and is_glm52_single_node_even(params):
         default_tp = device_count // _GLM52_SINGLE_NODE_DP
         _set_if_not_explicit(engine_config, explicit_keys, "data_parallel_size", _GLM52_SINGLE_NODE_DP)
-    if (
-        model_architecture == "DeepseekV32ForCausalLM"
-        and _is_deepseek_v32_w8a8_official_scope(params)
-        and (_safe_int(params.get("nnodes")) or 1) == 1
-        and device_count == 16
-        and _ascend_platform_from_runtime(params) == "a3"
-    ):
-        # DeepSeek-V3.2-W8A8 官方 910C 单机用两个本地 DP replica，每个 replica 占 8 卡。
-        default_tp = device_count // _ASCEND910C_SINGLE_NODE_16_DP
-        _set_if_not_explicit(
-            engine_config,
-            explicit_keys,
-            "data_parallel_size",
-            _ASCEND910C_SINGLE_NODE_16_DP,
-        )
     if default_tp and "tensor_parallel_size" not in explicit_keys:
         engine_config["tensor_parallel_size"] = default_tp
 
@@ -2779,8 +2772,9 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     _force_deepseek_v4_flash_nv_block_size(params, engine_config)
     _apply_glm5_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_kimi_ascend_engine_defaults(params, engine_config, explicit_keys)
-    _apply_ascend910c_single_node_16_tp_dp_recipe(params, engine_config, explicit_keys)
     _apply_generic_deepseek_ascend_dp_defaults(params, engine_config, explicit_keys)
+    # 通用 DP 默认先落地，再由精确的 910C 单机 16 卡 recipe 覆盖最终 TP/DP。
+    _apply_ascend910c_single_node_16_tp_dp_recipe(params, engine_config, explicit_keys)
     _apply_glm5_dsa_distributed_fixups(params, engine_config, explicit_keys)
    
 
