@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
@@ -20,6 +22,16 @@ class _FakeDeepSeekV4Info:
     @staticmethod
     def identify_model_type():
         return "llm"
+
+
+class _FakeDeepSeekV32Identifier:
+    model_architecture = "DeepseekV32ForCausalLM"
+    model_quantize = "w8a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
 
 
 class _FakeModelInfo:
@@ -687,6 +699,23 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
         llm["DeepseekV32ForCausalLM"]["default"],
         ("vllm_ascend", "vllm_ascend_distributed"),
         {"enable_expert_parallel": True},
+    )
+    deepseek_v32_w8a8 = llm["DeepseekV32ForCausalLM"]["DeepSeek-V3.2-W8A8"]
+    for engine_key in ("vllm_ascend", "vllm_ascend_distributed"):
+        engine_config = deepseek_v32_w8a8[engine_key]
+        assert engine_config["use_vllm_serve"] is True
+        assert engine_config["quantization"] == "ascend"
+        assert engine_config["served_model_name"] == "deepseek_v3_2"
+        assert engine_config["max_model_len"] == 8192
+        assert engine_config["max_num_seqs"] == 16
+        assert engine_config["max_num_batched_tokens"] == 4096
+        assert engine_config["gpu_memory_utilization"] == 0.92
+        assert engine_config["no_enable_prefix_caching"] is True
+        assert engine_config["compilation_config"] == {"cudagraph_mode": "FULL_DECODE_ONLY"}
+        assert "speculative_config" not in engine_config
+    assert (
+        llm["DeepseekV32ForCausalLM"]["DeepSeek-V3.2-Exp-W8A8"]["vllm_ascend"]
+        == deepseek_v32_w8a8["vllm_ascend"]
     )
     _assert_engines(
         llm["Glm4MoeForCausalLM"]["default"],
@@ -1597,6 +1626,124 @@ def test_ascend910c_single_node_day0_topology_is_adapter_owned(monkeypatch):
         assert prepared["data_parallel_size"] == expected_dp
         assert params["engine_config"]["tensor_parallel_size"] == expected_tp
         assert params["engine_config"]["data_parallel_size"] == expected_dp
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_name", "expected_compilation_config"),
+    [
+        (
+            "vllm-ascend/DeepSeek-V3.2-W8A8",
+            "Ascend910C",
+            {"cudagraph_mode": "FULL_DECODE_ONLY"},
+        ),
+        (
+            "vllm-ascend/DeepSeek-V3.2-Exp-W8A8",
+            "Ascend910C",
+            {"cudagraph_mode": "FULL_DECODE_ONLY"},
+        ),
+        (
+            "vllm-ascend/DeepSeek-V3.2-W8A8",
+            "Ascend910B3",
+            {
+                "cudagraph_mode": "FULL_DECODE_ONLY",
+                "cudagraph_capture_sizes": [8, 16, 24, 32, 40, 48],
+            },
+        ),
+        (
+            "vllm-ascend/DeepSeek-V3.2-Exp-W8A8",
+            "Ascend910B3",
+            {
+                "cudagraph_mode": "FULL_DECODE_ONLY",
+                "cudagraph_capture_sizes": [8, 16, 24, 32, 40, 48],
+            },
+        ),
+    ],
+)
+def test_deepseek_v32_w8a8_ascend_defaults_match_official_profile(
+    model_name,
+    card_name,
+    expected_compilation_config,
+):
+    arch_dict = _model_deploy_config("ascend")["llm"]["DeepseekV32ForCausalLM"]
+    config = config_loader._match_model_engine_config(
+        arch_dict,
+        model_name.lower(),
+        "vllm_ascend",
+        config_loader._SpecialEngineScenario(),
+        _FakeModelInfo(model_name, "DeepseekV32ForCausalLM"),
+        {"device": "ascend", "details": [{"name": card_name}]},
+        f"/models/{model_name.lower()}",
+    )
+
+    assert config["use_vllm_serve"] is True
+    assert config["quantization"] == "ascend"
+    assert config["served_model_name"] == "deepseek_v3_2"
+    assert config["max_model_len"] == 8192
+    assert config["max_num_batched_tokens"] == 4096
+    assert config["compilation_config"] == expected_compilation_config
+    assert "speculative_config" not in config
+    assert "tensor_parallel_size" not in config
+    assert "data_parallel_size" not in config
+
+
+def test_deepseek_v32_w8a8_ascend910c_single_node_uses_official_tp_dp(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    monkeypatch.setenv("ENGINE_VERSION", "0.22.1rc1-a3")
+    params = {
+        "engine": "vllm_ascend",
+        "distributed": False,
+        "device_count": 16,
+        "nnodes": 1,
+        "model_name": "DeepSeek-V3.2-W8A8",
+        "model_path": "/models/DeepSeek-V3.2-W8A8",
+        "device_details": [{"name": "Ascend910C"}],
+        "engine_config": {},
+        "_explicit_cli_keys": set(),
+    }
+    config_loader._set_parallelism_params(params["engine_config"], params)
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["tensor_parallel_size"] == 8
+    assert prepared["data_parallel_size"] == 2
+    assert params["engine_config"]["tensor_parallel_size"] == 8
+    assert params["engine_config"]["data_parallel_size"] == 2
+
+
+def test_deepseek_v32_w8a8_dual_node_keeps_project_rpc_flow_and_a2_template_capture_sizes(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    monkeypatch.setenv("ENGINE_VERSION", "0.22.1rc1-a2")
+    arch_dict = _model_deploy_config("ascend")["llm"]["DeepseekV32ForCausalLM"]
+    engine_config = config_loader._match_model_engine_config(
+        arch_dict,
+        "vllm-ascend/deepseek-v3.2-w8a8",
+        "vllm_ascend",
+        config_loader._SpecialEngineScenario(),
+        _FakeModelInfo("DeepSeek-V3.2-W8A8", "DeepseekV32ForCausalLM"),
+        {"device": "ascend", "details": [{"name": "Ascend910B3"}]},
+        "/models/deepseek-v3.2-w8a8",
+    )
+    params = {
+        "engine": "vllm_ascend",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "device_count": 8,
+        "nnodes": 2,
+        "model_name": "DeepSeek-V3.2-W8A8",
+        "model_path": "/models/DeepSeek-V3.2-W8A8",
+        "device_details": [{"name": "Ascend910B3"}],
+        "engine_config": dict(engine_config),
+        "_explicit_cli_keys": set(),
+    }
+
+    prepared = vllm_adapter._prepare_engine_config(params)
+
+    assert prepared["tensor_parallel_size"] == 8
+    assert "rpc_port" not in params
+    assert prepared["compilation_config"] == {
+        "cudagraph_mode": "FULL_DECODE_ONLY",
+        "cudagraph_capture_sizes": [8, 16, 24, 32, 40, 48],
+    }
 
 
 def test_nvidia_defaults_follow_parameter_reduction_plan():

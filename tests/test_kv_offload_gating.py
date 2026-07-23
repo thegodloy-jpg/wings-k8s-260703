@@ -131,6 +131,16 @@ class _FakeDeepSeekV4ProIdentifier:
         self.model_type = model_type
 
 
+class _FakeDeepSeekV32Identifier:
+    model_architecture = "DeepseekV32ForCausalLM"
+    model_quantize = "w8a8"
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+
 class _FakeQwen35Nvfp4Identifier:
     model_architecture = "Qwen3_5MoeForConditionalGeneration"
     model_quantize = "nvfp4"
@@ -1822,6 +1832,46 @@ def test_deepseek_v4_pro_dp_env_matches_reference_script(monkeypatch):
         "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
     ]
     assert vllm_adapter._build_deepseek_v4_pro_env(params) == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected_omp", "extra_exports"),
+    [
+        ("a3", "10", []),
+        ("a2", "100", ["export HCCL_INTRA_PCIE_ENABLE=1", "export HCCL_INTRA_ROCE_ENABLE=0"]),
+    ],
+)
+def test_deepseek_v32_w8a8_dp_env_uses_official_defaults_on_existing_builder(
+    monkeypatch,
+    platform,
+    expected_omp,
+    extra_exports,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    monkeypatch.setenv("ENGINE_VERSION", f"0.22.1rc1-{platform}")
+    device_name = "Ascend910C" if platform == "a3" else "Ascend910B3"
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V3.2-W8A8",
+        "model_path": "/models/DeepSeek-V3.2-W8A8",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "nnodes": 2,
+        "device_details": [{"name": device_name}],
+    }
+
+    env_commands = vllm_distributed._build_ascend_dp_env_commands(params, "eth0")
+
+    assert "export HCCL_BUFFSIZE=200" in env_commands
+    assert f"export OMP_NUM_THREADS={expected_omp}" in env_commands
+    assert "export HCCL_OP_EXPANSION_MODE=AIV" in env_commands
+    assert "export VLLM_USE_V1=1" in env_commands
+    assert "export VLLM_ASCEND_ENABLE_MLAPO=1" in env_commands
+    assert "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1" in env_commands
+    assert any(command.startswith("export ASCEND_CUSTOM_OPP_PATH=") for command in env_commands)
+    for export in extra_exports:
+        assert export in env_commands
 
 
 def test_qwen35_nvfp4_native_offload_drops_when_page_size_missing(monkeypatch):

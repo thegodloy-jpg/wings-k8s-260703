@@ -778,6 +778,31 @@ def test_deepseek_v32_h20_spec_whitelist_emits_mtp3(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_deepseek_v32_w8a8_ascend_spec_whitelist_emits_deepseek_mtp3(monkeypatch, card_token):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
+    params = {
+        "model_name": "vllm-ascend/DeepSeek-V3.2-W8A8",
+        "model_path": "/models/vllm-ascend/DeepSeek-V3.2-W8A8",
+        "model_type": "llm",
+        "enable_speculative_decode": True,
+        "_smart_card_token": card_token,
+        "_smart_feats": ["spec"],
+        "engine_config": {},
+    }
+
+    command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
+
+    assert "--speculative-config" in command
+    assert '"method":"deepseek_mtp"' in command
+    assert '"num_speculative_tokens":3' in command
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm_ascend") == {
+        "method": "deepseek_mtp",
+        "num_speculative_tokens": 3,
+        "moe_backend": None,
+    }
+
+
 def test_deepseek_v32_h20_offload_whitelist_emits_native_backend(monkeypatch):
     monkeypatch.delenv("CONFIG_FORCE", raising=False)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
@@ -1603,6 +1628,29 @@ def test_deepseek_v4_flash_pro5000_spec_row_uses_explicit_mtp2():
     assert row.get("mtp_method") == "mtp"
     assert row.get("mtp_num_speculative_tokens") == 2
     assert "enforce_eager" not in row
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_token"),
+    [
+        ("vllm-ascend/DeepSeek-V3.2-W8A8", "910b"),
+        ("vllm-ascend/DeepSeek-V3.2-W8A8", "910c"),
+        ("vllm-ascend/DeepSeek-V3.2-Exp-W8A8", "910c"),
+    ],
+)
+def test_deepseek_v32_w8a8_ascend_spec_rows_use_deepseek_mtp(model_name, card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        model_name,
+        f"/models/{model_name}",
+        card_token,
+        "spec",
+    )
+
+    assert row is not None
+    assert row.get("mtp_method") == "deepseek_mtp"
+    assert row.get("mtp_num_speculative_tokens") == 3
+    assert row["source"] == "vllm-ascend-0.22.1rc1"
 
 
 @pytest.mark.parametrize("card_token", ["910b", "910c"])

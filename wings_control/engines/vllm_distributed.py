@@ -260,6 +260,8 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
         # DeepSeek-V4-Pro 双机对齐参考 start_1/start_2：前置 export 变量名必须一致，
         # 不继承通用 DP 的 whitelist/timeout，也不追加 multi-block/multi-groups/FUSED_MC2。
         return _build_deepseek_v4_pro_dp_env_commands(net_if)
+    if vllm_adapter._is_deepseek_v32_w8a8_official_scope(params):
+        return _build_deepseek_v32_official_dp_env_commands(params, net_if)
     env_defaults = _resolve_ascend_dp_env_defaults(is_glm5_dp)
     env_commands = _build_common_ascend_dp_env_commands(net_if, *env_defaults)
     if dp_arch in ("DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM"):
@@ -279,6 +281,39 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
             env_commands.append("export VLLM_ASCEND_ENABLE_FLASHCOMM1=1")
     if vllm_adapter.is_deepseek_ascend_dp_deployment(params):
         env_commands.append(f"export VLLM_ENGINE_READY_TIMEOUT_S={os.getenv('VLLM_ENGINE_READY_TIMEOUT_S', '7200')}")
+    return env_commands
+
+
+def _build_deepseek_v32_official_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
+    """按项目现有 DP 逻辑补齐 DeepSeek-V3.2-W8A8 双机关键 env recipe。"""
+    vllm_adapter = _import_vllm_adapter()
+    platform = vllm_adapter._ascend_platform_from_runtime(params)
+    omp_default = "100" if platform == "a2" else "10"
+    connect_timeout_default = "120" if platform == "a2" else "1800"
+    env_commands = _build_common_ascend_dp_env_commands(
+        net_if,
+        omp_default,
+        "200",
+        connect_timeout_default,
+    )
+    env_commands.extend([
+        "export HCCL_OP_EXPANSION_MODE=AIV",
+        "export VLLM_USE_V1=1",
+        "export VLLM_ASCEND_ENABLE_MLAPO=1",
+        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+        "export ASCEND_CUSTOM_OPP_PATH=/usr/local/Ascend/ascend-toolkit/latest/opp/deepseek-v32/"
+        "vendors/customize:${ASCEND_CUSTOM_OPP_PATH:-}",
+        "export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/opp/vendors/customize/"
+        "op_api/lib/:${LD_LIBRARY_PATH:-}",
+    ])
+    if platform == "a2":
+        env_commands.extend([
+            "export HCCL_INTRA_PCIE_ENABLE=1",
+            "export HCCL_INTRA_ROCE_ENABLE=0",
+        ])
+    env_commands.append(
+        f"export VLLM_ENGINE_READY_TIMEOUT_S={os.getenv('VLLM_ENGINE_READY_TIMEOUT_S', '7200')}"
+    )
     return env_commands
 
 

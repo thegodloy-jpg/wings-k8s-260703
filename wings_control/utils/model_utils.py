@@ -686,6 +686,7 @@ _LLM_MODELS = {
         "DeepSeek-V3.2",
         "DeepSeek-V3.2-w8a8",
         "DeepSeek-V3.2-Exp",
+        "DeepSeek-V3.2-Exp-W8A8",
         ],
     "Glm4ForCausalLM": [
         "GLM-4-9B-0414"

@@ -1641,6 +1641,22 @@ def _build_deepseekv32_ascend_env(arch: str) -> List[str]:
     ]
 
 
+def _build_deepseek_v32_official_env(params: Dict[str, Any]) -> List[str]:
+    """按 DeepSeek-V3.2-W8A8 官方单机 recipe 收口模型环境变量。"""
+    platform = _ascend_platform_from_runtime(params)
+    logger.info("[DeepSeek-V3.2-W8A8] Set official Ascend %s environment variables", platform or "unknown")
+    return [
+        "export HCCL_OP_EXPANSION_MODE=AIV",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export VLLM_USE_V1=1",
+        "export HCCL_BUFFSIZE=200",
+        "export VLLM_ASCEND_ENABLE_MLAPO=1",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+    ]
+
+
 def _build_llama_ascend_env(arch: str) -> List[str]:
     """构建 LLaMA3.1 (LlamaForCausalLM) Ascend 环境变量命令。"""
     logger.info("[LLaMA3.1] Set Ascend environment variables for %s", arch)
@@ -1813,6 +1829,38 @@ def _ascend_platform_from_runtime(params: Dict[str, Any]) -> str:
         if platform:
             return platform
     return engine_version_platform() or "a2"
+
+
+def _is_deepseek_v32_w8a8_official_scope(
+    params: Dict[str, Any],
+    model_info: Optional[ModelIdentifier] = None,
+) -> bool:
+    """识别 DeepSeek-V3.2-W8A8 vLLM-Ascend 官方 recipe 适配范围。"""
+    if params.get("engine") != "vllm_ascend":
+        return False
+    try:
+        info = model_info or ModelIdentifier(
+            params.get("model_name"),
+            params.get("model_path"),
+            params.get("model_type"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[DeepSeek-V3.2-W8A8] Skip official recipe; ModelIdentifier failed: %s", exc)
+        return False
+    if info.model_architecture != "DeepseekV32ForCausalLM":
+        return False
+    engine_config = params.get("engine_config") or {}
+    identity = " ".join(
+        str(value or "").lower()
+        for value in (
+            params.get("model_name"),
+            params.get("model_path"),
+            params.get("served_model_name"),
+            engine_config.get("served_model_name"),
+            engine_config.get("model"),
+        )
+    )
+    return "deepseek-v3.2" in identity and "w8a8" in identity
 
 
 _DEEPSEEK_V4_IDENTITY_CONFIG_KEYS = (
@@ -2156,6 +2204,8 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
+    if _is_deepseek_v32_w8a8_official_scope(params, model_info):
+        return _build_deepseek_v32_official_env(params)
     if _is_deepseek_v4_flash_params(params, model_info):
         return _build_deepseek_v4_flash_env(params)
     if is_deepseek_v4_pro_adapted_scope(params, model_info):
@@ -2418,6 +2468,21 @@ def _apply_generic_deepseek_ascend_dp_defaults(
     if model_architecture == "GlmMoeDsaForCausalLM" and is_glm52_single_node_even(params):
         default_tp = device_count // _GLM52_SINGLE_NODE_DP
         _set_if_not_explicit(engine_config, explicit_keys, "data_parallel_size", _GLM52_SINGLE_NODE_DP)
+    if (
+        model_architecture == "DeepseekV32ForCausalLM"
+        and _is_deepseek_v32_w8a8_official_scope(params)
+        and (_safe_int(params.get("nnodes")) or 1) == 1
+        and device_count == 16
+        and _ascend_platform_from_runtime(params) == "a3"
+    ):
+        # DeepSeek-V3.2-W8A8 官方 910C 单机用两个本地 DP replica，每个 replica 占 8 卡。
+        default_tp = device_count // _ASCEND910C_SINGLE_NODE_16_DP
+        _set_if_not_explicit(
+            engine_config,
+            explicit_keys,
+            "data_parallel_size",
+            _ASCEND910C_SINGLE_NODE_16_DP,
+        )
     if default_tp and "tensor_parallel_size" not in explicit_keys:
         engine_config["tensor_parallel_size"] = default_tp
 
@@ -2521,6 +2586,8 @@ def _apply_ascend910c_single_node_16_tp_dp_recipe(
     recipe_name = None
     if is_glm47_w8a8:
         recipe_name = "GLM-4.7-W8A8-floatmtp"
+    elif _is_deepseek_v32_w8a8_official_scope(params):
+        recipe_name = "DeepSeek-V3.2-W8A8"
     else:
         is_minimax_m27_quarot = _is_minimax_m27_quarot_ascend910c_single_node_16(
             params, params.get("engine", "vllm_ascend")
