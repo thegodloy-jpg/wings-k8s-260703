@@ -21,7 +21,7 @@ import json
 import os
 import re
 import shlex
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, NamedTuple, Optional, Tuple
 
 from utils.model_utils import (ModelIdentifier,
                                INDEXCACHE_ARCHS, is_glm_moe_dsa_glm51,
@@ -2747,6 +2747,117 @@ def _disable_speculative_decode_for_async_suffix_conflict(
     )
 
 
+class _TpDpAlignmentState(NamedTuple):
+    device_count: Optional[int]
+    tp_size: Optional[int]
+    total_devices: int
+    backend: str
+    tp_capacity: Optional[int]
+
+
+def _resolve_tp_dp_alignment_state(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+) -> _TpDpAlignmentState:
+    """解析最终 TP/DP 校正所需的运行时拓扑。"""
+    device_count = _safe_int(params.get("device_count"))
+    tp_size = _safe_int(engine_config.get("tensor_parallel_size"))
+    is_distributed = bool(params.get("distributed"))
+    nnodes = (_safe_int(params.get("nnodes")) or 1) if is_distributed else 1
+    total_devices = (device_count or 0) * nnodes
+    backend = str(params.get("distributed_executor_backend") or "ray").lower()
+    # 单机和 dp_deployment 的 TP 受节点内卡数约束；Ray 才允许使用集群总卡数。
+    tp_capacity = device_count if not is_distributed or backend == "dp_deployment" else total_devices
+    return _TpDpAlignmentState(
+        device_count,
+        tp_size,
+        total_devices,
+        backend,
+        tp_capacity,
+    )
+
+
+def _should_fallback_implicit_tp(state: _TpDpAlignmentState, explicit_keys: set) -> bool:
+    """判断自动 recipe TP 是否超过当前 backend 的可用容量。"""
+    if "tensor_parallel_size" in explicit_keys:
+        return False
+    if not state.device_count or state.device_count <= 0:
+        return False
+    if not state.tp_size or state.tp_size <= 0:
+        return False
+    if not state.tp_capacity or state.tp_capacity <= 0:
+        return False
+    return state.tp_size > state.tp_capacity
+
+
+def _validate_tp_dp_alignment(state: _TpDpAlignmentState) -> None:
+    """校验最终 TP 与设备容量可以形成有效 DP 拓扑。"""
+    alignment_error = (
+        "TP/DP alignment requires TP capacity to be divisible by TP: "
+        f"tp_capacity={state.tp_capacity}, total_devices={state.total_devices}, "
+        f"tensor_parallel_size={state.tp_size}"
+    )
+    if not state.tp_size or state.tp_size <= 0:
+        raise ValueError(alignment_error)
+    if not state.tp_capacity or state.tp_capacity <= 0:
+        raise ValueError(alignment_error)
+    if state.total_devices <= 0:
+        raise ValueError(alignment_error)
+    if state.tp_capacity % state.tp_size:
+        raise ValueError(alignment_error)
+
+
+def _align_implicit_dp_to_final_tp(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+    explicit_keys: set,
+) -> None:
+    """按最终 TP 校正模型 recipe 自动注入的 DP 拓扑。"""
+    if "data_parallel_size" not in engine_config:
+        return
+    if "data_parallel_size" in explicit_keys:
+        return
+    if params.get("_pd_engine_overrides") or params.get("_pd_external_lb"):
+        return
+
+    state = _resolve_tp_dp_alignment_state(params, engine_config)
+    tp_fallback_applied = False
+    if _should_fallback_implicit_tp(state, explicit_keys):
+        recipe_tp = state.tp_size
+        state = state._replace(tp_size=state.device_count)
+        tp_fallback_applied = True
+        engine_config["tensor_parallel_size"] = state.tp_size
+        params["tensor_parallel_size"] = state.tp_size
+        logger.info(
+            "[vLLM] Falling back implicit recipe TP to device_count: "
+            "backend=%s, recipe_TP=%d, TP=%d, device_count=%d",
+            state.backend,
+            recipe_tp,
+            state.tp_size,
+            state.device_count,
+        )
+
+    _validate_tp_dp_alignment(state)
+    expected_dp = state.total_devices // state.tp_size
+    if _safe_int(engine_config.get("data_parallel_size")) != expected_dp:
+        logger.info(
+            "[vLLM] Aligning implicit DP to final TP: total_devices=%d, TP=%d, DP=%d",
+            state.total_devices,
+            state.tp_size,
+            expected_dp,
+        )
+        engine_config["data_parallel_size"] = expected_dp
+        params["data_parallel_size"] = expected_dp
+
+    if tp_fallback_applied and state.backend == "dp_deployment":
+        expected_dp_local = state.device_count // state.tp_size
+        if "data_parallel_size_local" in engine_config:
+            engine_config["data_parallel_size_local"] = expected_dp_local
+        if "data_parallel_start_rank" in engine_config:
+            node_rank = _safe_int(params.get("node_rank")) or 0
+            engine_config["data_parallel_start_rank"] = node_rank * expected_dp_local
+
+
 def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     """准备最终传给 ``_build_vllm_cmd_parts`` 的 engine_config。
 
@@ -2829,65 +2940,7 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         engine_config.setdefault("runner", "pooling")
 
     _disable_speculative_decode_for_async_suffix_conflict(params, engine_config)
-    # 最终命令以 TP 为容量基准；只校正模型 recipe 注入的自动 DP，用户显式 DP 不动。
-    if (
-        "data_parallel_size" in engine_config
-        and "data_parallel_size" not in explicit_keys
-        and not params.get("_pd_engine_overrides")
-        and not params.get("_pd_external_lb")
-    ):
-        device_count = _safe_int(params.get("device_count"))
-        tp_size = _safe_int(engine_config.get("tensor_parallel_size"))
-        is_distributed = bool(params.get("distributed"))
-        nnodes = (_safe_int(params.get("nnodes")) or 1) if is_distributed else 1
-        total_devices = (device_count or 0) * nnodes
-        backend = str(params.get("distributed_executor_backend") or "ray").lower()
-        # 单机和 dp_deployment 的 TP 受节点内卡数约束；Ray 才允许使用集群总卡数。
-        tp_capacity = device_count if not is_distributed or backend == "dp_deployment" else total_devices
-        tp_fallback_applied = False
-        if (
-            "tensor_parallel_size" not in explicit_keys
-            and device_count
-            and device_count > 0
-            and tp_size
-            and tp_capacity
-            and tp_capacity > 0
-            and tp_size > tp_capacity
-        ):
-            recipe_tp = tp_size
-            tp_size = device_count
-            tp_fallback_applied = True
-            engine_config["tensor_parallel_size"] = tp_size
-            params["tensor_parallel_size"] = tp_size
-            logger.info(
-                "[vLLM] Falling back implicit recipe TP to device_count: "
-                "backend=%s, recipe_TP=%d, TP=%d, device_count=%d",
-                backend,
-                recipe_tp,
-                tp_size,
-                device_count,
-            )
-        if not tp_size or tp_size <= 0 or not tp_capacity or tp_capacity % tp_size:
-            raise ValueError(
-                "TP/DP alignment requires TP capacity to be divisible by TP: "
-                f"tp_capacity={tp_capacity}, total_devices={total_devices}, "
-                f"tensor_parallel_size={tp_size}"
-            )
-        expected_dp = total_devices // tp_size
-        if _safe_int(engine_config.get("data_parallel_size")) != expected_dp:
-            logger.info(
-                "[vLLM] Aligning implicit DP to final TP: total_devices=%d, TP=%d, DP=%d",
-                total_devices, tp_size, expected_dp,
-            )
-            engine_config["data_parallel_size"] = expected_dp
-            params["data_parallel_size"] = expected_dp
-        if tp_fallback_applied and backend == "dp_deployment":
-            expected_dp_local = device_count // tp_size
-            if "data_parallel_size_local" in engine_config:
-                engine_config["data_parallel_size_local"] = expected_dp_local
-            if "data_parallel_start_rank" in engine_config:
-                node_rank = _safe_int(params.get("node_rank")) or 0
-                engine_config["data_parallel_start_rank"] = node_rank * expected_dp_local
+    _align_implicit_dp_to_final_tp(params, engine_config, explicit_keys)
     _writeback_dp_topology_to_params(params, engine_config)
     # 同步 speculative_config 回 params，阻止 _should_append_auto_speculative_config 重复合成
     if "speculative_config" in engine_config:
