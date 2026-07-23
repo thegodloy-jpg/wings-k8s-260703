@@ -1039,12 +1039,17 @@ def test_advanced_feature_fallback_removes_embedded_speculative_config(monkeypat
     }
 
 
-def test_pro5000_spec_models_do_not_emit_ears_env_or_runtime_deps(monkeypatch):
+def test_pro5000_spec_models_preserve_registered_accel_install_scenes(
+    monkeypatch,
+):
     # 这个测试同时保护两条边界：
     # - 旧的 EARS/install-runtime-deps 补丁不能借 spec 场景回流；
-    # - DeepSeek-V4-Flash + Pro5000 的新依赖安装独立于 spec/sparse/offload，命中即生成。
+    # - 原有 DeepSeek+Pro5000 与新增 effective native offload 都能独立安装依赖。
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakePro5000Identifier)
     monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakePro5000Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
     monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
 
     scenarios = [
@@ -1058,7 +1063,7 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_runtime_deps(monkeypatch):
             "speculative_decode_model_path": "none",
             "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "sparse"],
-            "installs_deepseek_packages": True,
+            "installs_nvidia_packages": True,
         },
         {
             "engine": "vllm",
@@ -1070,7 +1075,7 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_runtime_deps(monkeypatch):
             "speculative_decode_model_path": "none",
             "_smart_card_token": "rtxpro5000-72",
             "_smart_feats": ["spec", "offload"],
-            "installs_deepseek_packages": False,
+            "installs_nvidia_packages": True,
         },
     ]
 
@@ -1082,7 +1087,7 @@ def test_pro5000_spec_models_do_not_emit_ears_env_or_runtime_deps(monkeypatch):
         assert "install-runtime-deps" not in accel_preamble
         assert '"ears"' not in accel_preamble
         assert "VLLM_EARS_TOLERANCE" not in accel_preamble
-        if params["installs_deepseek_packages"]:
+        if params["installs_nvidia_packages"]:
             assert "python3 install.py --config" in accel_preamble
             assert "deepgemm:nv_dev_a6b593d" in accel_preamble
             assert "flashinfer:v0.6.12" in accel_preamble

@@ -2277,9 +2277,34 @@ def test_qwen35_nvfp4_native_offload_skips_lmcache_patch(monkeypatch):
     assert should_install is False
 
 
-def test_deepseek_v4_flash_pro5000_installs_packages_without_feature_enablement(monkeypatch):
-    # Pro5000 的 deepgemm/flashinfer 安装是运行时依赖补齐，不是 spec/sparse/offload
-    # 任一高级特性的副作用。因此 _smart_feats 为空时仍必须生成 accel preamble。
+def _nvidia_native_offload_params():
+    return {
+        "engine": "vllm",
+        "model_name": "Qwen/Qwen3.5-27B",
+        "model_path": "/models/Qwen3.5-27B",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["offload"],
+    }
+
+
+def _ascend_mtp_memcache_params():
+    return {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen/Qwen3.5-27B",
+        "model_path": "/models/Qwen3.5-27B",
+        "model_type": "llm",
+        "device_count": 8,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_card_token": "910c",
+        "_smart_feats": ["offload", "spec"],
+    }
+
+
+def test_deepseek_v4_flash_pro5000_keeps_independent_package_install(monkeypatch):
+    # 原有 Pro5000 场景不依赖 native offload；即使页面没有启用 offload 也必须安装。
     monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
     params = {
         "engine": "vllm",
@@ -2289,10 +2314,37 @@ def test_deepseek_v4_flash_pro5000_installs_packages_without_feature_enablement(
         "_smart_feats": [],
     }
 
-    should_install = wings_entry._should_install_deepseek_v4_flash_pro5000_packages(
-        "vllm", params
+    assert (
+        wings_entry._should_install_deepseek_v4_flash_pro5000_packages(
+            "vllm",
+            params,
+        )
+        is True
     )
     snippet = wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+        "vllm",
+        params,
+    )
+    assert wings_entry._build_accel_preamble("vllm", params) == snippet
+    assert (
+        "python3 install.py --config "
+        '\'{"engine": {"name": "vllm", "version": "v0.23.0"}, '
+        '"packages": ["deepgemm:nv_dev_a6b593d", "flashinfer:v0.6.12"]}\''
+    ) in snippet
+
+
+def test_nvidia_effective_native_offload_installs_registered_packages(monkeypatch):
+    # Accel 安装必须跟随最终 active native variant，不能只看卡型或原始页面开关。
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+    params = _nvidia_native_offload_params()
+
+    should_install = wings_entry._should_install_nvidia_native_offload_packages(
+        "vllm", params
+    )
+    snippet = wings_entry._build_nvidia_native_offload_package_install_snippet(
         "vllm", params
     )
     accel_preamble = wings_entry._build_accel_preamble("vllm", params)
@@ -2307,19 +2359,107 @@ def test_deepseek_v4_flash_pro5000_installs_packages_without_feature_enablement(
     ) in snippet
 
 
-def test_deepseek_v4_flash_pro5000_install_payload_uses_upstream_engine_version(monkeypatch):
-    # 上层通过 ENGINE_VERSION 传递当前 vLLM 镜像版本；install.py payload 必须跟随它，
-    # 不能回退到旧的硬编码 v0.23.0，否则镜像升级后会安装错误版本的依赖包。
-    monkeypatch.setenv("ENGINE_VERSION", "0.23.1-rtxpro5000")
+def test_deepseek_pro5000_native_overlap_installs_packages_once(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
     params = {
         "engine": "vllm",
         "model_name": "deepseek-ai/DeepSeek-V4-Flash",
         "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "model_type": "llm",
+        "device_count": 8,
         "_smart_card_token": "rtxpro5000-72",
-        "_smart_feats": [],
+        "_smart_feats": ["offload"],
     }
 
-    snippet = wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+    assert wings_entry._should_install_deepseek_v4_flash_pro5000_packages(
+        "vllm",
+        params,
+    )
+    assert wings_entry._should_install_nvidia_native_offload_packages(
+        "vllm",
+        params,
+    )
+    assert (
+        wings_entry._build_accel_preamble("vllm", params).count(
+            "python3 install.py --config"
+        )
+        == 1
+    )
+
+
+def test_nvidia_native_install_rejects_raw_request_without_effective_gate(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+    params = _nvidia_native_offload_params()
+    params["_smart_feats"] = []
+
+    assert (
+        wings_entry._should_install_nvidia_native_offload_packages("vllm", params)
+        is False
+    )
+    assert (
+        wings_entry._build_nvidia_native_offload_package_install_snippet(
+            "vllm",
+            params,
+        )
+        == ""
+    )
+
+
+def test_nvidia_native_install_rejects_inactive_native_capacity(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.delenv("KV_MEM_OFFLOAD_SIZE", raising=False)
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+    params = _nvidia_native_offload_params()
+
+    assert (
+        vllm_adapter.resolve_kv_offload_effective_state(params, "vllm")[0]
+        is False
+    )
+    assert (
+        wings_entry._should_install_nvidia_native_offload_packages("vllm", params)
+        is False
+    )
+
+
+def test_nvidia_native_install_rejects_lmcache_backend(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+    params = {
+        "engine": "vllm",
+        "model_name": "MiniMaxAI/MiniMax-M2.7-NVFP4",
+        "model_path": "/models/MiniMax-M2.7-NVFP4",
+        "model_type": "llm",
+        "device_count": 8,
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter.resolve_offload_variant(params, "vllm").startswith("lmcache")
+    assert (
+        wings_entry._should_install_nvidia_native_offload_packages("vllm", params)
+        is False
+    )
+
+
+def test_nvidia_native_install_payload_uses_upstream_engine_version(monkeypatch):
+    # 上层通过 ENGINE_VERSION 传递当前 vLLM 镜像版本；install.py payload 必须跟随它，
+    # 不能回退到旧的硬编码 v0.23.0，否则镜像升级后会安装错误版本的依赖包。
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "0.23.1-rtxpro5000")
+    params = _nvidia_native_offload_params()
+
+    snippet = wings_entry._build_nvidia_native_offload_package_install_snippet(
         "vllm", params
     )
 
@@ -2328,44 +2468,174 @@ def test_deepseek_v4_flash_pro5000_install_payload_uses_upstream_engine_version(
     assert '"version": "v0.23.0"' not in snippet
 
 
-def test_deepseek_v4_flash_pro5000_install_skips_without_upstream_engine_version(monkeypatch):
+def test_nvidia_native_install_skips_without_upstream_engine_version(monkeypatch):
     # 版本不可解析时宁可跳过安装，也不要猜测版本。这个回归用例保护
     # “版本由上层联动传入”的契约，避免后续又引入隐式默认版本。
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
     monkeypatch.delenv("ENGINE_VERSION", raising=False)
-    params = {
-        "engine": "vllm",
-        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
-        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
-        "_smart_card_token": "rtxpro5000-72",
-        "_smart_feats": [],
-    }
+    params = _nvidia_native_offload_params()
 
     assert (
-        wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
+        wings_entry._build_nvidia_native_offload_package_install_snippet(
             "vllm", params
         )
         == ""
     )
 
 
-def test_qwen35_nvfp4_pro5000_skips_deepseek_package_install():
-    # 芯片命中 Pro5000 不等于所有模型都要安装 DSV4 专属包；
-    # 模型身份仍是触发条件的一部分，Qwen 路径必须保持无 install.py 片段。
-    params = {
-        "engine": "vllm",
-        "model_name": "Qwen3.5-397B-A17B-NVFP4",
-        "model_path": "/models/Qwen3.5-397B-A17B-NVFP4",
-        "_smart_card_token": "rtxpro5000-72",
-        "_smart_feats": ["spec", "offload"],
-    }
+def test_ascend_effective_mtp_memcache_installs_engine_patch(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0rc1-a2")
+    params = _ascend_mtp_memcache_params()
+
+    assert vllm_adapter.resolve_kv_offload_effective_state(
+        params,
+        "vllm_ascend",
+    ) == (True, "memcache")
+    assert (
+        vllm_adapter.resolve_speculative_strategy(params, "vllm_ascend")
+        == "qwen3_5_mtp"
+    )
+
+    snippet = wings_entry._build_ascend_mtp_memcache_patch_install_snippet(
+        "vllm_ascend",
+        params,
+    )
+    assert wings_entry._build_accel_preamble("vllm_ascend", params) == snippet
+    assert 'cd "/accel-volume"' in snippet
+    assert (
+        "python install.py --config "
+        '\'{"engine": {"name": "vllm-ascend", "version": "v0.21.0rc1"}}\''
+    ) in snippet
+
+
+def test_ascend_mtp_memcache_install_rejects_memcache_without_effective_spec(
+    monkeypatch,
+):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0rc1")
+    params = _ascend_mtp_memcache_params()
+    params["enable_speculative_decode"] = False
+    params["_smart_feats"] = ["offload"]
 
     assert (
-        wings_entry._should_install_deepseek_v4_flash_pro5000_packages("vllm", params)
+        wings_entry._should_install_ascend_mtp_memcache_patch(
+            "vllm_ascend",
+            params,
+        )
         is False
     )
+
+
+def test_ascend_mtp_memcache_install_rejects_non_mtp_strategy(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0rc1")
+    monkeypatch.setattr(
+        wings_entry,
+        "resolve_speculative_strategy",
+        lambda _params, _engine: "suffix",
+    )
+    params = _ascend_mtp_memcache_params()
+
     assert (
-        wings_entry._build_deepseek_v4_flash_pro5000_package_install_snippet(
-            "vllm", params
+        wings_entry._should_install_ascend_mtp_memcache_patch(
+            "vllm_ascend",
+            params,
+        )
+        is False
+    )
+
+
+def test_ascend_mtp_memcache_install_rejects_inactive_memcache_capacity(
+    monkeypatch,
+):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", "8192")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0rc1")
+    params = _ascend_mtp_memcache_params()
+
+    effective, variant = vllm_adapter.resolve_kv_offload_effective_state(
+        params,
+        "vllm_ascend",
+    )
+    assert effective is False
+    assert variant == "memcache+auto+floor_disabled"
+    assert (
+        wings_entry._should_install_ascend_mtp_memcache_patch(
+            "vllm_ascend",
+            params,
+        )
+        is False
+    )
+
+
+def test_ascend_mtp_memcache_install_rejects_lmcache_backend(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.21.0rc1")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "device_count": 8,
+        "enable_speculative_decode": True,
+        "_smart_card_token": "910c",
+        "_smart_feats": ["offload", "spec"],
+    }
+
+    assert vllm_adapter.resolve_offload_variant(
+        params,
+        "vllm_ascend",
+    ).startswith("lmcache")
+    assert (
+        wings_entry._should_install_ascend_mtp_memcache_patch(
+            "vllm_ascend",
+            params,
+        )
+        is False
+    )
+
+
+def test_existing_ascend_deepseek_lmcache_preamble_is_preserved(monkeypatch):
+    # 新增 MemCache 组合门控不能吞掉既有 DeepSeek-V4-Flash LMCache 安装分支。
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_path": "/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp",
+        "model_type": "llm",
+        "_smart_feats": ["offload"],
+    }
+
+    preamble = wings_entry._build_accel_preamble("vllm_ascend", params)
+
+    assert preamble.count("lmcache-ascend:v0.4.5") == 1
+    assert '"name": "vllm-ascend"' not in preamble
+
+
+def test_accel_disabled_rejects_registered_install_branches(monkeypatch):
+    monkeypatch.setattr(wings_entry.settings, "ENABLE_ACCEL", False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+
+    assert (
+        wings_entry._build_accel_preamble(
+            "vllm",
+            _nvidia_native_offload_params(),
         )
         == ""
     )

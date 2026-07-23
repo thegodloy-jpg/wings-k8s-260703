@@ -63,21 +63,26 @@ from utils.model_utils import (
 
 logger = logging.getLogger(__name__)
 
-# install.py 现在只服务于明确登记的少数场景。这里保留两个边界：
-# 1) Ascend LMCache：仍然跟随 offload 的有效状态，失败时还要回写 kv_offload=false；
-# 2) RTX PRO 5000 + DeepSeek-V4-Flash：属于运行时依赖补齐，和 spec/sparse/offload
-#    等高级特性开关解耦，只要模型与芯片命中就应在 engine 启动前先执行。
+# install.py 现在只服务于明确登记的少数场景。这里保留四个边界：
+# 1) RTX PRO 5000 + DeepSeek-V4-Flash：原有运行时依赖补齐，不依赖 native offload；
+# 2) NVIDIA native offload：必须以最终有效 variant 为准，原始开关不能触发安装；
+# 3) Ascend MTP + MemCache：spec/offload 都必须通过最终门控，且后端必须真实落到 MemCache；
+# 4) Ascend DeepSeek-V4-Flash LMCache：仍然跟随 offload 的有效状态，失败时回写状态。
 # 旧的通用 patch/features 入口已经删除，后续新增场景也必须在这里显式登记。
 _LMCACHE_ASCEND_PACKAGE_CONFIG = '{"packages": ["lmcache-ascend:v0.4.5"]}'
-# Pro5000 场景只有 packages 固定；engine.name/version 必须从本次启动上下文动态生成，
+# 两个 NVIDIA 场景复用相同 packages；engine.name/version 必须从本次启动上下文动态生成，
 # 避免 launcher 升级后仍向 install.py 传递过期的 vLLM 版本。
-_DEEPSEEK_V4_FLASH_PRO5000_PACKAGES = [
+_NVIDIA_ACCEL_PACKAGES = [
     "deepgemm:nv_dev_a6b593d",
     "flashinfer:v0.6.12",
 ]
 # 上层的 ENGINE_VERSION 可能带 v 前缀、镜像后缀或卡型后缀，例如
-# "v0.23.0" / "0.23.1-rtxpro5000"。install.py 只需要规范的 vX.Y.Z。
-_ENGINE_VERSION_FOR_INSTALL_RE = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?", re.IGNORECASE)
+# "v0.23.0" / "0.23.1-rtxpro5000" / "v0.21.0rc1-a2"。
+# install.py 需要规范版本，同时必须保留 rc 等预发布标识以命中正确 registry。
+_ENGINE_VERSION_FOR_INSTALL_RE = re.compile(
+    r"v?(\d+)\.(\d+)(?:\.(\d+))?((?:a|b|rc)\d+)?",
+    re.IGNORECASE,
+)
 
 
 def _shell_escape_single_quote(value: str) -> str:
@@ -246,12 +251,48 @@ def _should_install_deepseek_v4_flash_ascend_lmcache(
     return True
 
 
+def _should_install_nvidia_native_offload_packages(
+    engine: str,
+    merged: dict | None,
+) -> bool:
+    """仅为最终真实启用 NVIDIA native KV offload 的场景安装依赖。"""
+    if engine != "vllm" or not isinstance(merged, dict):
+        return False
+    smart_feats = merged.get("_smart_feats")
+    if not isinstance(smart_feats, (list, tuple, set)) or "offload" not in smart_feats:
+        return False
+    effective, variant = resolve_kv_offload_effective_state(merged, engine)
+    return effective and variant == "native_kv_offloading_backend"
+
+
 def _should_install_deepseek_v4_flash_pro5000_packages(
     engine: str,
     merged: dict | None,
 ) -> bool:
-    """RTX PRO 5000 补丁只看模型/芯片/引擎身份，不读取高级特性开关。"""
+    """保留原有 DeepSeek-V4-Flash + RTX PRO 5000 独立安装场景。"""
     return is_deepseek_v4_flash_rtx_pro_5000(merged, engine)
+
+
+def _should_install_ascend_mtp_memcache_patch(
+    engine: str,
+    merged: dict | None,
+) -> bool:
+    """严格识别 spec=MTP 且 offload=MemCache 的 Ascend 组合场景。"""
+    if engine != "vllm_ascend" or not isinstance(merged, dict):
+        return False
+    smart_feats = merged.get("_smart_feats")
+    if not isinstance(smart_feats, (list, tuple, set)):
+        return False
+    if (
+        not {"spec", "offload"}.issubset(smart_feats)
+        or not merged.get("enable_speculative_decode")
+    ):
+        return False
+    effective, variant = resolve_kv_offload_effective_state(merged, engine)
+    if not effective or variant != "memcache":
+        return False
+    strategy = (resolve_speculative_strategy(merged, engine) or "").strip().lower()
+    return strategy == "mtp" or strategy.endswith("_mtp")
 
 
 def _resolve_engine_version_for_install(merged: dict | None = None) -> str:
@@ -282,19 +323,21 @@ def _resolve_engine_version_for_install(merged: dict | None = None) -> str:
         match = _ENGINE_VERSION_FOR_INSTALL_RE.search(text)
         if not match:
             continue
-        major, minor, patch = match.groups()
-        return f"v{int(major)}.{int(minor)}.{int(patch or 0)}"
+        major, minor, patch, prerelease = match.groups()
+        return (
+            f"v{int(major)}.{int(minor)}.{int(patch or 0)}"
+            f"{(prerelease or '').lower()}"
+        )
     return ""
 
 
-def _build_deepseek_v4_flash_pro5000_package_config(
+def _build_nvidia_accel_package_config(
     engine: str,
     merged: dict | None = None,
 ) -> str:
-    """构造 Pro5000 install.py 的 JSON payload。
+    """构造两个 NVIDIA 安装场景复用的 install.py payload。
 
     packages 固定来自适配需求；engine.name/version 必须跟随本次启动参数。
-    这里用 json.dumps 生成 JSON，避免手写字符串在版本联动后变成隐性拼接错误。
     """
     version = _resolve_engine_version_for_install(merged)
     if not version:
@@ -305,59 +348,122 @@ def _build_deepseek_v4_flash_pro5000_package_config(
                 "name": engine,
                 "version": version,
             },
-            "packages": _DEEPSEEK_V4_FLASH_PRO5000_PACKAGES,
+            "packages": _NVIDIA_ACCEL_PACKAGES,
         }
     )
 
 
-def _render_deepseek_v4_flash_pro5000_package_install_snippet(package_config: str) -> str:
-    """渲染 Pro5000 运行时依赖安装片段。
+def _render_nvidia_accel_package_install_snippet(package_config: str) -> str:
+    """渲染 NVIDIA 运行时依赖安装片段。
 
     片段仍固定在 WINGS_ACCEL_DIR 下执行，和 Ascend LMCache 片段保持同一安装位置。
     set +e 保证补丁安装失败不会阻断主服务启动；这类依赖只影响加速能力。
     """
     accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
     return (
-        "# --- wings-accel: install DeepSeek-V4-Flash RTX PRO 5000 packages (fault-tolerant) ---\n"
+        "# --- wings-accel: install NVIDIA acceleration packages (fault-tolerant) ---\n"
         f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
-        "    echo '[wings-accel] Installing DeepSeek-V4-Flash RTX PRO 5000 packages...'\n"
+        "    echo '[wings-accel] Installing NVIDIA acceleration packages...'\n"
         "    set +e\n"
         f"    (cd \"{accel_dir}\" && python3 install.py --config "
         f"'{_shell_escape_single_quote(package_config)}')\n"
-        "    PRO5000_RC=$?\n"
+        "    NVIDIA_ACCEL_RC=$?\n"
         "    set -e\n"
-        "    if [ $PRO5000_RC -ne 0 ]; then\n"
-        '        echo "[wings-accel] WARNING: DeepSeek-V4-Flash RTX PRO 5000 package install failed'
-        ' (exit=$PRO5000_RC), skipping. Service will continue without RTX PRO 5000 package install."\n'
+        "    if [ $NVIDIA_ACCEL_RC -ne 0 ]; then\n"
+        '        echo "[wings-accel] WARNING: NVIDIA acceleration package install failed'
+        ' (exit=$NVIDIA_ACCEL_RC), skipping. Service will continue without package install."\n'
         "    else\n"
-        "        echo '[wings-accel] DeepSeek-V4-Flash RTX PRO 5000 packages installed successfully.'\n"
+        "        echo '[wings-accel] NVIDIA acceleration packages installed successfully.'\n"
         "    fi\n"
         "else\n"
         f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, "
-        "skipping DeepSeek-V4-Flash RTX PRO 5000 package install.'\n"
+        "skipping NVIDIA acceleration package install.'\n"
         "fi\n"
     )
+
+
+def _build_nvidia_native_offload_package_install_snippet(
+    engine: str,
+    merged: dict | None = None,
+) -> str:
+    """仅在 NVIDIA native offload 最终有效时构建依赖安装片段。"""
+    if not _should_install_nvidia_native_offload_packages(engine, merged):
+        return ""
+    package_config = _build_nvidia_accel_package_config(engine, merged)
+    if not package_config:
+        logger.warning(
+            "ENGINE_VERSION is missing or unrecognized; skipping NVIDIA native "
+            "offload package install."
+        )
+        return ""
+    return _render_nvidia_accel_package_install_snippet(package_config)
 
 
 def _build_deepseek_v4_flash_pro5000_package_install_snippet(
     engine: str,
     merged: dict | None = None,
 ) -> str:
-    """按场景构建 Pro5000 安装片段。
-
-    先判断模型/芯片身份，再判断上层是否给出可解析的 ENGINE_VERSION。
-    这样既满足“命中场景就先安装”，又避免在版本未知时向 install.py 传过期版本。
-    """
+    """按原有模型/芯片门控构建 Pro5000 依赖安装片段。"""
     if not _should_install_deepseek_v4_flash_pro5000_packages(engine, merged):
         return ""
-    package_config = _build_deepseek_v4_flash_pro5000_package_config(engine, merged)
+    package_config = _build_nvidia_accel_package_config(engine, merged)
     if not package_config:
         logger.warning(
             "ENGINE_VERSION is missing or unrecognized; skipping DeepSeek-V4-Flash "
             "RTX PRO 5000 package install."
         )
         return ""
-    return _render_deepseek_v4_flash_pro5000_package_install_snippet(package_config)
+    return _render_nvidia_accel_package_install_snippet(package_config)
+
+
+def _render_ascend_mtp_memcache_patch_install_snippet(patch_config: str) -> str:
+    """渲染 Ascend effective MTP + MemCache 组合补丁安装片段。"""
+    accel_dir = settings.WINGS_ACCEL_DIR.rstrip("/")
+    return (
+        "# --- wings-accel: install Ascend MTP + MemCache patch (fault-tolerant) ---\n"
+        f"if [ -f \"{accel_dir}/install.py\" ]; then\n"
+        "    echo '[wings-accel] Installing Ascend MTP + MemCache patch...'\n"
+        "    set +e\n"
+        f"    (cd \"{accel_dir}\" && python install.py --config "
+        f"'{_shell_escape_single_quote(patch_config)}')\n"
+        "    ASCEND_MTP_MEMCACHE_RC=$?\n"
+        "    set -e\n"
+        "    if [ $ASCEND_MTP_MEMCACHE_RC -ne 0 ]; then\n"
+        '        echo "[wings-accel] WARNING: Ascend MTP + MemCache patch install failed'
+        ' (exit=$ASCEND_MTP_MEMCACHE_RC), skipping. Service will continue without patch install."\n'
+        "    else\n"
+        "        echo '[wings-accel] Ascend MTP + MemCache patch installed successfully.'\n"
+        "    fi\n"
+        "else\n"
+        f"    echo '[wings-accel] WARNING: {accel_dir}/install.py not found, "
+        "skipping Ascend MTP + MemCache patch install.'\n"
+        "fi\n"
+    )
+
+
+def _build_ascend_mtp_memcache_patch_install_snippet(
+    engine: str,
+    merged: dict | None = None,
+) -> str:
+    """仅在 Ascend MTP 与 MemCache 都最终有效时构建补丁安装片段。"""
+    if not _should_install_ascend_mtp_memcache_patch(engine, merged):
+        return ""
+    version = _resolve_engine_version_for_install(merged)
+    if not version:
+        logger.warning(
+            "ENGINE_VERSION is missing or unrecognized; skipping Ascend MTP + "
+            "MemCache patch install."
+        )
+        return ""
+    patch_config = json.dumps(
+        {
+            "engine": {
+                "name": "vllm-ascend",
+                "version": version,
+            },
+        }
+    )
+    return _render_ascend_mtp_memcache_patch_install_snippet(patch_config)
 
 
 def _render_deepseek_v4_flash_ascend_lmcache_install_snippet() -> str:
@@ -404,30 +510,51 @@ def _build_accel_preamble(engine: str, merged: dict) -> str:
     """生成所有受支持的 install.py 前置片段。
 
     顺序有业务含义：
-    - Pro5000 依赖补丁是基础运行时补齐，只要命中场景就先执行；
+    - DeepSeek-V4-Flash + Pro5000 原有依赖安装保持独立；
+    - NVIDIA native offload 依赖只跟随最终有效 native variant；
+    - Ascend MTP + MemCache 补丁要求两个特性和最终后端同时命中；
     - Ascend LMCache 安装仍跟随 offload 的有效启用状态。
 
-    两者都位于 engine 启动脚本之前，保持补丁位置固定。
+    所有片段都位于 engine 启动脚本之前，保持补丁位置固定。
     """
     if not settings.ENABLE_ACCEL:
-        logger.debug(
-            "Accel disabled: skipping DeepSeek-V4-Flash package installs"
-        )
+        logger.debug("Accel disabled: skipping registered package installs")
         return ""
 
-    install_pro5000 = _should_install_deepseek_v4_flash_pro5000_packages(engine, merged)
-    install_ascend_lmcache = _should_install_deepseek_v4_flash_ascend_lmcache(engine, merged)
     snippets = []
-    if install_pro5000:
-        pro5000_snippet = _build_deepseek_v4_flash_pro5000_package_install_snippet(
-            engine, merged
-        )
-        if pro5000_snippet:
-            snippets.append(pro5000_snippet)
-            logger.info("Accel: injecting DeepSeek-V4-Flash RTX PRO 5000 package install")
-    if install_ascend_lmcache:
-        snippets.append(_render_deepseek_v4_flash_ascend_lmcache_install_snippet())
+
+    pro5000_snippet = _build_deepseek_v4_flash_pro5000_package_install_snippet(
+        engine,
+        merged,
+    )
+    nvidia_native_snippet = _build_nvidia_native_offload_package_install_snippet(
+        engine,
+        merged,
+    )
+    if pro5000_snippet:
+        snippets.append(pro5000_snippet)
+        logger.info("Accel: injecting DeepSeek-V4-Flash RTX PRO 5000 package install")
+    elif nvidia_native_snippet:
+        # 两个 NVIDIA 场景使用同一 packages，重叠时只安装一次。
+        snippets.append(nvidia_native_snippet)
+        logger.info("Accel: injecting NVIDIA native offload package install")
+
+    ascend_mtp_memcache_snippet = _build_ascend_mtp_memcache_patch_install_snippet(
+        engine,
+        merged,
+    )
+    if ascend_mtp_memcache_snippet:
+        snippets.append(ascend_mtp_memcache_snippet)
+        logger.info("Accel: injecting Ascend MTP + MemCache patch install")
+
+    ascend_lmcache_snippet = _build_deepseek_v4_flash_ascend_lmcache_install_snippet(
+        engine,
+        merged,
+    )
+    if ascend_lmcache_snippet:
+        snippets.append(ascend_lmcache_snippet)
         logger.info("Accel: injecting DeepSeek-V4-Flash Ascend LMCache package install")
+
     return "".join(snippets)
 
 def _is_env_override_file(path: Path) -> bool:
