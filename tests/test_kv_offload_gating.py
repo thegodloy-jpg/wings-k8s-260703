@@ -1835,16 +1835,22 @@ def test_deepseek_v4_pro_dp_env_matches_reference_script(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("platform", "expected_omp", "extra_exports"),
+    ("platform", "expected_omp", "expected_connect_timeout", "extra_exports"),
     [
-        ("a3", "10", []),
-        ("a2", "100", ["export HCCL_INTRA_PCIE_ENABLE=1", "export HCCL_INTRA_ROCE_ENABLE=0"]),
+        ("a3", "10", "7200", []),
+        (
+            "a2",
+            "100",
+            "7200",
+            ["export HCCL_INTRA_PCIE_ENABLE=1", "export HCCL_INTRA_ROCE_ENABLE=0"],
+        ),
     ],
 )
 def test_deepseek_v32_w8a8_dp_env_uses_official_defaults_on_existing_builder(
     monkeypatch,
     platform,
     expected_omp,
+    expected_connect_timeout,
     extra_exports,
 ):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV32Identifier)
@@ -1863,7 +1869,9 @@ def test_deepseek_v32_w8a8_dp_env_uses_official_defaults_on_existing_builder(
 
     env_commands = vllm_distributed._build_ascend_dp_env_commands(params, "eth0")
 
-    assert "export HCCL_BUFFSIZE=200" in env_commands
+    assert "export HCCL_BUFFSIZE=512" in env_commands
+    assert "export HCCL_BUFFSIZE=200" not in env_commands
+    assert f"export HCCL_CONNECT_TIMEOUT={expected_connect_timeout}" in env_commands
     assert f"export OMP_NUM_THREADS={expected_omp}" in env_commands
     assert "export HCCL_OP_EXPANSION_MODE=AIV" in env_commands
     assert "export VLLM_USE_V1=1" in env_commands

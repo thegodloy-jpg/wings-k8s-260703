@@ -289,11 +289,14 @@ def _build_deepseek_v32_official_dp_env_commands(params: Dict[str, Any], net_if:
     vllm_adapter = _import_vllm_adapter()
     platform = vllm_adapter.ascend_platform_from_runtime(params)
     omp_default = "100" if platform == "a2" else "10"
-    connect_timeout_default = "120" if platform == "a2" else "1800"
+    # 双机启动可能因 Worker 注册、命令下发和模型加载产生较大偏移，统一使用 CANN
+    # 支持范围内的最大建链等待时间，避免 A2/A3 因不同默认值再次出现启动窗口错位。
+    connect_timeout_default = "7200"
     env_commands = _build_common_ascend_dp_env_commands(
         net_if,
         omp_default,
-        "200",
+        # 模型环境已使用 512 MB，DP 层保持同一默认值，避免再次覆盖为 200 MB。
+        "512",
         connect_timeout_default,
     )
     env_commands.extend([
