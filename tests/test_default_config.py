@@ -2257,7 +2257,7 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["card_tokens"] == [
         "rtxpro5000-72",
     ]
-    assert llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7"]["card_tokens"] == [
+    assert llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7-NVFP4"]["card_tokens"] == [
         "rtxpro5000-72",
     ]
     assert llm["MiniMaxM3SparseForConditionalGeneration"]["MiniMax-M3-MXFP8"]["card_tokens"] == [
@@ -2322,16 +2322,19 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
         }
         assert "speculative_config" not in engine_config
 
+    qwen397_nvfp4 = llm["Qwen3_5MoeForConditionalGeneration"]["Qwen3.5-397B-A17B-NVFP4"]["vllm"]
+    assert "kv_cache_dtype" not in qwen397_nvfp4
+
     minimax_m25 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.5-NVFP4"]["vllm"]
     assert minimax_m25["max_model_len"] == 196608
     assert "tensor_parallel_size" not in minimax_m25
     assert minimax_m25["gpu_memory_utilization"] == 0.9
-    assert minimax_m25["kv_cache_dtype"] == "fp8"
+    assert "kv_cache_dtype" not in minimax_m25
     assert minimax_m25["tool_call_parser"] == "minimax_m2"
     assert "speculative_config" not in minimax_m25
 
-    minimax_m27 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7"]["vllm"]
-    assert minimax_m27["kv_cache_dtype"] == "fp8"
+    minimax_m27 = llm["MiniMaxM2ForCausalLM"]["MiniMax-M2.7-NVFP4"]["vllm"]
+    assert "kv_cache_dtype" not in minimax_m27
     assert minimax_m27["moe_backend"] == "flashinfer_cutlass"
     assert "rtx_pro_5000_72G" not in minimax_m27
     assert "speculative_config" not in minimax_m27
@@ -2497,6 +2500,16 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
     )
     assert qwen35_35_pro5000["enable_expert_parallel"] is True
     assert qwen35_35_pro5000["tool_call_parser"] == "qwen3_coder"
+    qwen35_397_pro5000 = config_loader._match_model_engine_config(
+        qwen35_moe_arch,
+        "qwen/qwen3.5-397b-a17b-nvfp4",
+        "vllm",
+        scenario,
+        _FakeModelInfo("Qwen3.5-397B-A17B-NVFP4", "Qwen3_5MoeForConditionalGeneration"),
+        pro5000,
+    )
+    assert qwen35_397_pro5000["mm_encoder_tp_mode"] == "data"
+    assert "kv_cache_dtype" not in qwen35_397_pro5000
 
     minimax_m2_arch = config["llm"]["MiniMaxM2ForCausalLM"]
     assert config_loader._match_model_engine_config(
@@ -2517,6 +2530,17 @@ def test_nvidia_day0_exact_defaults_require_matching_card_token():
     )
     assert minimax_m25_pro5000["max_model_len"] == 196608
     assert "tensor_parallel_size" not in minimax_m25_pro5000
+    assert "kv_cache_dtype" not in minimax_m25_pro5000
+    minimax_m27_pro5000 = config_loader._match_model_engine_config(
+        minimax_m2_arch,
+        "minimax/minimax-m2.7-nvfp4",
+        "vllm",
+        scenario,
+        _FakeModelInfo("MiniMax-M2.7-NVFP4", "MiniMaxM2ForCausalLM"),
+        pro5000,
+    )
+    assert minimax_m27_pro5000["moe_backend"] == "flashinfer_cutlass"
+    assert "kv_cache_dtype" not in minimax_m27_pro5000
 
     minimax_m3_arch = config["llm"]["MiniMaxM3SparseForConditionalGeneration"]
     assert config_loader._match_model_engine_config(

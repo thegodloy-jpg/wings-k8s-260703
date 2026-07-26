@@ -694,7 +694,6 @@
             "trust_remote_code": true,
             "tool_call_parser": "qwen3_coder",
             "mm_encoder_tp_mode": "data",
-            "kv_cache_dtype": "fp8",
             "enable_prefix_caching": true
           }
         }
@@ -727,16 +726,14 @@
             "trust_remote_code": true,
             "max_model_len": 196608,
             "gpu_memory_utilization": 0.9,
-            "kv_cache_dtype": "fp8",
             "tool_call_parser": "minimax_m2"
           }
         },
-        "MiniMax-M2.7": {
+        "MiniMax-M2.7-NVFP4": {
           "card_tokens": ["rtxpro5000-72"],
           "vllm": {
             "use_vllm_serve": true,
             "trust_remote_code": true,
-            "kv_cache_dtype": "fp8",
             "moe_backend": "flashinfer_cutlass",
             "tool_call_parser": "minimax_m2"
           }

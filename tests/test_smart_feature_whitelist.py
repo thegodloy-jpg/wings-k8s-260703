@@ -255,7 +255,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "Qwen3.5-397B-A17B-NVFP4",
         "/models/Qwen3.5-397B-A17B-NVFP4",
         "rtxpro5000-72",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "Qwen3.5-397B-A17B-NVFP4",
@@ -316,7 +316,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "MiniMax/MiniMax-M2.7-NVFP4",
         "/models/MiniMax/MiniMax-M2.7-NVFP4",
         "rtxpro5000-72",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "MiniMax/MiniMax-M3-MXFP8",
@@ -328,7 +328,7 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "MiniMax/MiniMax-M2.5-NVFP4",
         "/models/MiniMax/MiniMax-M2.5-NVFP4",
         "rtxpro5000-72",
-    ) == frozenset({"spec", "offload"})
+    ) == frozenset({"spec", "sparse", "offload"})
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "MiniMax/MiniMax-M2.7",
@@ -1765,15 +1765,104 @@ def test_minimax_pro5000_offload_backend_stays_model_specific(
 
 
 @pytest.mark.parametrize(
+    ("model_name", "model_path", "architecture"),
+    [
+        (
+            "Qwen/Qwen3.5-397B-A17B-NVFP4",
+            "/models/Qwen/Qwen3.5-397B-A17B-NVFP4",
+            "Qwen3_5MoeForConditionalGeneration",
+        ),
+        (
+            "MiniMax/MiniMax-M2.5-NVFP4",
+            "/models/MiniMax/MiniMax-M2.5-NVFP4",
+            "MiniMaxM2ForCausalLM",
+        ),
+        (
+            "MiniMax/MiniMax-M2.7-NVFP4",
+            "/models/MiniMax/MiniMax-M2.7-NVFP4",
+            "MiniMaxM2ForCausalLM",
+        ),
+    ],
+)
+def test_nvfp4_pro5000_sparse_uses_shared_fp8_strategy(
+    monkeypatch,
+    model_name,
+    model_path,
+    architecture,
+):
+    # 三款 NVFP4 的 KV FP8 统一归 sparse 特性所有，不再由模型 defaults 常驻注入。
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        model_path,
+        "rtxpro5000-72",
+        "sparse",
+    )
+
+    assert row is not None
+    assert row.get("strategy") == "fp8"
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        model_path,
+        "rtxpro5000-48",
+        "sparse",
+    ) is None
+
+    class _Identifier:
+        model_architecture = architecture
+
+        def __init__(self, name, path, model_type):
+            self.model_name = name
+            self.model_path = path
+            self.model_type = model_type
+
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _Identifier)
+    monkeypatch.delenv("CONFIG_FORCE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    hardware = {
+        "device": "nvidia",
+        "count": 8,
+        "details": [{"name": "NVIDIA RTX PRO 5000 72GB Blackwell"}],
+    }
+    base_params = {
+        "engine": "vllm",
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_type": "llm",
+        "device_count": 8,
+        "engine_config": {},
+    }
+
+    disabled = {**base_params, "enable_sparse": False}
+    config_loader.apply_effective_feature_enablement(disabled, hardware)
+    assert disabled["enable_sparse"] is False
+    assert "kv_cache_dtype" not in disabled["engine_config"]
+    assert "--kv-cache-dtype" not in vllm_adapter._build_vllm_cmd_parts(disabled)
+
+    enabled = {**base_params, "engine_config": {}, "enable_sparse": True}
+    config_loader.apply_effective_feature_enablement(enabled, hardware)
+    assert enabled["enable_sparse"] is True
+    assert vllm_adapter.resolve_sparse_variant(enabled, "vllm") == "fp8"
+    assert enabled["engine_config"] == {}
+    assert vllm_adapter._build_kv_sparse_cmd(enabled, "vllm") == ""
+    assert enabled["engine_config"]["kv_cache_dtype"] == "fp8"
+    assert "--kv-cache-dtype fp8" in vllm_adapter._build_vllm_cmd_parts(enabled)
+
+
+@pytest.mark.parametrize(
     ("feature", "model_name", "model_path", "card_token", "expected_source"),
     [
         ("spec", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", "vllm-minimax-m3"),
         ("offload", "MiniMax/MiniMax-M3-MXFP8", "/models/MiniMax/MiniMax-M3-MXFP8", "rtxpro5000-72", "vllm-minimax-m3"),
         ("spec", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("sparse", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("offload", "MiniMax/MiniMax-M2.5-NVFP4", "/models/MiniMax/MiniMax-M2.5-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("spec", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("sparse", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("offload", "MiniMax/MiniMax-M2.7-NVFP4", "/models/MiniMax/MiniMax-M2.7-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("spec", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "vllm-0.23"),
+        ("sparse", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "23.6.0"),
         ("offload", "Qwen/Qwen3.5-397B-A17B-NVFP4", "/models/Qwen/Qwen3.5-397B-A17B-NVFP4", "rtxpro5000-72", "vllm-0.23"),
         ("spec", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "rtxpro5000-72", "vllm-0.23"),
         ("offload", "Qwen/Qwen3.5-122B-A10B", "/models/Qwen/Qwen3.5-122B-A10B", "rtxpro5000-72", "vllm-0.23"),

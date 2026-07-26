@@ -4365,8 +4365,6 @@ def _resolve_kv_sparse_plan(
     if _is_deepseek_v4_flash_params(params, model_info):
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return "v4_indexcache", topk, arch, sparse_level
-    if is_minimax_m27_rtx_pro_5000_vllm(params, engine):
-        return "minimax_noop", None, arch, sparse_level
     if arch in INDEXCACHE_ARCHS:
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
         return "architecture_indexcache", topk, arch, sparse_level
@@ -4399,9 +4397,6 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
         logger.info("[KV Sparse] DeepSeek-V4-Flash (NV) → IndexCache use_index_cache "
                     "(--hf-overrides, no patch install)")
         return f" --hf-overrides '{{\"use_index_cache\": true, \"index_topk_freq\": {topk}}}'"
-    if kind == "minimax_noop":
-        logger.info("[KV Sparse] MiniMax-M2.7 (NV) -> no-op (fp8 from json, no calculate_kv_scales)")
-        return ""
     if kind == "architecture_indexcache":
         logger.info("[KV Sparse] Architecture %s → IndexCache strategy (--hf-overrides)", arch)
         return f" --hf-overrides '{{\"index_topk_freq\": {topk}}}'"
@@ -4418,7 +4413,7 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
         return ""
     if kind in {"whitelist_indexcache", "ascend_glm51_indexcache", "v4_indexcache"}:
         return f"indexcache_use_index_cache_topk{topk}"
-    if kind in {"ascend_noop", "minimax_noop"}:
+    if kind == "ascend_noop":
         return "noop"
     if kind == "architecture_indexcache":
         return f"indexcache_topk{topk}"
@@ -4474,10 +4469,12 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
 # ── MiniMax-M2.7 + RTX-PRO-5000 + vLLM 集成（融入通用流程）──────────────────────
 # 不再走 build_start_script 早退分支，而是仿 DeepSeek-V4-Flash-NV / Qwen3.5 通过扩展点
 # 条件分支融入通用流程：
-#   * 固定 CLI 字段（trust_remote_code / kv_cache_dtype / served_model_name / moe_backend /
+#   * 固定 CLI 字段（trust_remote_code / served_model_name / moe_backend /
 #     tool_call_parser / enable_auto_tool_choice / speculative_config / use_vllm_serve）
-#     外置到 nvidia_default.json 的 MiniMaxM2ForCausalLM -> MiniMax-M2.7 -> vllm ->
-#     rtx_pro_5000_72G 子块，由通用 4 层合并注入 engine_config。
+#     外置到 nvidia_default.json 的 MiniMaxM2ForCausalLM -> MiniMax-M2.7-NVFP4 -> vllm，
+#     由通用 4 层合并注入 engine_config。
+#   * kv_cache_dtype 归 sparse 特性统一管理：开启且命中 strategy=fp8 白名单时由
+#     _build_kv_sparse_cmd 注入，关闭 sparse 时不产出，避免 defaults 绕过特性开关。
 #   * reasoning_parser 由 reason_parser.yaml 注入（MiniMax-M2.7 系列设为 minimax_m2），
 #     受 enable_auto_think_choice 开关控制（与 Qwen3.5 一致）。
 #   * tensor_parallel_size / data_parallel_size 由 _apply_minimax_m27_nvfp4_nv_engine_defaults
@@ -4486,7 +4483,7 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
 #     （含通用 LMCacheConnectorV1 缺失的 kv_load_failure_policy:recompute）。
 #   * 环境变量由 _build_model_env_commands 的 MiniMax 分支注入（仿 Qwen3.5 NVFP4 运行时配方，
 #     返回 txt 的 LMCache env 集）；_build_cache_env_commands 的通用 LMCache 流程对本场景跳过。
-#   * _build_kv_sparse_cmd 对 MiniMax 早退，跳过 calculate_kv_scales 注入（txt 无此项）。
+#   * _build_kv_sparse_cmd 复用通用 strategy=fp8 路径，不再维护 MiniMax 专用 sparse 分支。
 _MINIMAX_M27_DISK_SUFFIX = "kvcache"
 
 
