@@ -3590,7 +3590,7 @@ def _handle_distributed(engine: str, cmd_params: Dict[str, Any], model_info):
     """根据引擎类型将分布式参数注入 cmd_params。
 
     从默认配置目录加载 distributed.json，并根据 engine 分发到对应的处理函数：
-    - vllm / vllm_ascend → _handle_vllm_distributed（Ray 或 PD 模式）
+    - vllm / vllm_ascend → _handle_vllm_distributed（Ray、MP 或 DP 模式）
     - sglang             → _handle_sglang_distributed（dist_port）
     - mindie             → _handle_mindie_distributed（MASTER_ADDR/PORT）
     """
@@ -3615,6 +3615,7 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
     - Ascend PD (Prefill/Decode 分离): 使用 MooncakeConnector，各实例独立运行，
       不使用 dp_deployment / NIXL。KV 传输由 MooncakeConnector + RDMA 处理。
     - NVIDIA PD 或 Ascend DeepSeek DP: 使用 NIXL 协议 (dp_deployment)。
+    - NVIDIA Kimi-K3 标准多机: 使用 vLLM 原生 MP。
     - 其他: 使用 Ray 作为分布式执行后端。
 
     端口优先来自环境变量 VLLM_DISTRIBUTED_PORT，若未设置则回退到配置文件默认值。
@@ -3651,6 +3652,10 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
         return
 
     is_nvidia_pd = pd_role in ['P', 'D'] and not is_ascend
+    is_kimi_k3_nvidia_mp = (
+        model_architecture == "KimiK3ForConditionalGeneration"
+        and not is_ascend
+    )
     use_dp_deployment = is_nvidia_pd or is_ascend_deepseek or is_qwen35_397b_ascend_dp
     if use_dp_deployment:
         # 仍走原来的 dp_deployment 出口：端口、nixl_ip、rpc_port 的注入方式不分叉，
@@ -3665,6 +3670,10 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
             'nixl_port': vllm_distributed_port,
             'rpc_port': rpc_port
         })
+    elif is_kimi_k3_nvidia_mp:
+        # Kimi-K3 + NVIDIA 多机使用 vLLM 原生 MP；四机 rank 和 master 地址仍复用
+        # Wings 现有 NODE_IPS 分发链路，避免为单一模型再引入一套节点编排。
+        cmd_params['distributed_executor_backend'] = 'mp'
     else:
         if not vllm_distributed_port:
             vllm_distributed_port = distributed_config.get('vllm_distributed', {}).get('ray_head_port', 27070)

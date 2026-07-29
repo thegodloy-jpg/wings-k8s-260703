@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "scenario": "Kimi-K3 + NVIDIA H20 96GB + 4 nodes x 8 GPUs",
+  "result": "PASS",
+  "strict_reference_equality": "FAIL",
+  "deployment_policy_alignment": "PASS",
+  "requested_backend": "ray",
+  "resolved_backend": "mp",
+  "node_ips": [
+    "7.6.25.57",
+    "7.6.25.58",
+    "7.6.25.59",
+    "7.6.25.60"
+  ],
+  "master_ip": "7.6.25.57",
+  "master_port": 29501,
+  "external_proxy_port": 8000,
+  "engine_backend_port": 17000,
+  "dispatch_failures": 0,
+  "critical_failure_count": 0,
+  "allowed_differences": [
+    {
+      "nodes": [
+        0
+      ],
+      "field": "host",
+      "standard": "0.0.0.0",
+      "actual": "7.6.25.57",
+      "classification": "project_architecture",
+      "reason": "rank0 engine 绑定具体 Pod/RANK IP"
+    },
+    {
+      "nodes": [
+        0
+      ],
+      "field": "port",
+      "standard": 8000,
+      "actual": 17000,
+      "classification": "project_architecture",
+      "reason": "sidecar proxy 对外 8000，vLLM backend 使用 17000"
+    },
+    {
+      "nodes": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "field": "distributed-executor-backend",
+      "standard": null,
+      "actual": "mp",
+      "classification": "required_explicitness",
+      "reason": "显式固定原生 MP，防止 Worker 回退默认 Ray"
+    }
+  ],
+  "nodes": [
+    {
+      "node_rank": 0,
+      "role": "master",
+      "ip": "7.6.25.57",
+      "strict_result": "FAIL",
+      "strict_failure_count": 3,
+      "strict_failures": [
+        {
+          "scope": "cli",
+          "path": "host",
+          "rule": "exact",
+          "expected": "0.0.0.0",
+          "actual": "7.6.25.57",
+          "result": "FAIL",
+          "severity": "error",
+          "message": ""
+        },
+        {
+          "scope": "cli",
+          "path": "port",
+          "rule": "exact",
+          "expected": 8000,
+          "actual": 17000,
+          "result": "FAIL",
+          "severity": "error",
+          "message": ""
+        },
+        {
+          "scope": "cli",
+          "path": "distributed-executor-backend",
+          "rule": "extra",
+          "expected": null,
+          "actual": "mp",
+          "result": "FAIL",
+          "severity": "error",
+          "message": "实际命令额外 CLI 参数"
+        }
+      ],
+      "unexpected_strict_failures": [],
+      "deployment_policy_result": "PASS",
+      "contract_checks_passed": 27,
+      "contract_checks_total": 27,
+      "engine_command_occurrences": 2,
+      "unique_engine_commands": 1
+    },
+    {
+      "node_rank": 1,
+      "role": "worker",
+      "ip": "7.6.25.58",
+      "strict_result": "FAIL",
+      "strict_failure_count": 1,
+      "strict_failures": [
+        {
+          "scope": "cli",
+          "path": "distributed-executor-backend",
+          "rule": "extra",
+          "expected": null,
+          "actual": "mp",
+          "result": "FAIL",
+          "severity": "error",
+          "message": "实际命令额外 CLI 参数"
+        }
+      ],
+      "unexpected_strict_failures": [],
+      "deployment_policy_result": "PASS",
+      "contract_checks_passed": 29,
+      "contract_checks_total": 29,
+      "engine_command_occurrences": 2,
+      "unique_engine_commands": 1
+    },
+    {
+      "node_rank": 2,
+      "role": "worker",
+      "ip": "7.6.25.59",
+      "strict_result": "FAIL",
+      "strict_failure_count": 1,
+      "strict_failures": [
+        {
+          "scope": "cli",
+          "path": "distributed-executor-backend",
+          "rule": "extra",
+          "expected": null,
+          "actual": "mp",
+          "result": "FAIL",
+          "severity": "error",
+          "message": "实际命令额外 CLI 参数"
+        }
+      ],
+      "unexpected_strict_failures": [],
+      "deployment_policy_result": "PASS",
+      "contract_checks_passed": 29,
+      "contract_checks_total": 29,
+      "engine_command_occurrences": 2,
+      "unique_engine_commands": 1
+    },
+    {
+      "node_rank": 3,
+      "role": "worker",
+      "ip": "7.6.25.60",
+      "strict_result": "FAIL",
+      "strict_failure_count": 1,
+      "strict_failures": [
+        {
+          "scope": "cli",
+          "path": "distributed-executor-backend",
+          "rule": "extra",
+          "expected": null,
+          "actual": "mp",
+          "result": "FAIL",
+          "severity": "error",
+          "message": "实际命令额外 CLI 参数"
+        }
+      ],
+      "unexpected_strict_failures": [],
+      "deployment_policy_result": "PASS",
+      "contract_checks_passed": 29,
+      "contract_checks_total": 29,
+      "engine_command_occurrences": 2,
+      "unique_engine_commands": 1
+    }
+  ],
+  "cluster_checks": {
+    "input_backend_default_ray": true,
+    "rank0_resolved_mp": true,
+    "original_args_still_ray": true,
+    "dispatch_failures_zero": true,
+    "three_worker_payloads": true,
+    "worker_ranks_1_2_3": true,
+    "all_worker_payloads_mp": true,
+    "node_ips_master_first": true,
+    "master_port_in_range": true,
+    "all_node_checks_pass": true,
+    "all_policy_reports_pass": true,
+    "no_unexpected_strict_diff": true
+  }
+}

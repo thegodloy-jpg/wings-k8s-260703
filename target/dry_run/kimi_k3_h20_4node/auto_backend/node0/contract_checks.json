@@ -1,0 +1,32 @@
+{
+  "result": "PASS",
+  "checks": {
+    "entrypoint_vllm_serve": true,
+    "model_path_local": true,
+    "backend_mp": true,
+    "nnodes_4": true,
+    "node_rank_correct": true,
+    "master_addr_correct": true,
+    "master_port_correct": true,
+    "tp_32": true,
+    "gpu_memory_098": true,
+    "max_model_len_40960": true,
+    "max_batched_tokens_8192": true,
+    "max_seqs_32": true,
+    "timeout_1200": true,
+    "moe_marlin": true,
+    "raw_cc_flag": true,
+    "mp_env_match": true,
+    "no_ray": true,
+    "no_dp": true,
+    "retry_command_consistent": true,
+    "strict_only_allowed": true,
+    "policy_compare_pass": true,
+    "rank0_not_headless": true,
+    "rank0_host_pod_ip": true,
+    "rank0_backend_port_17000": true,
+    "rank0_tool_parser": true,
+    "rank0_reason_parser": true,
+    "rank0_auto_tool": true
+  }
+}

@@ -1,0 +1,24 @@
+export NCCL_SOCKET_IFNAME=ens3f3
+export GLOO_SOCKET_IFNAME=ens3f3
+export NCCL_NVLS_ENABLE=0
+export NCCL_DEBUG=WARN
+export VLLM_SSM_CONV_STATE_LAYOUT=DS
+
+vllm serve /var/ai-model/Kimi-K3/ \
+  --trust-remote-code \
+  --gpu-memory-utilization 0.98 \
+  --tensor-parallel-size 32 \
+  --nnodes 4 \
+  --node-rank 1 \
+  --master-addr 7.6.25.57 \
+  --master-port 29501 \
+  --no-enable-flashinfer-autotune \
+  -cc.pass_config.fuse_allreduce_rms=False \
+  --moe-backend marlin \
+  --disable-custom-all-reduce \
+  --distributed-timeout-seconds 1200 \
+  --max-num-seqs 32 \
+  --headless \
+  --served-model-name kimi_k3 \
+  --max-num-batched-tokens 8192 \
+  --max-model-len 40960

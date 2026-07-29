@@ -946,6 +946,21 @@ def _generate_rank0_script(
         ray_head_ip=launch_args.ray_head_ip or master_ip,
     )
     launcher_plan = build_launcher_plan(master_args, port_plan)
+    # rank0 配置合并可能按模型/硬件把默认 Ray 改为 MP 或 DP；Worker 分发必须携带
+    # 同一最终 backend，否则 Worker 会按合并前参数走到另一条启动链路。
+    resolved_backend = str(
+        launcher_plan.merged_params.get("distributed_executor_backend") or ""
+    ).strip()
+    if resolved_backend and resolved_backend != master_args.distributed_executor_backend:
+        logger.info(
+            "Propagating resolved distributed backend to workers: requested=%s resolved=%s",
+            master_args.distributed_executor_backend,
+            resolved_backend,
+        )
+        master_args = dataclasses.replace(
+            master_args,
+            distributed_executor_backend=resolved_backend,
+        )
     script_path = _write_start_command(launcher_plan.command)
     logger.info("master start command written to %s", script_path)
     return master_args
@@ -1083,10 +1098,7 @@ def _run_master_mode(
     # 使用 COORDINATOR_PORT 避免与 HCCL 的 MASTER_PORT 语义冲突。
     # MASTER_PORT 在 MindIE engine 中用于 HCCL 集合通信（默认 27070），
     # 而此处是 wings 分布式协调 API 端口（默认 16000），二者不同。
-    master_port = int(
-        os.getenv("COORDINATOR_PORT",
-                  os.getenv("MASTER_PORT", str(dist_config["master"]["port"])))
-    )
+    master_port = int(os.getenv("COORDINATOR_PORT", str(dist_config["master"]["port"])))
     master_url = f"http://127.0.0.1:{master_port}"
     _master_api_thread = _start_master_api_thread(master_port)
     logger.info(

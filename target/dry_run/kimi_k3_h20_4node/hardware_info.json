@@ -1,0 +1,63 @@
+{
+  "device": "nvidia",
+  "hardware_family": "NVIDIA H20 96GB",
+  "details": [
+    {
+      "device_id": 0,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 1,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 2,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 3,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 4,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 5,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 6,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    },
+    {
+      "device_id": 7,
+      "name": "NVIDIA H20 96GB",
+      "total_memory": 96,
+      "free_memory": 96,
+      "used_memory": 0
+    }
+  ],
+  "units": "GB"
+}

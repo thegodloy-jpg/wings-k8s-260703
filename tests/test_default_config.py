@@ -2235,6 +2235,23 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert llm["GlmMoeDsaForCausalLM"]["GLM5.1"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["GlmMoeDsaForCausalLM"]["GLM-5.1"]["card_tokens"] == ["h20-96", "h20-141"]
     assert llm["GlmMoeDsaForCausalLM"]["GLM-5.1-FP8"]["card_tokens"] == ["h20-96", "h20-141"]
+    kimi_k3 = llm["KimiK3ForConditionalGeneration"]["Kimi-K3"]
+    assert kimi_k3["card_tokens"] == ["h20-96", "h20-141"]
+    assert kimi_k3["vllm_distributed"] == {
+        "use_vllm_serve": True,
+        "trust_remote_code": True,
+        "served_model_name": "kimi_k3",
+        "gpu_memory_utilization": 0.98,
+        "no_enable_flashinfer_autotune": True,
+        "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"],
+        "moe_backend": "marlin",
+        "disable_custom_all_reduce": True,
+        "distributed_timeout_seconds": 1200,
+        "max_num_seqs": 32,
+        "tool_call_parser": "kimi_k3",
+        "max_num_batched_tokens": 8192,
+        "max_model_len": 40960,
+    }
     assert llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["card_tokens"] == [
         "l20",
         "h20-96",
@@ -2698,3 +2715,96 @@ def test_qwen35_moe_non_397b_distributed_still_uses_ray(monkeypatch):
     config_loader._handle_vllm_distributed(distributed_config, params, model_info)
 
     assert params["distributed_executor_backend"] == "ray"
+
+
+def test_kimi_k3_nvidia_four_node_routes_to_mp_and_tp32(monkeypatch):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
+    distributed_config = {
+        "vllm_distributed": {
+            "nixl_port": 5759,
+            "rpc_port": 13355,
+            "ray_head_port": 28020,
+        }
+    }
+    params = {
+        "engine": "vllm",
+        "model_name": "Kimi-K3",
+        "model_path": "/models/Kimi-K3",
+        "device_count": 8,
+        "distributed": True,
+        "nnodes": 4,
+        "node_ips": "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60",
+        "distributed_executor_backend": "ray",
+    }
+    model_info = _FakeModelInfo("Kimi-K3", "KimiK3ForConditionalGeneration")
+
+    config_loader._handle_vllm_distributed(distributed_config, params, model_info)
+
+    assert params["distributed_executor_backend"] == "mp"
+    assert "ray_head_port" not in params
+    assert "rpc_port" not in params
+    engine_config = {}
+    config_loader._set_parallelism_params(engine_config, params)
+    assert engine_config["tensor_parallel_size"] == 32
+
+
+def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
+    kimi_arch = _model_deploy_config("nvidia")["llm"]["KimiK3ForConditionalGeneration"]
+    scenario = config_loader._SpecialEngineScenario()
+    model_info = _FakeModelInfo("Kimi-K3", "KimiK3ForConditionalGeneration")
+
+    h20_config = config_loader._match_model_engine_config(
+        kimi_arch,
+        "kimi-k3",
+        "vllm_distributed",
+        scenario,
+        model_info,
+        {"device": "nvidia", "details": [{"name": "NVIDIA H20 96GB"}]},
+        "/models/kimi-k3",
+    )
+    a100_config = config_loader._match_model_engine_config(
+        kimi_arch,
+        "kimi-k3",
+        "vllm_distributed",
+        scenario,
+        model_info,
+        {"device": "nvidia", "details": [{"name": "NVIDIA A100 80GB"}]},
+        "/models/kimi-k3",
+    )
+    found, parser = config_loader._resolve_reasoning_parser_support(
+        "KimiK3ForConditionalGeneration",
+        "Kimi-K3",
+        "vllm_distributed",
+    )
+    merged_config = config_loader._get_model_specific_config(
+        {
+            "device": "nvidia",
+            "device_count": 8,
+            "details": [{"name": "NVIDIA H20 96GB"}],
+        },
+        {
+            "engine": "vllm",
+            "model_name": "Kimi-K3",
+            "model_path": "/models/Kimi-K3",
+            "model_type": "llm",
+            "device_count": 8,
+            "distributed": True,
+            "nnodes": 4,
+            "node_ips": "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60",
+            "distributed_executor_backend": "mp",
+            "enable_auto_tool_choice": True,
+            "enable_auto_think_choice": True,
+            "gpu_usage_mode": "full",
+        },
+        model_info,
+    )
+
+    assert h20_config["served_model_name"] == "kimi_k3"
+    assert h20_config["tool_call_parser"] == "kimi_k3"
+    assert a100_config == {}
+    assert found is True
+    assert parser == "kimi_k3"
+    assert merged_config["reasoning_parser"] == "kimi_k3"
+    assert merged_config["enable_auto_tool_choice"] is True
+    assert merged_config["tensor_parallel_size"] == 32

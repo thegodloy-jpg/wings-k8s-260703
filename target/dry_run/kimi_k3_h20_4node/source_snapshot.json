@@ -1,0 +1,12 @@
+{
+  "head": "2ff3887b971d96b420c993ef19970d7800ef81bd",
+  "branch": "feat/day0-smart-feature-gap-fix",
+  "sha256": {
+    "wings_control/wings_control.py": "320e7342bafe686ebec68d11f8cf8a0d34a4e7315f45ec3d633c8b04b0bcadde",
+    "wings_control/core/config_loader.py": "60e31d6583082a429c6bc520b319e1c6717fbd552825bc368bdc5aadf70a4c0f",
+    "wings_control/engines/vllm_distributed.py": "fd0c7ae36c9fdd3ce852e6075d8eca67ad5cdf9403ea0326dcc7f2a42e5c5340",
+    "wings_control/engines/vllm_adapter.py": "89f07e1a438646c78e811e304c106fb0d77fd3f4c569f78b5cb6e63881f7a1e4",
+    "wings_control/distributed/worker.py": "bcf7b7056559c6fced264e0fc0f1eae982b153be4a1e8b9b1c34b40e5beb98db",
+    "wings_control/config/defaults/nvidia_default.json": "535b47e7638c312ccfc88644b52ff24604a29c78210f4d7f9b34c9ec405fbf4f"
+  }
+}

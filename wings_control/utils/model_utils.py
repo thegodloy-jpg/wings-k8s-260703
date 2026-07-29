@@ -682,6 +682,9 @@ _LLM_MODELS = {
         "Kimi-K2.7-w4a8",
         "Kimi-K2.7-Code",
         ],
+    "KimiK3ForConditionalGeneration": [
+        "Kimi-K3",
+        ],
     "DeepseekV32ForCausalLM": [
         "DeepSeek-V3.2",
         "DeepSeek-V3.2-w8a8",

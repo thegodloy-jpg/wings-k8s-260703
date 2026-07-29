@@ -104,6 +104,13 @@ architectures:
       Kimi-K2.7-w4a8: {vllm: kimi_k2, vllm_ascend: kimi_k2}
       Kimi-K2.7-Code: {vllm: kimi_k2, vllm_ascend: kimi_k2}
 
+  - name: KimiK3ForConditionalGeneration
+    config:
+      vllm:        {default: kimi_k3}
+      vllm_ascend: {default: kimi_k3}
+    models:
+      Kimi-K3: {vllm: kimi_k3, vllm_ascend: kimi_k3}
+
   - name: GlmMoeDsaForCausalLM
     config:
       vllm:        {default: glm45}

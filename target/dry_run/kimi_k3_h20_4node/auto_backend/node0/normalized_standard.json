@@ -1,0 +1,200 @@
+{
+  "raw": "export NCCL_SOCKET_IFNAME=enp66s0f1\nexport GLOO_SOCKET_IFNAME=enp66s0f1\nexport NCCL_NVLS_ENABLE=0\nexport NCCL_DEBUG=WARN\nexport VLLM_SSM_CONV_STATE_LAYOUT=DS\n\nvllm serve /var/aispace/model/Kimi-K3 \\\n  --trust-remote-code \\\n  --gpu-memory-utilization 0.98 \\\n  --tensor-parallel-size 32 \\\n  --nnodes 4 \\\n  --node-rank 0 \\\n  --master-addr 7.6.25.57 \\\n  --master-port 29501 \\\n  --no-enable-flashinfer-autotune \\\n  -cc.pass_config.fuse_allreduce_rms=False \\\n  --moe-backend marlin \\\n  --disable-custom-all-reduce \\\n  --distributed-timeout-seconds 1200 \\\n  --max-num-seqs 32 \\\n  --enable-auto-tool-choice \\\n  --tool-call-parser kimi_k3 \\\n  --reasoning-parser kimi_k3 \\\n  --served-model-name kimi_k3 \\\n  --host 0.0.0.0 \\\n  --max-num-batched-tokens 8192 \\\n  --max-model-len 40960 \\\n  --port 8000\n",
+  "cleaned_script": "export NCCL_SOCKET_IFNAME=enp66s0f1\nexport GLOO_SOCKET_IFNAME=enp66s0f1\nexport NCCL_NVLS_ENABLE=0\nexport NCCL_DEBUG=WARN\nexport VLLM_SSM_CONV_STATE_LAYOUT=DS\nvllm serve /var/aispace/model/Kimi-K3 --trust-remote-code --gpu-memory-utilization 0.98 --tensor-parallel-size 32 --nnodes 4 --node-rank 0 --master-addr 7.6.25.57 --master-port 29501 --no-enable-flashinfer-autotune -cc.pass_config.fuse_allreduce_rms=False --moe-backend marlin --disable-custom-all-reduce --distributed-timeout-seconds 1200 --max-num-seqs 32 --enable-auto-tool-choice --tool-call-parser kimi_k3 --reasoning-parser kimi_k3 --served-model-name kimi_k3 --host 0.0.0.0 --max-num-batched-tokens 8192 --max-model-len 40960 --port 8000",
+  "entrypoint": "vllm.entrypoints.openai.api_server",
+  "entrypoint_kind": "vllm_serve",
+  "environment": {
+    "NCCL_SOCKET_IFNAME": "enp66s0f1",
+    "GLOO_SOCKET_IFNAME": "enp66s0f1",
+    "NCCL_NVLS_ENABLE": 0,
+    "NCCL_DEBUG": "WARN",
+    "VLLM_SSM_CONV_STATE_LAYOUT": "DS"
+  },
+  "flags": {
+    "trust-remote-code": true,
+    "gpu-memory-utilization": 0.98,
+    "tensor-parallel-size": 32,
+    "nnodes": 4,
+    "node-rank": 0,
+    "master-addr": "7.6.25.57",
+    "master-port": 29501,
+    "no-enable-flashinfer-autotune": true,
+    "moe-backend": "marlin",
+    "disable-custom-all-reduce": true,
+    "distributed-timeout-seconds": 1200,
+    "max-num-seqs": 32,
+    "enable-auto-tool-choice": true,
+    "tool-call-parser": "kimi_k3",
+    "reasoning-parser": "kimi_k3",
+    "served-model-name": "kimi_k3",
+    "host": "0.0.0.0",
+    "max-num-batched-tokens": 8192,
+    "max-model-len": 40960,
+    "port": 8000,
+    "model": "/var/aispace/model/Kimi-K3"
+  },
+  "positional_args": [
+    "-cc.pass_config.fuse_allreduce_rms=False"
+  ],
+  "pre_commands": [],
+  "duplicate_environment": {},
+  "duplicate_flags": {},
+  "repairs": [
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 7,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 8,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 9,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 10,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 11,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 12,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 13,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 14,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 15,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 16,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 17,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 18,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 19,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 20,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 21,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 22,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 23,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 24,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 25,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 26,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "join_shell_continuation",
+      "message": "合并 Shell 续行",
+      "line": 27,
+      "original": null,
+      "normalized": null
+    },
+    {
+      "code": "repair_raw_single_dash_arg",
+      "message": "Split the vLLM -cc.pass_config raw argument from the preceding boolean flag",
+      "line": null,
+      "original": null,
+      "normalized": null
+    }
+  ],
+  "warnings": [],
+  "errors": []
+}

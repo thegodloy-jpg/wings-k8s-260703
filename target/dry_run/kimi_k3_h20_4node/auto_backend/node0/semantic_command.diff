@@ -1,0 +1,8 @@
+--- node0/standard_exec_command.txt
++++ node0/actual_exec_command.txt
+@@ semantic CLI differences
+- --host 0.0.0.0
++ --host 7.6.25.57
+- --port 8000
++ --port 17000
++ --distributed-executor-backend mp

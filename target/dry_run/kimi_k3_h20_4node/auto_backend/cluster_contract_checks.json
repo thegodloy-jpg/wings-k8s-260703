@@ -1,0 +1,589 @@
+{
+  "result": "PASS",
+  "checks": {
+    "input_backend_default_ray": true,
+    "rank0_resolved_mp": true,
+    "original_args_still_ray": true,
+    "dispatch_failures_zero": true,
+    "three_worker_payloads": true,
+    "worker_ranks_1_2_3": true,
+    "all_worker_payloads_mp": true,
+    "node_ips_master_first": true,
+    "master_port_in_range": true,
+    "all_node_checks_pass": true,
+    "all_policy_reports_pass": true,
+    "no_unexpected_strict_diff": true
+  },
+  "per_node_checks": [
+    {
+      "node_rank": 0,
+      "check": "entrypoint_vllm_serve",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "model_path_local",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "backend_mp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "nnodes_4",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "node_rank_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "master_addr_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "master_port_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "tp_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "gpu_memory_098",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "max_model_len_40960",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "max_batched_tokens_8192",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "max_seqs_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "timeout_1200",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "moe_marlin",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "raw_cc_flag",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "mp_env_match",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "no_ray",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "no_dp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "retry_command_consistent",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "strict_only_allowed",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "policy_compare_pass",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "rank0_not_headless",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "rank0_host_pod_ip",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "rank0_backend_port_17000",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "rank0_tool_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "rank0_reason_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 0,
+      "check": "rank0_auto_tool",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "entrypoint_vllm_serve",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "model_path_local",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "backend_mp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "nnodes_4",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "node_rank_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "master_addr_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "master_port_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "tp_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "gpu_memory_098",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "max_model_len_40960",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "max_batched_tokens_8192",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "max_seqs_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "timeout_1200",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "moe_marlin",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "raw_cc_flag",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "mp_env_match",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "no_ray",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "no_dp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "retry_command_consistent",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "strict_only_allowed",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "policy_compare_pass",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_headless",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_no_host",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_no_port",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_no_tool_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_no_reason_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_no_auto_tool",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_local_path_override",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 1,
+      "check": "worker_payload_mp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "entrypoint_vllm_serve",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "model_path_local",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "backend_mp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "nnodes_4",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "node_rank_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "master_addr_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "master_port_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "tp_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "gpu_memory_098",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "max_model_len_40960",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "max_batched_tokens_8192",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "max_seqs_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "timeout_1200",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "moe_marlin",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "raw_cc_flag",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "mp_env_match",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "no_ray",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "no_dp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "retry_command_consistent",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "strict_only_allowed",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "policy_compare_pass",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_headless",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_no_host",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_no_port",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_no_tool_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_no_reason_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_no_auto_tool",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_local_path_override",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 2,
+      "check": "worker_payload_mp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "entrypoint_vllm_serve",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "model_path_local",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "backend_mp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "nnodes_4",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "node_rank_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "master_addr_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "master_port_correct",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "tp_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "gpu_memory_098",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "max_model_len_40960",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "max_batched_tokens_8192",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "max_seqs_32",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "timeout_1200",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "moe_marlin",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "raw_cc_flag",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "mp_env_match",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "no_ray",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "no_dp",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "retry_command_consistent",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "strict_only_allowed",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "policy_compare_pass",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_headless",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_no_host",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_no_port",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_no_tool_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_no_reason_parser",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_no_auto_tool",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_local_path_override",
+      "result": "PASS"
+    },
+    {
+      "node_rank": 3,
+      "check": "worker_payload_mp",
+      "result": "PASS"
+    }
+  ]
+}

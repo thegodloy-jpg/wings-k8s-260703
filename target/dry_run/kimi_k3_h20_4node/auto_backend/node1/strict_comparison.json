@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "scenario_id": "kimi-k3-h20-node1-strict",
+  "result": "FAIL",
+  "summary": {
+    "passed": 23,
+    "failed": 1,
+    "review": 0,
+    "info": 0,
+    "errors": 0
+  },
+  "differences": [
+    {
+      "scope": "entrypoint",
+      "path": "module",
+      "rule": "exact",
+      "expected": "vllm.entrypoints.openai.api_server",
+      "actual": "vllm.entrypoints.openai.api_server",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "environment",
+      "path": "GLOO_SOCKET_IFNAME",
+      "rule": "exact",
+      "expected": "ens3f3",
+      "actual": "ens3f3",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "environment",
+      "path": "NCCL_DEBUG",
+      "rule": "exact",
+      "expected": "WARN",
+      "actual": "WARN",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "environment",
+      "path": "NCCL_NVLS_ENABLE",
+      "rule": "exact",
+      "expected": 0,
+      "actual": 0,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "environment",
+      "path": "NCCL_SOCKET_IFNAME",
+      "rule": "exact",
+      "expected": "ens3f3",
+      "actual": "ens3f3",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "environment",
+      "path": "VLLM_SSM_CONV_STATE_LAYOUT",
+      "rule": "exact",
+      "expected": "DS",
+      "actual": "DS",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "disable-custom-all-reduce",
+      "rule": "exact",
+      "expected": true,
+      "actual": true,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "distributed-timeout-seconds",
+      "rule": "exact",
+      "expected": 1200,
+      "actual": 1200,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "gpu-memory-utilization",
+      "rule": "exact",
+      "expected": 0.98,
+      "actual": 0.98,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "headless",
+      "rule": "exact",
+      "expected": true,
+      "actual": true,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "master-addr",
+      "rule": "exact",
+      "expected": "7.6.25.57",
+      "actual": "7.6.25.57",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "master-port",
+      "rule": "exact",
+      "expected": 29501,
+      "actual": 29501,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "max-model-len",
+      "rule": "exact",
+      "expected": 40960,
+      "actual": 40960,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "max-num-batched-tokens",
+      "rule": "exact",
+      "expected": 8192,
+      "actual": 8192,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "max-num-seqs",
+      "rule": "exact",
+      "expected": 32,
+      "actual": 32,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "model",
+      "rule": "exact",
+      "expected": "/var/ai-model/Kimi-K3/",
+      "actual": "/var/ai-model/Kimi-K3/",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "moe-backend",
+      "rule": "exact",
+      "expected": "marlin",
+      "actual": "marlin",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "nnodes",
+      "rule": "exact",
+      "expected": 4,
+      "actual": 4,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "no-enable-flashinfer-autotune",
+      "rule": "exact",
+      "expected": true,
+      "actual": true,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "node-rank",
+      "rule": "exact",
+      "expected": 1,
+      "actual": 1,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "served-model-name",
+      "rule": "exact",
+      "expected": "kimi_k3",
+      "actual": "kimi_k3",
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "tensor-parallel-size",
+      "rule": "exact",
+      "expected": 32,
+      "actual": 32,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "trust-remote-code",
+      "rule": "exact",
+      "expected": true,
+      "actual": true,
+      "result": "PASS",
+      "severity": "info",
+      "message": ""
+    },
+    {
+      "scope": "cli",
+      "path": "distributed-executor-backend",
+      "rule": "extra",
+      "expected": null,
+      "actual": "mp",
+      "result": "FAIL",
+      "severity": "error",
+      "message": "实际命令额外 CLI 参数"
+    }
+  ],
+  "parse_warnings": {
+    "standard": [],
+    "actual": []
+  }
+}

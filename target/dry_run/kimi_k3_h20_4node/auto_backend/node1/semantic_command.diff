@@ -1,0 +1,4 @@
+--- node1/standard_exec_command.txt
++++ node1/actual_exec_command.txt
+@@ semantic CLI differences
++ --distributed-executor-backend mp

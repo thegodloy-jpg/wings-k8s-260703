@@ -1,0 +1,35 @@
+{
+  "model": {
+    "name": "Kimi-K3",
+    "architecture": "KimiK3ForConditionalGeneration"
+  },
+  "hardware": {
+    "device": "nvidia",
+    "family": "NVIDIA H20 96GB",
+    "gpus_per_node": 8,
+    "nodes": 4,
+    "world_size": 32
+  },
+  "topology": {
+    "node_ips": [
+      "7.6.25.57",
+      "7.6.25.58",
+      "7.6.25.59",
+      "7.6.25.60"
+    ],
+    "master_ip": "7.6.25.57",
+    "master_port": 29501
+  },
+  "paths": {
+    "master": "/var/aispace/model/Kimi-K3",
+    "worker": "/var/ai-model/Kimi-K3/"
+  },
+  "ports": {
+    "external_proxy": 8000,
+    "engine_backend": 17000,
+    "health": 19000
+  },
+  "input_backend": "ray parser default",
+  "expected_resolved_backend": "mp",
+  "model_config_simulation": "仅模拟 config.json 元数据；生成命令中的容器模型路径保持真实输入"
+}

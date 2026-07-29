@@ -2771,7 +2771,7 @@ def _resolve_tp_dp_alignment_state(
     nnodes = (_safe_int(params.get("nnodes")) or 1) if is_distributed else 1
     total_devices = (device_count or 0) * nnodes
     backend = str(params.get("distributed_executor_backend") or "ray").lower()
-    # 单机和 dp_deployment 的 TP 受节点内卡数约束；Ray 才允许使用集群总卡数。
+    # 单机和 dp_deployment 的 TP 受节点内卡数约束；Ray/MP 允许使用集群总卡数。
     tp_capacity = device_count if not is_distributed or backend == "dp_deployment" else total_devices
     return _TpDpAlignmentState(
         device_count,

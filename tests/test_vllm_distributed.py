@@ -28,6 +28,109 @@ def _ctx(*, engine="vllm", node_rank=1, nnodes=2):
     )
 
 
+def _mp_ctx(*, node_rank=0, net_ips=None):
+    node_ips = net_ips or "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60"
+    return DistScriptCtx(
+        engine="vllm",
+        cmd=(
+            "vllm serve /models/Kimi-K3 --trust-remote-code "
+            "--tensor-parallel-size 32 --host 0.0.0.0 --port 17000 "
+            "--enable-auto-tool-choice --tool-call-parser kimi_k3 "
+            "--reasoning-parser kimi_k3 --served-model-name kimi_k3"
+        ),
+        is_ascend=False,
+        node_rank=node_rank,
+        nnodes=4,
+        head_addr="7.6.25.57",
+        ray_port="28020",
+        node_ips=node_ips,
+    )
+
+
+def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
+    monkeypatch.setenv("MASTER_PORT", "29501")
+    monkeypatch.setenv("NCCL_SOCKET_IFNAME", "enp66s0f1")
+    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "enp66s0f1")
+
+    commands = vllm_distributed._build_mp_commands({}, _mp_ctx(node_rank=0))
+    final_command = commands[-1]
+
+    assert "export NCCL_SOCKET_IFNAME=enp66s0f1" in commands
+    assert "export GLOO_SOCKET_IFNAME=enp66s0f1" in commands
+    assert "export NCCL_NVLS_ENABLE=0" in commands
+    assert "export NCCL_DEBUG=WARN" in commands
+    assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" in commands
+    assert "--distributed-executor-backend mp" in final_command
+    assert "--nnodes 4" in final_command
+    assert "--node-rank 0" in final_command
+    assert "--master-addr 7.6.25.57" in final_command
+    assert "--master-port 29501" in final_command
+    assert "--host 0.0.0.0" in final_command
+    assert "--port 17000" in final_command
+    assert "--enable-auto-tool-choice" in final_command
+    assert "--tool-call-parser kimi_k3" in final_command
+    assert "--reasoning-parser kimi_k3" in final_command
+    assert "--headless" not in final_command
+    assert "--data-parallel-" not in final_command
+
+
+@pytest.mark.parametrize("node_rank", [1, 2, 3])
+def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank):
+    monkeypatch.setenv("MASTER_PORT", "29501")
+    monkeypatch.setenv("NCCL_SOCKET_IFNAME", "ens3f3")
+    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "ens3f3")
+
+    commands = vllm_distributed._build_mp_commands({}, _mp_ctx(node_rank=node_rank))
+    final_command = commands[-1]
+
+    assert "export NCCL_SOCKET_IFNAME=ens3f3" in commands
+    assert "export GLOO_SOCKET_IFNAME=ens3f3" in commands
+    assert f"--node-rank {node_rank}" in final_command
+    assert "--nnodes 4" in final_command
+    assert "--master-addr 7.6.25.57" in final_command
+    assert "--master-port 29501" in final_command
+    assert "--headless" in final_command
+    assert "--host " not in final_command
+    assert "--port " not in final_command
+    assert "--enable-auto-tool-choice" not in final_command
+    assert "--tool-call-parser" not in final_command
+    assert "--reasoning-parser" not in final_command
+    assert "--served-model-name kimi_k3" in final_command
+    assert "--tensor-parallel-size 32" in final_command
+    assert "--data-parallel-" not in final_command
+
+
+def test_vllm_distributed_mp_branch_does_not_fall_through_to_dp(monkeypatch):
+    monkeypatch.setenv("MASTER_PORT", "29501")
+    script = vllm_distributed._build_vllm_distributed_script(
+        {
+            "distributed_executor_backend": "mp",
+            "node_rank": 1,
+            "nnodes": 4,
+            "master_ip": "7.6.25.57",
+            "node_ips": "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60",
+        },
+        _mp_ctx(node_rank=1).cmd,
+        ["export COMMON_ENV=1"],
+        "vllm",
+        "",
+    )
+
+    assert "export COMMON_ENV=1" in script
+    assert "--distributed-executor-backend mp" in script
+    assert "--node-rank 1" in script
+    assert "--data-parallel-" not in script
+    assert "ray start" not in script
+
+
+@pytest.mark.parametrize("master_port", ["0", "65536"])
+def test_kimi_k3_mp_rejects_out_of_range_master_port(monkeypatch, master_port):
+    monkeypatch.setenv("MASTER_PORT", master_port)
+
+    with pytest.raises(ValueError, match="range 1..65535"):
+        vllm_distributed._build_mp_commands({}, _mp_ctx())
+
+
 def test_dp_deployment_preserves_explicit_dp_with_user_tp(monkeypatch):
     class _FakeModelIdentifier:
         model_architecture = "DeepseekV3ForCausalLM"

@@ -1,0 +1,110 @@
+{
+  "model_name": "Kimi-K3",
+  "model_path": "/var/ai-model/Kimi-K3/",
+  "engine": "vllm",
+  "input_length": 4096,
+  "output_length": 1024,
+  "gpu_usage_mode": "full",
+  "device_count": 8,
+  "model_type": "llm",
+  "save_path": "/opt/wings/outputs",
+  "trust_remote_code": false,
+  "dtype": "auto",
+  "kv_cache_dtype": "auto",
+  "quantization": "",
+  "quantization_param_path": "",
+  "gpu_memory_utilization": 0.9,
+  "enable_chunked_prefill": false,
+  "block_size": 16,
+  "max_num_seqs": 32,
+  "seed": 0,
+  "enable_expert_parallel": false,
+  "max_num_batched_tokens": 4096,
+  "enable_prefix_caching": false,
+  "enable_speculative_decode": false,
+  "speculative_decode_model_path": "",
+  "enable_rag_acc": false,
+  "enable_auto_tool_choice": true,
+  "enable_auto_think_choice": true,
+  "enable_sparse": false,
+  "distributed": true,
+  "nnodes": 4,
+  "node_rank": 1,
+  "head_node_addr": "7.6.25.57",
+  "distributed_executor_backend": "mp",
+  "node_ips": "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60",
+  "nodes": "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60",
+  "master_ip": "7.6.25.57",
+  "ray_head_ip": "7.6.25.57",
+  "enable_smartqos": false,
+  "enable_otlp_traces": false,
+  "_resolved_model_type": "llm",
+  "_smart_card_token": "h20-96",
+  "_smart_feature_input_env": {
+    "ENABLE_SPECULATIVE_DECODE": "false",
+    "ENABLE_SPARSE": "false",
+    "ENABLE_KV_OFFLOAD": null,
+    "LMCACHE_OFFLOAD": null,
+    "ENABLE_KV_MEM_OFFLOAD": null,
+    "KV_MEM_OFFLOAD_SIZE": null,
+    "AVAILABLE_POD_MEM_SIZE": null,
+    "ENABLE_KV_DISK_OFFLOAD": null,
+    "KV_DISK_OFFLOAD_SIZE": null
+  },
+  "_allowed_smart_feats": [],
+  "_forced_smart_feats": [],
+  "_smart_feats": [],
+  "_smart_feature_gate_trace": {
+    "allowed": [],
+    "forced": [],
+    "effective": [],
+    "features": {
+      "speculative_decode": {
+        "requested": false,
+        "whitelist": false,
+        "gate": false,
+        "reason": "request_off"
+      },
+      "sparse_kv": {
+        "requested": false,
+        "whitelist": false,
+        "gate": false,
+        "reason": "request_off"
+      },
+      "kv_offload": {
+        "requested": false,
+        "whitelist": false,
+        "gate": false,
+        "reason": "request_off"
+      }
+    },
+    "post_gate_env": {
+      "ENABLE_SPECULATIVE_DECODE": "false",
+      "ENABLE_SPARSE": "false",
+      "ENABLE_KV_OFFLOAD": null,
+      "LMCACHE_OFFLOAD": null
+    }
+  },
+  "engine_config": {
+    "use_vllm_serve": true,
+    "trust_remote_code": true,
+    "served_model_name": "kimi_k3",
+    "gpu_memory_utilization": 0.98,
+    "no_enable_flashinfer_autotune": true,
+    "extra_cli_args": [
+      "-cc.pass_config.fuse_allreduce_rms=False"
+    ],
+    "moe_backend": "marlin",
+    "disable_custom_all_reduce": true,
+    "distributed_timeout_seconds": 1200,
+    "max_num_seqs": 32,
+    "tool_call_parser": "kimi_k3",
+    "max_num_batched_tokens": 8192,
+    "max_model_len": 40960,
+    "reasoning_parser": "kimi_k3",
+    "model": "/var/ai-model/Kimi-K3/",
+    "enable_auto_tool_choice": true,
+    "tensor_parallel_size": 32
+  },
+  "_explicit_cli_keys": []
+}

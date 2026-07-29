@@ -318,6 +318,28 @@
           }
         }
       },
+      "KimiK3ForConditionalGeneration": {
+        "Kimi-K3": {
+          "card_tokens": ["h20-96", "h20-141"],
+          "vllm_distributed": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "served_model_name": "kimi_k3",
+            "gpu_memory_utilization": 0.98,
+            "no_enable_flashinfer_autotune": true,
+            "extra_cli_args": [
+              "-cc.pass_config.fuse_allreduce_rms=False"
+            ],
+            "moe_backend": "marlin",
+            "disable_custom_all_reduce": true,
+            "distributed_timeout_seconds": 1200,
+            "max_num_seqs": 32,
+            "tool_call_parser": "kimi_k3",
+            "max_num_batched_tokens": 8192,
+            "max_model_len": 40960
+          }
+        }
+      },
       "DeepseekV4ForCausalLM": {
         "default": {
           "vllm": {

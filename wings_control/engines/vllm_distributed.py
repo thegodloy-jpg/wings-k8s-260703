@@ -1,7 +1,7 @@
 # Copyright (c) xFusion Digital Technologies Co., Ltd. 2025-2025. All rights reserved.
 # -*- coding: utf-8 -*-
 
-"""vLLM distributed script building utilities for Ray and dp_deployment backends."""
+"""vLLM distributed script building utilities for Ray, MP and dp_deployment backends."""
 
 import logging
 import os
@@ -9,6 +9,7 @@ import re
 import shlex
 from typing import Dict, Any, List
 
+from utils.env_utils import get_master_port
 from utils.model_utils import ModelIdentifier, is_glm52_model
 from utils.vllm_helpers import (
     _strip_cli_flag, _safe_int, DistScriptCtx, DpDeploymentTopology,
@@ -446,6 +447,72 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     return parts
 
 
+def _build_mp_env_commands() -> List[str]:
+    """构造 Kimi-K3 NVIDIA 原生 MP 通信环境，并保留每个节点的本地网卡配置。"""
+    net_if = os.getenv(
+        "NETWORK_INTERFACE",
+        os.getenv("NCCL_SOCKET_IFNAME", os.getenv("GLOO_SOCKET_IFNAME", "eth0")),
+    )
+    nccl_if = os.getenv("NCCL_SOCKET_IFNAME", net_if)
+    gloo_if = os.getenv("GLOO_SOCKET_IFNAME", net_if)
+    return [
+        f"export NCCL_SOCKET_IFNAME={shlex.quote(nccl_if)}",
+        f"export GLOO_SOCKET_IFNAME={shlex.quote(gloo_if)}",
+        f"export NCCL_NVLS_ENABLE={shlex.quote(os.getenv('NCCL_NVLS_ENABLE', '0'))}",
+        f"export NCCL_DEBUG={shlex.quote(os.getenv('NCCL_DEBUG', 'WARN'))}",
+        "export VLLM_SSM_CONV_STATE_LAYOUT="
+        f"{shlex.quote(os.getenv('VLLM_SSM_CONV_STATE_LAYOUT', 'DS'))}",
+    ]
+
+
+def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: str = "") -> List[str]:
+    """组装 vLLM 原生多节点 MP 命令；rank0 提供服务，其余节点只运行 headless worker。"""
+    if ctx.is_ascend:
+        raise ValueError("vLLM native MP adaptation is only supported for NVIDIA")
+
+    raw_master_port = params.get("master_port")
+    if raw_master_port in (None, ""):
+        raw_master_port = get_master_port()
+    if raw_master_port in (None, ""):
+        raw_master_port = 29501
+    master_port = _safe_int(raw_master_port)
+    if master_port is None or not 1 <= master_port <= 65535:
+        raise ValueError(f"vLLM MP master_port must be in range 1..65535: {raw_master_port}")
+
+    mp_cmd = ctx.cmd
+    for flag in (
+        "--distributed-executor-backend",
+        "--nnodes",
+        "--node-rank",
+        "--master-addr",
+        "--master-port",
+    ):
+        mp_cmd = _strip_cli_flag(mp_cmd, flag)
+    mp_cmd = re.sub(r"\s+--headless\b", "", mp_cmd)
+
+    vllm_adapter = _import_vllm_adapter()
+    speculative_extra = ""
+    if vllm_adapter.should_append_auto_speculative_config(params):
+        speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
+    mp_cmd = f"{mp_cmd}{speculative_extra}{sparse_args}"
+
+    # Worker 不启动 OpenAI frontend；模型与推理参数保持和 rank0 一致。
+    if ctx.node_rank != 0:
+        for flag in ("--host", "--port", "--tool-call-parser", "--reasoning-parser"):
+            mp_cmd = _strip_cli_flag(mp_cmd, flag)
+        mp_cmd = re.sub(r"\s+--enable-auto-tool-choice\b", "", mp_cmd)
+        mp_cmd = f"{mp_cmd} --headless"
+
+    topology_args = (
+        " --distributed-executor-backend mp"
+        f" --nnodes {int(ctx.nnodes)}"
+        f" --node-rank {int(ctx.node_rank)}"
+        f" --master-addr {shlex.quote(ctx.head_addr)}"
+        f" --master-port {master_port}"
+    )
+    return [*_build_mp_env_commands(), f"exec {mp_cmd}{topology_args}"]
+
+
 def _resolve_vllm_dist_params(params: Dict[str, Any]) -> tuple[str, str, str]:
     """解析分布式 head 地址、节点列表和 Ray 端口。"""
     head_addr = params.get("ray_head_ip") or params.get("master_ip") or params.get("head_node_addr", "infer-0.infer-hl")
@@ -458,16 +525,21 @@ def _build_vllm_distributed_script(params: Dict[str, Any], cmd: str, common_env_
     """组装分布式脚本主体。
 
     ``common_env_cmds`` 已包含基础环境、KV offload、QAT、模型专属 env 等公共片段；
-    本函数只根据 backend 分派 Ray 或 dp_deployment 分支，最后统一拼成 start script。
+    本函数只根据 backend 分派 Ray、MP 或 dp_deployment 分支，最后统一拼成 start script。
     """
     node_rank = params.get("node_rank", 0)
     head_addr, node_ips, ray_port = _resolve_vllm_dist_params(params)
     ctx = DistScriptCtx(engine=engine, cmd=cmd, is_ascend=(engine == "vllm_ascend"), node_rank=node_rank,
                         nnodes=params.get("nnodes", 1), head_addr=head_addr, ray_port=ray_port, node_ips=node_ips)
     script_parts = list(common_env_cmds)
-    if params.get("distributed_executor_backend", "ray") == "ray":
+    backend = params.get("distributed_executor_backend", "ray")
+    if backend == "ray":
         script_parts.extend(_build_ray_head_commands(params, ctx, sparse_args) if node_rank == 0
                             else _build_ray_worker_commands(params, ctx))
-    else:
+    elif backend == "dp_deployment":
         script_parts.extend(_build_dp_deployment_commands(params, ctx, sparse_args))
+    elif backend == "mp":
+        script_parts.extend(_build_mp_commands(params, ctx, sparse_args))
+    else:
+        raise ValueError(f"Unsupported vLLM distributed executor backend: {backend!r}")
     return "\n".join(script_parts) + "\n"

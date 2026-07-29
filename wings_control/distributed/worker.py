@@ -74,6 +74,23 @@ class EngineStartRequest(BaseModel):
     params: Dict[str, Any]
 
 
+def _apply_worker_local_model_path(launch_kwargs: Dict[str, Any]) -> None:
+    """在原生 MP Worker 上用本地 MODEL_PATH 覆盖 Master 下发路径。"""
+    if launch_kwargs.get("distributed_executor_backend") != "mp":
+        return
+    local_model_path = os.getenv("MODEL_PATH", "").strip()
+    if not local_model_path:
+        return
+    dispatched_model_path = str(launch_kwargs.get("model_path") or "").strip()
+    if dispatched_model_path != local_model_path:
+        logger.info(
+            "Using worker-local MODEL_PATH instead of dispatched model path: local=%s dispatched=%s",
+            local_model_path,
+            dispatched_model_path,
+        )
+    launch_kwargs["model_path"] = local_model_path
+
+
 # ---------------------------------------------------------------------------
 # Worker configuration
 # ---------------------------------------------------------------------------
@@ -172,6 +189,9 @@ async def start_engine_api(request: EngineStartRequest):
         # 探测与 rank 专属 host/port/headless 调整。
         la_fields = {f.name for f in _dc.fields(LaunchArgs)}
         la_kwargs = {k: v for k, v in request.params.items() if k in la_fields}
+        # Master/Worker 可挂载到不同容器路径；仅模型路径取 Worker 本地值，
+        # NODE_IPS、node_rank、master_ip 等拓扑仍沿用 Master 下发结果。
+        _apply_worker_local_model_path(la_kwargs)
         la_kwargs["engine"] = request.engine  # 确保 engine 来自顶层字段
         launch_args = LaunchArgs(**la_kwargs)
 
