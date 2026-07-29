@@ -3,6 +3,9 @@ import logging
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
@@ -19,6 +22,7 @@ _CLEAR_ENV = (
     "ASCEND_PLATFORM",
     "BLOCK_SIZE",
     "CONFIG_FILE",
+    "DATA_PARALLEL_SIZE",
     "DEVICE_COUNT",
     "DP_SIZE",
     "DP_SIZE_LOCAL",
@@ -71,6 +75,7 @@ _CLEAR_ENV = (
     "SPECULATIVE_DECODE_MODEL_PATH",
     "TP_SIZE",
     "TRUST_REMOTE_CODE",
+    "TENSOR_PARALLEL_SIZE",
     "VLLM_LLMDD_RPC_PORT",
     "VLLM_MOONCAKE_BOOTSTRAP_PORT",
     "WINGS_ASCEND_PLATFORM",
@@ -82,16 +87,75 @@ _DECODE_IP = "10.254.124.182"
 _VLLM_START_PORT = 7100
 
 
-def test_pd_external_lb_1p1d_missing_tp_uses_device_count(monkeypatch):
+@pytest.mark.parametrize("role", ("P", "D"))
+@pytest.mark.parametrize("device_count", (1, 2, 8))
+@pytest.mark.parametrize(
+    ("device", "engine"),
+    (("nvidia", "vllm"), ("ascend", "vllm_ascend")),
+)
+def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
+    monkeypatch,
+    role,
+    device_count,
+    device,
+    engine,
+):
     for name in _CLEAR_ENV:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("PD_ROLE", "P")
+    monkeypatch.setenv("PD_ROLE", role)
+    model_info = SimpleNamespace(model_architecture="UnknownArchitecture")
+    base_kv = {"kv_connector": "NixlConnector", "kv_role": "kv_both"}
+    params = {
+        "engine": engine,
+        "device_count": device_count,
+        "distributed": False,
+        "nnodes": 1,
+        "node_rank": 0,
+        "model_name": "test-model",
+        "model_path": "/models/test",
+        "model_type": "llm",
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": "/models/test",
+            "port": 17000,
+            "kv_transfer_config": json.dumps(base_kv),
+        },
+    }
 
-    ext = config_loader._get_pd_external_lb_params(device_count=2)
+    config_loader._apply_pd_external_lb(params, model_info, {"device": device})
 
-    assert ext["tp_size"] == 2
-    assert ext["dp_size"] == 1
-    assert ext["dp_size_local"] == 1
+    assert params["engine_config"]["tensor_parallel_size"] == device_count
+    assert params["engine_config"]["data_parallel_size"] == 1
+    assert params["_pd_engine_overrides"]["tensor_parallel_size"] == device_count
+    assert params["_pd_engine_overrides"]["data_parallel_size"] == 1
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(
+        line for line in script.splitlines()
+        if "vllm serve" in line and not line.lstrip().startswith("echo ")
+    )
+    assert f"--tensor-parallel-size {device_count}" in exec_line
+
+    if device == "nvidia":
+        assert "_pd_external_lb" not in params
+        assert json.loads(params["engine_config"]["kv_transfer_config"]) == base_kv
+        assert "--data-parallel-size 1" in exec_line
+        assert "Mooncake" not in exec_line
+        assert "ASCEND_RT_VISIBLE_DEVICES" not in exec_line
+    else:
+        ext = params["_pd_external_lb"]
+        assert (ext["role"], ext["tp_size"], ext["dp_size"], ext["dp_size_local"]) == (
+            role, device_count, 1, 1,
+        )
+        kv_config = json.loads(params["engine_config"]["kv_transfer_config"])
+        assert kv_config["kv_connector"] == "MooncakeConnectorV1"
+        assert kv_config["kv_role"] == ("kv_producer" if role == "P" else "kv_consumer")
+        assert kv_config["kv_connector_extra_config"] == {
+            "prefill": {"dp_size": 1, "tp_size": device_count},
+            "decode": {"dp_size": 1, "tp_size": device_count},
+        }
+        assert f"ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 $(({device_count} - 1)))" in exec_line
+        assert "--data-parallel-size" not in exec_line
+        assert "--data-parallel-external-lb" not in exec_line
 
 
 def _write_deepseek_v4_config(model_dir: Path) -> None:

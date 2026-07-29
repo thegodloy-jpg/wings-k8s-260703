@@ -1540,6 +1540,15 @@ def _apply_pd_external_lb(cmd_known_params, model_info, hardware_env=None):
     device = (hardware_env or {}).get("device")
     engine = cmd_known_params.get("engine")
     if pd_role and device != "ascend" and engine != "vllm_ascend":
+        # NVIDIA 保留 Nixl/standalone KV 路径，只复用既有 PD 拓扑解析结果。
+        ext = _get_pd_external_lb_params(cmd_known_params.get("device_count", 1))
+        if ext:
+            topology = {
+                "tensor_parallel_size": ext["tp_size"],
+                "data_parallel_size": ext["dp_size"],
+            }
+            cmd_known_params.setdefault("engine_config", {}).update(topology)
+            cmd_known_params["_pd_engine_overrides"] = topology
         logger.info(
             "[PD external-lb] skipped for non-Ascend PD role=%s device=%s engine=%s; "
             "keep non-Ascend PD KV path.",
