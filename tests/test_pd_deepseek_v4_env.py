@@ -78,6 +78,7 @@ _CLEAR_ENV = (
     "TENSOR_PARALLEL_SIZE",
     "VLLM_LLMDD_RPC_PORT",
     "VLLM_MOONCAKE_BOOTSTRAP_PORT",
+    "VLLM_SSM_CONV_STATE_LAYOUT",
     "WINGS_ASCEND_PLATFORM",
     "WINGS_ENGINE",
 )
@@ -85,6 +86,14 @@ _CLEAR_ENV = (
 _PREFILL_IP = "10.254.124.131"
 _DECODE_IP = "10.254.124.182"
 _VLLM_START_PORT = 7100
+
+
+def _write_arch_config(model_dir: Path, architecture: str) -> None:
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"architectures": [architecture]}),
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize("role", ("P", "D"))
@@ -95,6 +104,7 @@ _VLLM_START_PORT = 7100
 )
 def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
     monkeypatch,
+    tmp_path,
     role,
     device_count,
     device,
@@ -103,7 +113,14 @@ def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
     for name in _CLEAR_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PD_ROLE", role)
-    model_info = SimpleNamespace(model_architecture="UnknownArchitecture")
+    architecture = (
+        "Qwen3_5MoeForConditionalGeneration"
+        if device == "nvidia"
+        else "UnknownArchitecture"
+    )
+    model_dir = tmp_path / "qwen35-moe"
+    _write_arch_config(model_dir, architecture)
+    model_info = SimpleNamespace(model_architecture=architecture)
     base_kv = {"kv_connector": "NixlConnector", "kv_role": "kv_both"}
     params = {
         "engine": engine,
@@ -112,11 +129,11 @@ def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
         "nnodes": 1,
         "node_rank": 0,
         "model_name": "test-model",
-        "model_path": "/models/test",
+        "model_path": str(model_dir),
         "model_type": "llm",
         "engine_config": {
             "use_vllm_serve": True,
-            "model": "/models/test",
+            "model": str(model_dir),
             "port": 17000,
             "kv_transfer_config": json.dumps(base_kv),
         },
@@ -138,10 +155,12 @@ def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
     if device == "nvidia":
         assert "_pd_external_lb" not in params
         assert json.loads(params["engine_config"]["kv_transfer_config"]) == base_kv
+        assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" in script
         assert "--data-parallel-size 1" in exec_line
         assert "Mooncake" not in exec_line
         assert "ASCEND_RT_VISIBLE_DEVICES" not in exec_line
     else:
+        assert "VLLM_SSM_CONV_STATE_LAYOUT" not in script
         ext = params["_pd_external_lb"]
         assert (ext["role"], ext["tp_size"], ext["dp_size"], ext["dp_size_local"]) == (
             role, device_count, 1, 1,
@@ -156,6 +175,57 @@ def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
         assert f"ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 $(({device_count} - 1)))" in exec_line
         assert "--data-parallel-size" not in exec_line
         assert "--data-parallel-external-lb" not in exec_line
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    ("Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"),
+)
+@pytest.mark.parametrize("role", ("P", "D"))
+def test_nvidia_qwen35_pd_sets_ssm_conv_state_layout(
+    tmp_path, monkeypatch, architecture, role
+):
+    model_dir = tmp_path / architecture
+    _write_arch_config(model_dir, architecture)
+    monkeypatch.setenv("PD_ROLE", role)
+
+    commands = vllm_adapter._build_model_env_commands(
+        {
+            "model_name": "qwen3.5",
+            "model_path": str(model_dir),
+            "model_type": "llm",
+        },
+        "vllm",
+    )
+
+    assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" in commands
+
+
+def test_nvidia_ssm_conv_state_layout_is_model_and_pd_scoped(tmp_path, monkeypatch):
+    model_dir = tmp_path / "qwen35-moe"
+    _write_arch_config(model_dir, "Qwen3_5MoeForConditionalGeneration")
+    params = {
+        "model_name": "qwen3.5-moe",
+        "model_path": str(model_dir),
+        "model_type": "llm",
+    }
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" not in (
+        vllm_adapter._build_model_env_commands(params, "vllm")
+    )
+
+    monkeypatch.setenv("PD_ROLE", "P")
+    assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" not in (
+        vllm_adapter._build_model_env_commands(params, "vllm_ascend")
+    )
+
+    other_dir = tmp_path / "other-model"
+    _write_arch_config(other_dir, "UnknownArchitecture")
+    params["model_path"] = str(other_dir)
+
+    assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" not in (
+        vllm_adapter._build_model_env_commands(params, "vllm")
+    )
 
 
 def _write_deepseek_v4_config(model_dir: Path) -> None:

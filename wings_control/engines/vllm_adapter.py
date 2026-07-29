@@ -2219,6 +2219,9 @@ def _build_model_env_commands(params: Dict[str, Any], engine: str) -> List[str]:
     )
     arch = model_info.model_architecture
     nvidia_env = _build_nvidia_model_env_commands(params, engine, arch)
+    if engine == "vllm" and get_pd_role_env() and _is_qwen35_arch(arch):
+        # Qwen3.5 dense/MoE 的 NVIDIA PD NIXL 三读传输需要 DS 卷积状态布局。
+        nvidia_env = [*(nvidia_env or []), "export VLLM_SSM_CONV_STATE_LAYOUT=DS"]
     if nvidia_env is not None:
         return nvidia_env
     if engine != "vllm_ascend":
