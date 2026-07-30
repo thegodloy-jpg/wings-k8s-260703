@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+from dataclasses import dataclass
 from typing import Dict, Any, List
 
 from utils.env_utils import get_master_port
@@ -462,32 +463,39 @@ def _resolve_dp_deployment_topology(
     )
 
 
-def _build_dp_exec_command(
-    ctx: DistScriptCtx,
-    dp_cmd: str,
-    dp_rpc_port: str,
-    topology: DpDeploymentTopology,
-    include_rank0_start_rank: bool = False,
-    preserve_worker_port: bool = False,
-) -> str:
+@dataclass(frozen=True)
+class _DpExecCommandSpec:
+    """dp_deployment 最终命令所需的关联参数。"""
+
+    command: str
+    rpc_port: str
+    topology: DpDeploymentTopology
+    include_rank0_start_rank: bool = False
+    preserve_worker_port: bool = False
+
+
+def _build_dp_exec_command(ctx: DistScriptCtx, spec: _DpExecCommandSpec) -> str:
     """根据 node_rank 构造 dp_deployment head/worker 的最终 exec 行。"""
     common = (
         f" --data-parallel-address {shlex.quote(ctx.head_addr)}"
-        f" --data-parallel-rpc-port {dp_rpc_port}"
-        f" --data-parallel-size {topology.dp_size}"
-        f" --data-parallel-size-local {topology.dp_size_local}"
+        f" --data-parallel-rpc-port {spec.rpc_port}"
+        f" --data-parallel-size {spec.topology.dp_size}"
+        f" --data-parallel-size-local {spec.topology.dp_size_local}"
     )
     if ctx.node_rank == 0:
         rank0_start_rank = (
-            f" --data-parallel-start-rank {topology.dp_start_rank}"
-            if include_rank0_start_rank
+            f" --data-parallel-start-rank {spec.topology.dp_start_rank}"
+            if spec.include_rank0_start_rank
             else ""
         )
-        return f"exec {dp_cmd}{common}{rank0_start_rank}"
-    dp_cmd_headless = re.sub(r"\s*--host\s+(?:'[^']*'|\S+)", "", dp_cmd)
-    if not preserve_worker_port:
+        return f"exec {spec.command}{common}{rank0_start_rank}"
+    dp_cmd_headless = re.sub(r"\s*--host\s+(?:'[^']*'|\S+)", "", spec.command)
+    if not spec.preserve_worker_port:
         dp_cmd_headless = re.sub(r"\s*--port\s+(?:'[^']*'|\S+)", "", dp_cmd_headless)
-    return f"exec {dp_cmd_headless}{common} --headless --data-parallel-start-rank {topology.dp_start_rank}"
+    return (
+        f"exec {dp_cmd_headless}{common} --headless "
+        f"--data-parallel-start-rank {spec.topology.dp_start_rank}"
+    )
 
 
 def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: str = "") -> List[str]:
@@ -513,11 +521,14 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     if vllm_adapter.should_append_auto_speculative_config(params):
         speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
     parts = _build_dp_env_commands(ctx.is_ascend, params, model_info.model_architecture)
-    include_rank0_start_rank = bool(params.get("_force_data_parallel_start_rank_on_rank0"))
-    preserve_worker_port = bool(params.get("_preserve_dp_worker_port"))
-    parts.append(_build_dp_exec_command(ctx, f"{dp_cmd}{speculative_extra}{sparse_args}",
-                                       dp_rpc_port, topology, include_rank0_start_rank,
-                                       preserve_worker_port))
+    exec_spec = _DpExecCommandSpec(
+        command=f"{dp_cmd}{speculative_extra}{sparse_args}",
+        rpc_port=dp_rpc_port,
+        topology=topology,
+        include_rank0_start_rank=bool(params.get("_force_data_parallel_start_rank_on_rank0")),
+        preserve_worker_port=bool(params.get("_preserve_dp_worker_port")),
+    )
+    parts.append(_build_dp_exec_command(ctx, exec_spec))
     return parts
 
 

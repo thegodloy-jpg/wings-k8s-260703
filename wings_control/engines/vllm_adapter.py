@@ -4764,7 +4764,8 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
             "TASK_QUEUE_ENABLE", "PYTORCH_NPU_ALLOC_CONF", "HCCL_OP_EXPANSION_MODE",
         }
         cmds = [
-            command for command in cmds
+            command
+            for command in cmds
             if _top_level_export_name(command) not in generic_env_names
         ]
         logger.info("[Kimi-K3-W4A8-910C] removed generic Ascend runtime env defaults")

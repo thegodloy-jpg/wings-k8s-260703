@@ -3640,37 +3640,41 @@ def _handle_distributed(engine: str, cmd_params: Dict[str, Any], model_info):
         _handle_mindie_distributed(distributed_config, cmd_params)
 
 
-def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dict[str, Any], model_info):
-    """为 vLLM / vLLM-Ascend 配置分布式推理参数。
+@dataclass(frozen=True)
+class _VllmDistributedRoute:
+    """vLLM 分布式后端选择结果。"""
 
-    部署策略:
-    - Ascend PD (Prefill/Decode 分离): 使用 MooncakeConnector，各实例独立运行，
-      不使用 dp_deployment / NIXL。KV 传输由 MooncakeConnector + RDMA 处理。
-    - NVIDIA PD 或 Ascend DeepSeek DP: 使用 NIXL 协议 (dp_deployment)。
-    - Ascend 910C Kimi-K3-W4A8 四机: 使用 vLLM 原生 dp_deployment。
-    - NVIDIA Kimi-K3 标准多机: 使用 vLLM 原生 MP。
-    - 其他: 使用 Ray 作为分布式执行后端。
+    pd_role: Optional[str]
+    is_ascend: bool
+    use_dp_deployment: bool
+    is_kimi_k3_w4a8_ascend_dp: bool
+    is_kimi_k3_nvidia_mp: bool
 
-    端口优先来自环境变量 VLLM_DISTRIBUTED_PORT，若未设置则回退到配置文件默认值。
-    """
-    vllm_distributed_port = get_vllm_distributed_port()
+
+def _resolve_vllm_distributed_route(
+    cmd_params: Dict[str, Any],
+    model_info,
+) -> _VllmDistributedRoute:
+    """集中判定 vLLM 分布式后端，避免参数注入逻辑重复识别模型。"""
     pd_role = get_pd_role_env()
     model_architecture = model_info.model_architecture
-    is_ascend = cmd_params.get("engine") == 'vllm_ascend'
-    # V4 (Flash/Pro) 与 V3/V32 走同一条 Ascend DeepSeek dp_deployment 路径；
-    # 缺失 V4 会导致分布式启动回退到 Ray，与 V4-Pro 双机 NIXL 拓扑不兼容。
-    is_ascend_deepseek = (model_architecture in ["DeepseekV3ForCausalLM",
-                                                  "DeepseekV32ForCausalLM",
-                                                  "DeepseekV4ForCausalLM",
-                                                  "GlmMoeDsaForCausalLM",
-                                                  "KimiK25ForConditionalGeneration"]
-                          and is_ascend)
-    qwen397b_identity = " ".join(str(cmd_params.get(key) or "").lower() for key in ("model_name", "model_path"))
-    # Qwen3.5-397B 与 35B/122B/AgentWorld 都属于 Qwen3_5MoeForConditionalGeneration，
-    # 不能把整个 architecture 加进 is_ascend_deepseek 名单，否则同架构其它 Qwen
-    # MoE 会一起从 Ray 切到 dp_deployment。这里复用现有后端分派结构，只把模型名/
-    # 路径中明确包含 397B 的系列纳入 DP；组织名前缀（如 Qwen/）和实际模型目录名
-    # 都可能承载身份，所以同时检查 model_name 与 model_path。
+    is_ascend = cmd_params.get("engine") == "vllm_ascend"
+    # V4、V3/V32 及现有兼容架构沿用 Ascend dp_deployment 路径。
+    is_ascend_deepseek = (
+        is_ascend
+        and model_architecture in {
+            "DeepseekV3ForCausalLM",
+            "DeepseekV32ForCausalLM",
+            "DeepseekV4ForCausalLM",
+            "GlmMoeDsaForCausalLM",
+            "KimiK25ForConditionalGeneration",
+        }
+    )
+    # 397B 与同系列其他模型共享 architecture，仅在名称或路径明确命中时切换 DP。
+    qwen397b_identity = " ".join(
+        str(cmd_params.get(key) or "").lower()
+        for key in ("model_name", "model_path")
+    )
     is_qwen35_397b_ascend_dp = (
         is_ascend
         and model_architecture == "Qwen3_5MoeForConditionalGeneration"
@@ -3679,59 +3683,84 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
     is_kimi_k3_w4a8_ascend_dp = is_ascend and _is_kimi_k3_w4a8(model_info, cmd_params)
     if is_kimi_k3_w4a8_ascend_dp and int(cmd_params.get("nnodes") or 1) != 4:
         raise ValueError("Kimi-K3-W4A8 Ascend dp_deployment requires exactly 4 nodes")
-
-    if pd_role in ['P', 'D'] and is_ascend:
-        # Ascend PD: 使用 MooncakeConnector，各 P/D 实例作为独立 vllm 进程运行。
-        # KV 传输由 MooncakeConnector + RDMA TransferEngine 自动处理，
-        # 不需要 dp_deployment / NIXL 参数（那些是 NVIDIA PD 路径）。
-        logger.info("[PD] Ascend PD mode: standalone instances with MooncakeConnector (role=%s)", pd_role)
-        return
-
-    is_nvidia_pd = pd_role in ['P', 'D'] and not is_ascend
-    is_kimi_k3_nvidia_mp = (
-        model_architecture == "KimiK3ForConditionalGeneration"
-        and not is_ascend
+    is_nvidia_pd = pd_role in {"P", "D"} and not is_ascend
+    return _VllmDistributedRoute(
+        pd_role=pd_role,
+        is_ascend=is_ascend,
+        use_dp_deployment=(
+            is_nvidia_pd
+            or is_ascend_deepseek
+            or is_qwen35_397b_ascend_dp
+            or is_kimi_k3_w4a8_ascend_dp
+        ),
+        is_kimi_k3_w4a8_ascend_dp=is_kimi_k3_w4a8_ascend_dp,
+        is_kimi_k3_nvidia_mp=(
+            model_architecture == "KimiK3ForConditionalGeneration" and not is_ascend
+        ),
     )
-    use_dp_deployment = (
-        is_nvidia_pd
-        or is_ascend_deepseek
-        or is_qwen35_397b_ascend_dp
-        or is_kimi_k3_w4a8_ascend_dp
-    )
-    if use_dp_deployment:
-        # 仍走原来的 dp_deployment 出口：端口、nixl_ip、rpc_port 的注入方式不分叉，
-        # 397B 只是多一个命中条件，避免为一个模型系列复制整段分布式参数装配逻辑。
-        if not vllm_distributed_port:
-            vllm_distributed_port = distributed_config.get('vllm_distributed', {}).get('nixl_port', 27070)
 
-        if is_kimi_k3_w4a8_ascend_dp:
-            # 27777 来自 910C 四机标准命令，只作用于该模型；其它 DP 模型保留原默认端口。
-            rpc_port = os.getenv("VLLM_DP_RPC_PORT") or "27777"
-        else:
-            rpc_port = distributed_config.get('vllm_distributed', {}).get('rpc_port', 27071)
-        cmd_params.update({
-            'distributed_executor_backend': 'dp_deployment',
-            'nixl_ip': get_local_ip(),
-            'nixl_port': vllm_distributed_port,
-            'rpc_port': rpc_port
-        })
-        if is_kimi_k3_w4a8_ascend_dp:
-            # 仅供脚本生成层选择 910C recipe，并保留标准 Worker 的 --port。
-            cmd_params["_kimi_k3_910c_dp"] = True
-            cmd_params["_preserve_dp_worker_port"] = True
-    elif is_kimi_k3_nvidia_mp:
-        # Kimi-K3 + NVIDIA 多机使用 vLLM 原生 MP；四机 rank 和 master 地址仍复用
-        # Wings 现有 NODE_IPS 分发链路，避免为单一模型再引入一套节点编排。
-        cmd_params['distributed_executor_backend'] = 'mp'
+
+def _apply_vllm_dp_deployment(
+    distributed_config: Dict[str, Any],
+    cmd_params: Dict[str, Any],
+    distributed_port: Optional[int],
+    route: _VllmDistributedRoute,
+) -> None:
+    """注入 dp_deployment 公共参数及 Kimi-K3 910C 专属标记。"""
+    vllm_config = distributed_config.get("vllm_distributed", {})
+    nixl_port = distributed_port or vllm_config.get("nixl_port", 27070)
+    if route.is_kimi_k3_w4a8_ascend_dp:
+        # 27777 来自 Kimi-K3-W4A8 910C 四机标准命令，不影响其他 DP 模型。
+        rpc_port = os.getenv("VLLM_DP_RPC_PORT") or "27777"
     else:
-        if not vllm_distributed_port:
-            vllm_distributed_port = distributed_config.get('vllm_distributed', {}).get('ray_head_port', 27070)
+        rpc_port = vllm_config.get("rpc_port", 27071)
+    cmd_params.update({
+        "distributed_executor_backend": "dp_deployment",
+        "nixl_ip": get_local_ip(),
+        "nixl_port": nixl_port,
+        "rpc_port": rpc_port,
+    })
+    if route.is_kimi_k3_w4a8_ascend_dp:
+        cmd_params["_kimi_k3_910c_dp"] = True
+        cmd_params["_preserve_dp_worker_port"] = True
 
-        cmd_params.update({
-            'distributed_executor_backend': 'ray',
-            'ray_head_ip': get_master_ip(),
-            'ray_head_port': vllm_distributed_port
-        })
+
+def _apply_vllm_ray_deployment(
+    distributed_config: Dict[str, Any],
+    cmd_params: Dict[str, Any],
+    distributed_port: Optional[int],
+) -> None:
+    """注入通用 Ray 分布式参数。"""
+    ray_head_port = (
+        distributed_port
+        or distributed_config.get("vllm_distributed", {}).get("ray_head_port", 27070)
+    )
+    cmd_params.update({
+        "distributed_executor_backend": "ray",
+        "ray_head_ip": get_master_ip(),
+        "ray_head_port": ray_head_port,
+    })
+
+
+def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dict[str, Any], model_info):
+    """按硬件、PD 角色及模型架构注入 vLLM 分布式参数。"""
+    distributed_port = get_vllm_distributed_port()
+    route = _resolve_vllm_distributed_route(cmd_params, model_info)
+    if route.pd_role in {"P", "D"} and route.is_ascend:
+        # Ascend PD 由 MooncakeConnector 处理 KV 传输，不注入 NIXL/DP 参数。
+        logger.info(
+            "[PD] Ascend PD mode: standalone instances with MooncakeConnector (role=%s)",
+            route.pd_role,
+        )
+        return
+    if route.use_dp_deployment:
+        _apply_vllm_dp_deployment(distributed_config, cmd_params, distributed_port, route)
+        return
+    if route.is_kimi_k3_nvidia_mp:
+        # NVIDIA Kimi-K3 继续复用原生 MP 及现有 NODE_IPS 编排链路。
+        cmd_params["distributed_executor_backend"] = "mp"
+        return
+    _apply_vllm_ray_deployment(distributed_config, cmd_params, distributed_port)
 
 
 def _handle_sglang_distributed(distributed_config: Dict[str, Any], cmd_params: Dict[str, Any]):
