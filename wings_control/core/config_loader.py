@@ -4792,6 +4792,13 @@ def load_and_merge_configs(
         {**cmd_known_params, "device": hardware_env.get("device")},
         model_info,
     )
+    # ENPU 无 config-file 时强制 eager；传入 config-file 后交由用户配置控制。
+    if (
+        cmd_known_params.get("engine") == "vllm_ascend"
+        and cmd_known_params.get("gpu_usage_mode") == "enpu"
+        and not getattr(known_args, "config_file", None)
+    ):
+        engine_config["enforce_eager"] = True
 
     # 5.
     final_engine_params = _merge_final_config(engine_config, cmd_known_params)
