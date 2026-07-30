@@ -4752,6 +4752,22 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     cmds = _align_qwen35_397b_w8a8_mtp_910c_env(cmds, params, engine)
     # 单机 GLM-5.2(a3) 对齐官方 recipe：去重后剔除 TASK_QUEUE_ENABLE（官方单机命令不设）。
     cmds = _filter_glm52_single_node_task_queue(cmds, params, engine)
+    # Kimi-K3-W4A8 910C 四机由 DP 专属 builder 输出标准运行时 env；
+    # 公共层只保留 CANN/驱动初始化，避免先写通用默认、再被专属值覆盖。
+    if (
+        engine == "vllm_ascend"
+        and params.get("_kimi_k3_910c_dp")
+        and params.get("distributed_executor_backend") == "dp_deployment"
+    ):
+        generic_env_names = {
+            "HCCL_BUFFSIZE", "OMP_PROC_BIND", "OMP_NUM_THREADS",
+            "TASK_QUEUE_ENABLE", "PYTORCH_NPU_ALLOC_CONF", "HCCL_OP_EXPANSION_MODE",
+        }
+        cmds = [
+            command for command in cmds
+            if _top_level_export_name(command) not in generic_env_names
+        ]
+        logger.info("[Kimi-K3-W4A8-910C] removed generic Ascend runtime env defaults")
     return cmds
 
 
