@@ -706,7 +706,7 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
         engine_config = deepseek_v32_w8a8[engine_key]
         assert engine_config["use_vllm_serve"] is True
         assert engine_config["quantization"] == "ascend"
-        assert engine_config["served_model_name"] == "deepseek_v3_2"
+        assert "served_model_name" not in engine_config
         assert engine_config["max_model_len"] == 8192
         assert engine_config["max_num_seqs"] == 16
         assert engine_config["max_num_batched_tokens"] == 4096
@@ -740,7 +740,6 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
         deepseek_v4["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"],
         {
             "max_num_seqs": 32,
-            "served_model_name": "dsv4",
             "tool_call_parser": "deepseek_v4",
         },
     )
@@ -1247,7 +1246,7 @@ def test_deepseek_v4_pro_config_loader_defers_dp_topology_to_adapter(monkeypatch
 
     # config_loader 只合并模型默认和显式开关；V4-Pro DP 拓扑交给 adapter
     # 基于本机卡数推导，避免通用分布式公式提前写入 TP=32。
-    assert config["served_model_name"] == "dsv4"
+    assert config["served_model_name"] == "DeepSeek-V4-Pro-w4a8-mtp"
     assert config["enable_auto_tool_choice"] is True
     assert "tensor_parallel_size" not in config
     assert "data_parallel_size" not in config
@@ -2058,7 +2057,7 @@ def test_deepseek_v32_w8a8_ascend_defaults_match_official_profile(
 
     assert config["use_vllm_serve"] is True
     assert config["quantization"] == "ascend"
-    assert config["served_model_name"] == "deepseek_v3_2"
+    assert "served_model_name" not in config
     assert config["max_model_len"] == 8192
     assert config["max_num_batched_tokens"] == 4096
     assert config["compilation_config"] == expected_compilation_config
@@ -2240,7 +2239,6 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert kimi_k3["vllm_distributed"] == {
         "use_vllm_serve": True,
         "trust_remote_code": True,
-        "served_model_name": "kimi_k3",
         "gpu_memory_utilization": 0.98,
         "no_enable_flashinfer_autotune": True,
         "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"],
@@ -2800,7 +2798,7 @@ def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
         model_info,
     )
 
-    assert h20_config["served_model_name"] == "kimi_k3"
+    assert "served_model_name" not in h20_config
     assert h20_config["tool_call_parser"] == "kimi_k3"
     assert a100_config == {}
     assert found is True

@@ -324,7 +324,6 @@
           "vllm_distributed": {
             "use_vllm_serve": true,
             "trust_remote_code": true,
-            "served_model_name": "kimi_k3",
             "gpu_memory_utilization": 0.98,
             "no_enable_flashinfer_autotune": true,
             "extra_cli_args": [
