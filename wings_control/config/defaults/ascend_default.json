@@ -1647,6 +1647,42 @@
             }
           }
         }
+      },
+      "KimiK3ForConditionalGeneration": {
+        "Kimi-K3-w4a8-Ascend910C": {
+          "vllm_ascend_distributed": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "served_model_name": "kimi-k3",
+            "allowed-local-media-path": "/",
+            "tensor_parallel_size": 16,
+            "enable_prefix_caching": true,
+            "enable_expert_parallel": true,
+            "max_num_seqs": 16,
+            "max_model_len": 131027,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.9,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
+            "profiler_config": {
+              "profiler": "torch",
+              "torch_profiler_dir": "./vllm_profile",
+              "torch_profiler_with_stack": false
+            },
+            "mm_processor_cache_gb": 0,
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_flashcomm1": true,
+              "enable_mc2_hierarchy_comm": true
+            },
+            "mm_encoder_tp_mode": "data",
+            "limit_mm_per_prompt": {
+              "vision_chunk": 40
+            },
+            "tool_call_parser": "kimi_k3"
+          }
+        }
       }
     },
     "embedding": {

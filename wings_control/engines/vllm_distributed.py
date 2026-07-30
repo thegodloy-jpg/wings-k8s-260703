@@ -238,6 +238,62 @@ def _build_common_ascend_dp_env_commands(
     ]
 
 
+def _build_kimi_k3_910c_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
+    """构造 Kimi-K3-W4A8 四机 910C 标准通信环境。"""
+    vllm_adapter = _import_vllm_adapter()
+    platform = vllm_adapter.ascend_platform_from_runtime(params)
+    if platform != "a3":
+        raise ValueError(
+            "Kimi-K3-W4A8 dp_deployment requires Ascend 910C/A3; "
+            f"detected platform={platform or 'unknown'}"
+        )
+
+    device_count = _safe_int(params.get("device_count"))
+    nnodes = _safe_int(params.get("nnodes"))
+    node_rank = _safe_int(params.get("node_rank"))
+    if device_count != 16:
+        raise ValueError(
+            "Kimi-K3-W4A8 Ascend 910C dp_deployment requires device_count=16; "
+            f"got {params.get('device_count')!r}"
+        )
+    if nnodes != 4:
+        raise ValueError(
+            "Kimi-K3-W4A8 Ascend 910C dp_deployment requires nnodes=4; "
+            f"got {params.get('nnodes')!r}"
+        )
+    if node_rank is None or node_rank not in range(4):
+        raise ValueError(
+            "Kimi-K3-W4A8 Ascend 910C dp_deployment requires node_rank in 0..3; "
+            f"got {params.get('node_rank')!r}"
+        )
+
+    hccl_socket_if = os.getenv("HCCL_SOCKET_IFNAME", net_if)
+    env_commands = [
+        _SH_VLLM_HOST,
+        "export HCCL_IF_IP=$VLLM_HOST_IP",
+        f"export GLOO_SOCKET_IFNAME={net_if}",
+        f"export TP_SOCKET_IFNAME={net_if}",
+        f"export HCCL_SOCKET_IFNAME={hccl_socket_if}",
+    ]
+    if node_rank == 0:
+        env_commands.append(
+            f"export VLLM_ENGINE_READY_TIMEOUT_S={os.getenv('VLLM_ENGINE_READY_TIMEOUT_S', '7200')}"
+        )
+    env_commands.extend([
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        f"export OMP_NUM_THREADS={os.getenv('OMP_NUM_THREADS', '1')}",
+        "export TASK_QUEUE_ENABLE=1",
+        f"export HCCL_BUFFSIZE={os.getenv('HCCL_BUFFSIZE', '800')}",
+        "export ASCEND_RT_VISIBLE_DEVICES=" + ",".join(str(index) for index in range(device_count)),
+        "export HCCL_INTER_HCCS_DISABLE=true",
+        "export HCCL_INTRA_ROCE_ENABLE=1",
+        "export VLLM_ASCEND_ENABLE_FUSED_MC2=0",
+        f"export HCCL_LOGIC_SUPERPOD_ID={node_rank}",
+    ])
+    return env_commands
+
+
 def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
     """构造 Ascend dp_deployment 通信环境。
 
@@ -335,10 +391,23 @@ def _build_nvidia_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
     ]
 
 
-def _build_dp_env_commands(is_ascend: bool, params: Dict[str, Any]) -> List[str]:
+def _build_dp_env_commands(
+    is_ascend: bool,
+    params: Dict[str, Any],
+    model_architecture: str = "",
+) -> List[str]:
     """返回 dp_deployment 模式的分布式通信环境变量命令。"""
     net_if = os.getenv("NETWORK_INTERFACE", os.getenv("GLOO_SOCKET_IFNAME", "eth0"))
-    return _build_ascend_dp_env_commands(params, net_if) if is_ascend else _build_nvidia_dp_env_commands(params, net_if)
+    if is_ascend and params.get("_kimi_k3_910c_dp"):
+        if model_architecture != "KimiK3ForConditionalGeneration":
+            raise ValueError(
+                "Kimi-K3-W4A8 910C DP marker requires KimiK3ForConditionalGeneration; "
+                f"got {model_architecture or 'unknown'}"
+            )
+        return _build_kimi_k3_910c_dp_env_commands(params, net_if)
+    if is_ascend:
+        return _build_ascend_dp_env_commands(params, net_if)
+    return _build_nvidia_dp_env_commands(params, net_if)
 
 
 def _strip_dp_cli_flags(cmd: str) -> str:
@@ -399,6 +468,7 @@ def _build_dp_exec_command(
     dp_rpc_port: str,
     topology: DpDeploymentTopology,
     include_rank0_start_rank: bool = False,
+    preserve_worker_port: bool = False,
 ) -> str:
     """根据 node_rank 构造 dp_deployment head/worker 的最终 exec 行。"""
     common = (
@@ -414,7 +484,9 @@ def _build_dp_exec_command(
             else ""
         )
         return f"exec {dp_cmd}{common}{rank0_start_rank}"
-    dp_cmd_headless = re.sub(r"\s*--port\s+(?:'[^']*'|\S+)", "", re.sub(r"\s*--host\s+(?:'[^']*'|\S+)", "", dp_cmd))
+    dp_cmd_headless = re.sub(r"\s*--host\s+(?:'[^']*'|\S+)", "", dp_cmd)
+    if not preserve_worker_port:
+        dp_cmd_headless = re.sub(r"\s*--port\s+(?:'[^']*'|\S+)", "", dp_cmd_headless)
     return f"exec {dp_cmd_headless}{common} --headless --data-parallel-start-rank {topology.dp_start_rank}"
 
 
@@ -440,10 +512,12 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     speculative_extra = ""
     if vllm_adapter.should_append_auto_speculative_config(params):
         speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
-    parts = _build_dp_env_commands(ctx.is_ascend, params)
+    parts = _build_dp_env_commands(ctx.is_ascend, params, model_info.model_architecture)
     include_rank0_start_rank = bool(params.get("_force_data_parallel_start_rank_on_rank0"))
+    preserve_worker_port = bool(params.get("_preserve_dp_worker_port"))
     parts.append(_build_dp_exec_command(ctx, f"{dp_cmd}{speculative_extra}{sparse_args}",
-                                       dp_rpc_port, topology, include_rank0_start_rank))
+                                       dp_rpc_port, topology, include_rank0_start_rank,
+                                       preserve_worker_port))
     return parts
 
 

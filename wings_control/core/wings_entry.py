@@ -200,9 +200,14 @@ def _prepare_merged_params(launch_args: LaunchArgs, port_plan: PortPlan, hardwar
     else:
         # 非 0 号节点一般只承担计算，不直接对外提供 engine 监听地址。
         merged.pop("host", None)
-        merged.pop("port", None)
         engine_cfg.pop("host", None)
-        engine_cfg.pop("port", None)
+        if merged.get("_preserve_dp_worker_port"):
+            # Kimi-K3-W4A8 910C 标准 headless Worker 仍要求携带 API 端口参数。
+            merged["port"] = port_plan.backend_port
+            engine_cfg["port"] = port_plan.backend_port
+        else:
+            merged.pop("port", None)
+            engine_cfg.pop("port", None)
         engine_cfg.pop("ipAddress", None)
     merged["engine_config"] = engine_cfg
     return merged

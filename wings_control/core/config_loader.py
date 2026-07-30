@@ -3505,6 +3505,25 @@ def _select_nvidia_engine(gpu_usage_mode: str, model_info) -> str:
         return vllm
 
 
+def _is_kimi_k3_w4a8(model_info=None, params: Optional[Dict[str, Any]] = None) -> bool:
+    """精确识别 Kimi-K3-W4A8，避免把同架构的其它 Kimi-K3 变体一并切换。"""
+    architecture = getattr(model_info, "model_architecture", None)
+    if architecture != "KimiK3ForConditionalGeneration":
+        return False
+
+    identity_values = [
+        getattr(model_info, "model_name", ""),
+        getattr(model_info, "model_path", ""),
+    ]
+    if params:
+        identity_values.extend((params.get("model_name", ""), params.get("model_path", "")))
+    normalized = (
+        re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
+        for value in identity_values
+    )
+    return any("kimi-k3-w4a8" in value for value in normalized)
+
+
 def _select_ascend_engine(device_name: str, model_info) -> str:
     """华为昇腾 NPU 场景下的引擎自动选择逻辑。
 
@@ -3538,6 +3557,10 @@ def _select_ascend_engine(device_name: str, model_info) -> str:
         return "vllm_ascend"
     elif get_router_env():
         logger.info("Wings router enabled, automatically switched to VLLM engine")
+        return "vllm_ascend"
+    elif _is_kimi_k3_w4a8(model_info):
+        # Kimi-K3-W4A8 的四机 910C 标准方案依赖 vLLM-Ascend 原生 DP。
+        logger.info("Kimi-K3-W4A8 requires vllm_ascend, automatically selected")
         return "vllm_ascend"
     elif model_architecture in ["DeepseekV32ForCausalLM", "Qwen3NextForCausalLM",
                                   "DeepseekV4ForCausalLM",
@@ -3624,6 +3647,7 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
     - Ascend PD (Prefill/Decode 分离): 使用 MooncakeConnector，各实例独立运行，
       不使用 dp_deployment / NIXL。KV 传输由 MooncakeConnector + RDMA 处理。
     - NVIDIA PD 或 Ascend DeepSeek DP: 使用 NIXL 协议 (dp_deployment)。
+    - Ascend 910C Kimi-K3-W4A8 四机: 使用 vLLM 原生 dp_deployment。
     - NVIDIA Kimi-K3 标准多机: 使用 vLLM 原生 MP。
     - 其他: 使用 Ray 作为分布式执行后端。
 
@@ -3652,6 +3676,9 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
         and model_architecture == "Qwen3_5MoeForConditionalGeneration"
         and ("qwen3.5-397b" in qwen397b_identity or "qwen3_5-397b" in qwen397b_identity)
     )
+    is_kimi_k3_w4a8_ascend_dp = is_ascend and _is_kimi_k3_w4a8(model_info, cmd_params)
+    if is_kimi_k3_w4a8_ascend_dp and int(cmd_params.get("nnodes") or 1) != 4:
+        raise ValueError("Kimi-K3-W4A8 Ascend dp_deployment requires exactly 4 nodes")
 
     if pd_role in ['P', 'D'] and is_ascend:
         # Ascend PD: 使用 MooncakeConnector，各 P/D 实例作为独立 vllm 进程运行。
@@ -3665,20 +3692,33 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
         model_architecture == "KimiK3ForConditionalGeneration"
         and not is_ascend
     )
-    use_dp_deployment = is_nvidia_pd or is_ascend_deepseek or is_qwen35_397b_ascend_dp
+    use_dp_deployment = (
+        is_nvidia_pd
+        or is_ascend_deepseek
+        or is_qwen35_397b_ascend_dp
+        or is_kimi_k3_w4a8_ascend_dp
+    )
     if use_dp_deployment:
         # 仍走原来的 dp_deployment 出口：端口、nixl_ip、rpc_port 的注入方式不分叉，
         # 397B 只是多一个命中条件，避免为一个模型系列复制整段分布式参数装配逻辑。
         if not vllm_distributed_port:
             vllm_distributed_port = distributed_config.get('vllm_distributed', {}).get('nixl_port', 27070)
 
-        rpc_port = distributed_config.get('vllm_distributed', {}).get('rpc_port', 27071)
+        if is_kimi_k3_w4a8_ascend_dp:
+            # 27777 来自 910C 四机标准命令，只作用于该模型；其它 DP 模型保留原默认端口。
+            rpc_port = os.getenv("VLLM_DP_RPC_PORT") or "27777"
+        else:
+            rpc_port = distributed_config.get('vllm_distributed', {}).get('rpc_port', 27071)
         cmd_params.update({
             'distributed_executor_backend': 'dp_deployment',
             'nixl_ip': get_local_ip(),
             'nixl_port': vllm_distributed_port,
             'rpc_port': rpc_port
         })
+        if is_kimi_k3_w4a8_ascend_dp:
+            # 仅供脚本生成层选择 910C recipe，并保留标准 Worker 的 --port。
+            cmd_params["_kimi_k3_910c_dp"] = True
+            cmd_params["_preserve_dp_worker_port"] = True
     elif is_kimi_k3_nvidia_mp:
         # Kimi-K3 + NVIDIA 多机使用 vLLM 原生 MP；四机 rank 和 master 地址仍复用
         # Wings 现有 NODE_IPS 分发链路，避免为单一模型再引入一套节点编排。
