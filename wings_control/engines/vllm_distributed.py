@@ -532,10 +532,6 @@ def _build_mp_env_commands() -> List[str]:
     return [
         f"export NCCL_SOCKET_IFNAME={shlex.quote(nccl_if)}",
         f"export GLOO_SOCKET_IFNAME={shlex.quote(gloo_if)}",
-        f"export NCCL_NVLS_ENABLE={shlex.quote(os.getenv('NCCL_NVLS_ENABLE', '0'))}",
-        f"export NCCL_DEBUG={shlex.quote(os.getenv('NCCL_DEBUG', 'WARN'))}",
-        "export VLLM_SSM_CONV_STATE_LAYOUT="
-        f"{shlex.quote(os.getenv('VLLM_SSM_CONV_STATE_LAYOUT', 'DS'))}",
     ]
 
 

@@ -57,9 +57,9 @@ def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
 
     assert "export NCCL_SOCKET_IFNAME=enp66s0f1" in commands
     assert "export GLOO_SOCKET_IFNAME=enp66s0f1" in commands
-    assert "export NCCL_NVLS_ENABLE=0" in commands
-    assert "export NCCL_DEBUG=WARN" in commands
-    assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" in commands
+    # MP 路径只保留网卡选择，不再替 Kimi-K3 强制覆盖 NCCL/SSM 运行时策略。
+    for env_name in ("NCCL_NVLS_ENABLE", "NCCL_DEBUG", "VLLM_SSM_CONV_STATE_LAYOUT"):
+        assert not any(command.startswith(f"export {env_name}=") for command in commands)
     assert "--distributed-executor-backend mp" in final_command
     assert "--nnodes 4" in final_command
     assert "--node-rank 0" in final_command
