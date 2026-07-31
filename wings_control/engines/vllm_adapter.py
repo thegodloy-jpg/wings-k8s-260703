@@ -4881,7 +4881,12 @@ def _build_vllm_pd_external_lb_script(params: Dict[str, Any], cmd: str,
     role_env = params.get("_pd_env") or {}
     env_lines = list(common_env_cmds)
     for k, v in role_env.items():
-        env_lines.append(f"export {k}={shlex.quote(str(v))}")
+        # 配置中的动态 pod 标识直接渲染为当前 PD_INDEX 的数值；其它值仍走
+        # shlex.quote，避免为了单个变量放宽整个配置环境变量的安全引用边界。
+        if str(v) == "__PD_INDEX__":
+            env_lines.append(f"export {k}={pd_index_base}")
+        else:
+            env_lines.append(f"export {k}={shlex.quote(str(v))}")
     # PD_INDEX 透传给 bash 环境（config_loader 已处理默认值 P=0/D=1），fork 脚本不计算直接引用
     env_lines.append(f"export PD_INDEX={pd_index_base}")
     # L3：common_env/角色 env 追加在 base 之后（bash 后者生效）；对整段去重，使注册表覆盖值收口、
