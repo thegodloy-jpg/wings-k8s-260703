@@ -115,7 +115,7 @@
     },
     "GlmMoeDsaForCausalLM": {
       "_source": "https://docs.vllm.ai/projects/ascend/en/v0.23.0/tutorials/models/GLM5.html (GLM-5/GLM-5.1 A3 2P4D)",
-      "_fix": "2026-07-31 对齐 vLLM-Ascend v0.23.0 GLM-5/GLM-5.1 PD 大 EP：P=DP2/TP16、D=DP16/TP4；Connector 改 MooncakeConnectorV1；P/D 容量、MTP、profiler、IndexCache、算子参数和环境变量逐项按官方 run_dp_template.sh 收口。engine_id 与 KV port 保持 Wings 现有 PD_INDEX 派生逻辑，不改 config-loader。enable_auto_tool_choice 仍遵循 Wings 产品契约由用户开关控制，不在默认 recipe 中强开。模型路径、Pod IP、API 端口及 Wings 固定 DP RPC 端口属于部署编排参数，不在模型 recipe 中固化。2026-07-31 按部署要求补齐 P/D 共用 RPC/HCCL 超时，关闭 FUSED_MC2，启用 MC2 hierarchy communication；HCCL_LOGIC_SUPERPOD_ID 通过启动脚本占位符与当前 pod 的 PD_INDEX 保持一致。",
+      "_fix": "2026-07-31 对齐 vLLM-Ascend v0.23.0 GLM-5/GLM-5.1 PD 大 EP：P=DP2/TP16、D=DP16/TP4；Connector 改 MooncakeConnectorV1；P/D 容量、MTP、profiler、IndexCache、算子参数和环境变量逐项按官方 run_dp_template.sh 收口。engine_id 与 KV port 保持 Wings 现有 PD_INDEX 派生逻辑，不改 config-loader。enable_auto_tool_choice 仍遵循 Wings 产品契约由用户开关控制，不在默认 recipe 中强开。模型路径、Pod IP、API 端口及 Wings 固定 DP RPC 端口属于部署编排参数，不在模型 recipe 中固化。2026-07-31 按部署要求补齐 P/D 共用 RPC/HCCL 超时，关闭 FUSED_MC2，启用 MC2 hierarchy communication；HCCL_LOGIC_SUPERPOD_ID 通过启动脚本占位符与当前 pod 的 PD_INDEX 保持一致；P/D 共用环境补 HCCL_INTER_HCCS_DISABLE=true、HCCL_INTRA_ROCE_ENABLE=1。",
       "connector": "MooncakeConnectorV1",
       "kv_port": { "P": "30000", "D": "30100" },
       "default_platform": "a3",
@@ -136,7 +136,9 @@
         "HCCL_EXEC_TIMEOUT": "2000",
         "HCCL_CONNECT_TIMEOUT": "1200",
         "VLLM_ASCEND_ENABLE_FUSED_MC2": "0",
-        "HCCL_LOGIC_SUPERPOD_ID": "__PD_INDEX__"
+        "HCCL_LOGIC_SUPERPOD_ID": "__PD_INDEX__",
+        "HCCL_INTER_HCCS_DISABLE": "true",
+        "HCCL_INTRA_ROCE_ENABLE": "1"
       },
       "common": {
         "use_vllm_serve": true,
@@ -241,7 +243,7 @@
     },
     "DeepseekV4ForCausalLM": {
       "_source": "https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Flash.html",
-      "_fix": "2026-06-13 对齐官方 A3 1P1D：批量/显存/seed/max_model_len/speculative 对齐；P enforce_eager 关 async/prefix/compilation；补 reasoning_parser/model_loader_extra_config/no_disable_hybrid_kv_cache_manager(Hybrid 连接器保留 HMA)。compilation_config=null 表示 P 删除 base 的 FULL_DECODE_ONLY。注意：本条目对齐 A3；A2(4P1D) 需另按平台分。engine_id 仍由 fork 脚本按 dp_rank 注入(待真机确认 Hybrid 是否要求 role 级常量)。",
+      "_fix": "2026-06-13 对齐官方 A3 1P1D：批量/显存/seed/max_model_len/speculative 对齐；P enforce_eager 关 async/prefix/compilation；补 reasoning_parser/model_loader_extra_config/no_disable_hybrid_kv_cache_manager(Hybrid 连接器保留 HMA)。compilation_config=null 表示 P 删除 base 的 FULL_DECODE_ONLY。注意：本条目对齐 A3；A2(4P1D) 需另按平台分。engine_id 仍由 fork 脚本按 dp_rank 注入(待真机确认 Hybrid 是否要求 role 级常量)。2026-07-31 按部署要求为 V4 系列 P/D 关闭 FUSED_MC2、启用 MC2 hierarchy communication，HCCL_LOGIC_SUPERPOD_ID 与当前 pod 的 PD_INDEX 一致，并补 HCCL_INTER_HCCS_DISABLE=true、HCCL_INTRA_ROCE_ENABLE=1。",
       "connector": "MooncakeHybridConnector",
       "kv_port": { "P": "30000", "D": "30100" },
       "extra_config": {},
@@ -262,7 +264,11 @@
         "OMP_NUM_THREADS": "10",
         "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
         "TASK_QUEUE_ENABLE": "1",
-        "HCCL_OP_EXPANSION_MODE": "AIV"
+        "HCCL_OP_EXPANSION_MODE": "AIV",
+        "VLLM_ASCEND_ENABLE_FUSED_MC2": "0",
+        "HCCL_LOGIC_SUPERPOD_ID": "__PD_INDEX__",
+        "HCCL_INTER_HCCS_DISABLE": "true",
+        "HCCL_INTRA_ROCE_ENABLE": "1"
       },
       "common": {
         "enable_expert_parallel": true,
@@ -288,7 +294,12 @@
           "enforce_eager": true,
           "async_scheduling": false,
           "compilation_config": null,
-          "additional_config": { "enable_cpu_binding": true, "enable_shared_expert_dp": true, "enable_dsa_cp": true }
+          "additional_config": {
+            "enable_cpu_binding": true,
+            "enable_shared_expert_dp": true,
+            "enable_dsa_cp": true,
+            "enable_mc2_hierarchy_comm": true
+          }
         },
         "env": {
           "VLLM_ASCEND_ENABLE_FLASHCOMM1": "1",
@@ -307,7 +318,8 @@
             "ascend_compilation_config": { "enable_npugraph_ex": true, "enable_static_kernel": false },
             "enable_cpu_binding": true,
             "multistream_overlap_shared_expert": true,
-            "recompute_scheduler_enable": true
+            "recompute_scheduler_enable": true,
+            "enable_mc2_hierarchy_comm": true
           }
         },
         "env": {
