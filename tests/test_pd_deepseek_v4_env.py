@@ -268,24 +268,40 @@ def _assert_no_duplicate_export_names(script: str) -> None:
     assert duplicates == []
 
 
-def _render_pd_deepseek_v4_script(tmp_path, monkeypatch, role: str, local_ip: str, pd_index: int) -> str:
+def _render_pd_deepseek_v4_script(
+    tmp_path,
+    monkeypatch,
+    role: str,
+    local_ip: str,
+    pd_index: int,
+    *,
+    platform: str = "a3",
+    prefill_dp: int = 2,
+    prefill_tp: int = 4,
+    decode_dp: int = 8,
+    decode_tp: int = 1,
+    dp_size_local: int | None = None,
+    device_count: int = 8,
+) -> str:
     for name in _CLEAR_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(sys, "argv", ["pytest"])
     monkeypatch.setenv("PD_ROLE", role)
     monkeypatch.setenv("PD_INDEX", str(pd_index))
-    monkeypatch.setenv("PD_PREFILL_DP_SIZE", "2")
-    monkeypatch.setenv("PD_PREFILL_TP_SIZE", "4")
-    monkeypatch.setenv("PD_DECODE_DP_SIZE", "8")
-    monkeypatch.setenv("PD_DECODE_TP_SIZE", "1")
-    monkeypatch.setenv("DP_SIZE_LOCAL", "1" if role == "P" else "8")
+    monkeypatch.setenv("PD_PREFILL_DP_SIZE", str(prefill_dp))
+    monkeypatch.setenv("PD_PREFILL_TP_SIZE", str(prefill_tp))
+    monkeypatch.setenv("PD_DECODE_DP_SIZE", str(decode_dp))
+    monkeypatch.setenv("PD_DECODE_TP_SIZE", str(decode_tp))
+    if dp_size_local is None:
+        dp_size_local = 1 if role == "P" else decode_dp
+    monkeypatch.setenv("DP_SIZE_LOCAL", str(dp_size_local))
     monkeypatch.setenv("MASTER_IP", local_ip)
     monkeypatch.setenv("RANK_IP", local_ip)
     monkeypatch.setenv("HOST_IP", local_ip)
     monkeypatch.setenv("POD_IP", local_ip)
     monkeypatch.setenv("NODE_IPS", local_ip)
     monkeypatch.setenv("NETWORK_INTERFACE", "xxxx")
-    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", platform)
 
     model_dir = tmp_path / f"deepseek-v4-{role}"
     _write_deepseek_v4_config(model_dir)
@@ -300,7 +316,7 @@ def _render_pd_deepseek_v4_script(tmp_path, monkeypatch, role: str, local_ip: st
             "--engine",
             "vllm_ascend",
             "--device-count",
-            "8",
+            str(device_count),
             "--trust-remote-code",
         ]
     )
@@ -313,9 +329,21 @@ def _render_pd_deepseek_v4_script(tmp_path, monkeypatch, role: str, local_ip: st
             proxy_port=18000,
             health_port=19000,
         ),
-        {"device": "ascend", "count": 8, "details": [{"name": "Ascend"}] * 8},
+        {
+            "device": "ascend",
+            "count": device_count,
+            "details": [{"name": "Ascend"}] * device_count,
+        },
     )
     return start_engine_service(merged)
+
+
+def _extract_vllm_exec_line(script: str) -> str:
+    return next(
+        line.strip()
+        for line in script.splitlines()
+        if "vllm serve" in line and not line.lstrip().startswith("echo ")
+    )
 
 
 def _assert_user_pd_topology(script: str, role: str) -> None:
@@ -406,6 +434,104 @@ def test_deepseek_v4_pd_decode_env_matches_official_recipe(tmp_path, monkeypatch
     assert '"enable_mc2_hierarchy_comm":true' in script
     assert "VLLM_ASCEND_ENABLE_MLAPO" not in exports
     assert "VLLM_MOONCAKE_BOOTSTRAP_PORT=" not in script
+
+
+@pytest.mark.parametrize(
+    (
+        "platform",
+        "role",
+        "pd_index",
+        "max_model_len",
+        "max_num_batched_tokens",
+        "max_num_seqs",
+        "dp_size",
+        "tp_size",
+        "dp_size_local",
+        "connect_timeout",
+        "hccl_buffsize",
+        "prefix_flag",
+        "has_flashcomm",
+        "has_dsa_cp",
+    ),
+    (
+        ("a3", "P", 0, 1048576, 8192, 16, 4, 4, 4, 120, 2560,
+         "--no-enable-prefix-caching", True, True),
+        ("a3", "D", 1, 1048576, 120, 60, 16, 1, 16, 1200, 1024,
+         "--no-enable-prefix-caching", False, False),
+        ("a2", "P", 0, 135000, 4096, 16, 8, 1, 8, 1200, 1024,
+         "--enable-prefix-caching", False, False),
+        ("a2", "D", 4, 135000, 60, 30, 32, 1, 8, 1200, 1024,
+         "--no-enable-prefix-caching", False, False),
+    ),
+)
+def test_deepseek_v4_pd_final_command_matches_v023_profile_with_no_async_override(
+    tmp_path,
+    monkeypatch,
+    platform,
+    role,
+    pd_index,
+    max_model_len,
+    max_num_batched_tokens,
+    max_num_seqs,
+    dp_size,
+    tp_size,
+    dp_size_local,
+    connect_timeout,
+    hccl_buffsize,
+    prefix_flag,
+    has_flashcomm,
+    has_dsa_cp,
+):
+    # 官方 A3 是 P=DP4/TP4、D=DP16/TP1；A2 是 P=DP8/TP1、D=DP32/TP1。
+    prefill_dp, prefill_tp = ((4, 4) if platform == "a3" else (8, 1))
+    decode_dp, decode_tp = ((16, 1) if platform == "a3" else (32, 1))
+    device_count = 16 if platform == "a3" else 8
+    local_ip = _PREFILL_IP if role == "P" else _DECODE_IP
+
+    script = _render_pd_deepseek_v4_script(
+        tmp_path,
+        monkeypatch,
+        role,
+        local_ip,
+        pd_index,
+        platform=platform,
+        prefill_dp=prefill_dp,
+        prefill_tp=prefill_tp,
+        decode_dp=decode_dp,
+        decode_tp=decode_tp,
+        dp_size_local=dp_size_local,
+        device_count=device_count,
+    )
+    exports = _extract_exports(script)
+    exec_line = _extract_vllm_exec_line(script)
+    compact = re.sub(r"\s+", "", script)
+
+    assert f"--max-model-len {max_model_len}" in exec_line
+    assert f"--max-num-batched-tokens {max_num_batched_tokens}" in exec_line
+    assert f"--max-num-seqs {max_num_seqs}" in exec_line
+    assert f"--tensor-parallel-size {tp_size} --data-parallel-size {dp_size}" in exec_line
+    assert f"for i in $(seq 0 {dp_size_local - 1}); do" in script
+    assert f'"prefill":{{"dp_size":{prefill_dp},"tp_size":{prefill_tp}' in compact
+    assert f'"decode":{{"dp_size":{decode_dp},"tp_size":{decode_tp}' in compact
+    assert prefix_flag in exec_line
+    assert exports["HCCL_CONNECT_TIMEOUT"] == (
+        f"export HCCL_CONNECT_TIMEOUT={connect_timeout}"
+    )
+    assert exports["HCCL_BUFFSIZE"] == f"export HCCL_BUFFSIZE={hccl_buffsize}"
+    assert ("VLLM_ASCEND_ENABLE_FLASHCOMM1" in exports) is has_flashcomm
+    assert ('"enable_dsa_cp":true' in exec_line) is has_dsa_cp
+    assert exports["HCCL_LOGIC_SUPERPOD_ID"] == (
+        f"export HCCL_LOGIC_SUPERPOD_ID={pd_index}"
+    )
+
+    if role == "P":
+        assert "--enforce-eager" in exec_line
+    else:
+        assert "--enforce-eager" not in exec_line
+    assert "--async-scheduling" not in exec_line
+    assert "--no-async-scheduling" in exec_line
+    if platform == "a2" and role == "P":
+        assert "--no-enable-prefix-caching" not in exec_line
 
 
 def test_deepseek_v4_pd_refreshes_mooncake_linker_cache_without_env_leak(tmp_path, monkeypatch):
