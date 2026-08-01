@@ -115,7 +115,7 @@
     },
     "GlmMoeDsaForCausalLM": {
       "_source": "https://docs.vllm.ai/projects/ascend/en/v0.23.0/tutorials/models/GLM5.html (GLM-5/GLM-5.1 A3 2P4D)",
-      "_fix": "2026-07-31 对齐 vLLM-Ascend v0.23.0 GLM-5/GLM-5.1 PD 大 EP：P=DP2/TP16、D=DP16/TP4；Connector 改 MooncakeConnectorV1；P/D 容量、MTP、profiler、IndexCache、算子参数和环境变量逐项按官方 run_dp_template.sh 收口。engine_id 与 KV port 保持 Wings 现有 PD_INDEX 派生逻辑，不改 config-loader。enable_auto_tool_choice 仍遵循 Wings 产品契约由用户开关控制，不在默认 recipe 中强开。模型路径、Pod IP、API 端口及 Wings 固定 DP RPC 端口属于部署编排参数，不在模型 recipe 中固化。2026-07-31 按部署要求补齐 P/D 共用 RPC/HCCL 超时，关闭 FUSED_MC2，启用 MC2 hierarchy communication；HCCL_LOGIC_SUPERPOD_ID 通过启动脚本占位符与当前 pod 的 PD_INDEX 保持一致；P/D 共用环境补 HCCL_INTER_HCCS_DISABLE=true、HCCL_INTRA_ROCE_ENABLE=1。",
+      "_fix": "2026-07-31 对齐 vLLM-Ascend v0.23.0 GLM-5/GLM-5.1 PD 大 EP：P=DP2/TP16、D=DP16/TP4；Connector 改 MooncakeConnectorV1；P/D 容量、MTP、profiler、IndexCache、算子参数和环境变量逐项按官方 run_dp_template.sh 收口。engine_id 与 KV port 保持 Wings 现有 PD_INDEX 派生逻辑，不改 config-loader。enable_auto_tool_choice 仍遵循 Wings 产品契约由用户开关控制，不在默认 recipe 中强开。模型路径、Pod IP、API 端口及 Wings 固定 DP RPC 端口属于部署编排参数，不在模型 recipe 中固化。2026-07-31 按部署要求补齐 P/D 共用 RPC/HCCL 超时，关闭 FUSED_MC2，启用 MC2 hierarchy communication；HCCL_LOGIC_SUPERPOD_ID 通过启动脚本占位符与当前 pod 的 PD_INDEX 保持一致；P/D 共用环境补 HCCL_INTER_HCCS_DISABLE=true、HCCL_INTRA_ROCE_ENABLE=1。2026-08-01 针对 D 侧大 EP dummy decode 的 MoE 临时显存 OOM，仅将 D 侧 gpu_memory_utilization 降至 0.88、MTP speculative tokens 降至 1；P 侧及其他模型保持不变。",
       "connector": "MooncakeConnectorV1",
       "kv_port": { "P": "30000", "D": "30100" },
       "default_platform": "a3",
@@ -176,7 +176,7 @@
           }
         },
         "env": {
-          "HCCL_BUFFSIZE": "256",
+          "HCCL_BUFFSIZE": "1024",
           "VLLM_ASCEND_ENABLE_FLASHCOMM1": "1"
         }
       },
@@ -185,12 +185,12 @@
           "max_model_len": 200000,
           "max_num_batched_tokens": 32,
           "max_num_seqs": 8,
-          "gpu_memory_utilization": 0.92,
+          "gpu_memory_utilization": 0.88,
           "enable_prefix_caching": false,
           "enable_chunked_prefill": false,
           "compilation_config": { "cudagraph_mode": "FULL_DECODE_ONLY" },
           "speculative_config": {
-            "num_speculative_tokens": 3,
+            "num_speculative_tokens": 1,
             "method": "deepseek_mtp",
             "enforce_eager": true
           },
@@ -200,7 +200,7 @@
           }
         },
         "env": {
-          "HCCL_BUFFSIZE": "256",
+          "HCCL_BUFFSIZE": "1024",
           "TASK_QUEUE_ENABLE": "1",
           "VLLM_ASCEND_ENABLE_MLAPO": "1"
         }
