@@ -1213,9 +1213,7 @@ def _get_pd_config(ctx, pd_role):
 def _get_pd_external_lb_params(device_count=1):
     """读取上层下发的 external-lb DP 参数；PD_ROLE 未设置时返回 None。
 
-    触发 external-lb（模式 A，pod 内 fork 多 service）需 PD_ROLE∈{P,D}。
-    DP_SIZE≥1 均进入 external-lb 路径（含 1P1D），由 pd_config.json 注册表统一管理
-    connector/引擎参数/环境变量，消除 standalone PD 绕过注册表的配置双轨。
+    该函数只解析拓扑；调用方仅在 ``DP_SIZE>1`` 时应用 PD 大 EP recipe。
 
     上层契约（角色域，P/D 各自独立）：
       DP_SIZE / TP_SIZE / DP_SIZE_LOCAL：本角色全局 DP / 单实例 TP / 本节点 fork 数；
@@ -1250,11 +1248,11 @@ def _get_pd_external_lb_params(device_count=1):
     # DP_SIZE/TP_SIZE 优先显式；缺省时从本角色全局拓扑 PD_{ROLE}_* 派生（P→PREFILL / D→DECODE）。
     # 全局拓扑 PD_PREFILL_*/PD_DECODE_* 已含本角色 dp/tp（P/D 互相感知对方），故上层可只下发这 4 个，
     # 不必再单独给 DP_SIZE/TP_SIZE（二者等于本角色在全局拓扑中的那一项）。
-    # DP_SIZE 未设置时默认 1（1P1D），允许通过 pd_config.json 注册表统一管理配置。
+    # DP_SIZE 未设置时默认 1（1P1D），由调用方保留 standalone PD。
     role_prefix = "PREFILL" if role == "P" else "DECODE"
     raw = _first_env("DP_SIZE", "PD_DP_SIZE", f"PD_{role_prefix}_DP_SIZE")
     if raw is None:
-        dp_size = 1  # 1P1D：未显式设 DP_SIZE 时默认 1，仍走 external-lb 读注册表
+        dp_size = 1
     else:
         try:
             dp_size = int(raw)
@@ -1527,13 +1525,13 @@ def _apply_pd_topology_fallback(cmd_known_params: Dict[str, Any], pd_role: str) 
 
 
 def _apply_pd_external_lb(cmd_known_params, model_info, hardware_env=None):
-    """检测 external-lb PD 并应用模型配置注册表（config/defaults/pd_config.json）。
+    """检测 PD 大 EP 并应用模型配置注册表（config/defaults/pd_config.json）。
 
-    命中条件：PD_ROLE∈{P,D}（DP_SIZE≥1，含 1P1D）。命中后（专属架构优先、回退 default）：
+    命中条件：PD_ROLE∈{P,D} 且当前角色 DP_SIZE>1。命中后仅允许精确架构 profile：
       1. 合并 common + 角色 engine 参数到 engine_config（不覆盖用户显式键）；
       2. 用注册表连接器/kv_port/extra 构建 kv_transfer_config（覆盖 standalone 版）；
       3. 外层标记 _pd_external_lb / _pd_env，并置 distributed=False（不进 Ray/headless）。
-    未命中或注册表无可用条目时原样返回（走原 standalone PD）。
+    DP=1 只应用拓扑并保留原 standalone PD；大 EP 无精确 profile 时直接报错。
     """
     pd_role = get_pd_role_env()
     logger.info("[PD external-lb] entry check: PD_ROLE=%s", pd_role)
@@ -1566,16 +1564,18 @@ def _apply_pd_external_lb(cmd_known_params, model_info, hardware_env=None):
         if pd_role:
             _apply_pd_topology_fallback(cmd_known_params, pd_role)
         return
+    if ext["dp_size"] == 1:
+        # 1P1D 仅补拓扑，保留前面生成的 standalone KV，不读取大 EP recipe。
+        topology = {"tensor_parallel_size": ext["tp_size"], "data_parallel_size": 1}
+        cmd_known_params.setdefault("engine_config", {}).update(topology)
+        cmd_known_params["_pd_engine_overrides"] = topology
+        return
+
     registry = _load_pd_config()
     arch = getattr(model_info, "model_architecture", None) or ""
-    entry = registry.get(arch) or registry.get("default")
+    entry = registry.get(arch)
     if not entry:
-        logger.warning("[PD external-lb] no registry entry for arch=%s and no default; "
-                       "fall back to standalone PD", arch)
-        # 即使没有注册表条目，PD 拓扑参数仍应从 env 生效
-        if pd_role:
-            _apply_pd_topology_fallback(cmd_known_params, pd_role)
-        return
+        raise ValueError(f"PD large-EP has no registered profile for architecture={arch or '<unknown>'}")
 
     # 注册表来自模块级缓存(_load_pd_config)；下面会对 entry 做 overlay/pop —— 先 deepcopy 防污染缓存。
     entry = copy.deepcopy(entry)
@@ -4449,6 +4449,17 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
 
     model_architecture = model_info.identify_model_architecture()
     model_type = model_info.identify_model_type()
+
+    pd_ext = (_get_pd_external_lb_params(cmd_known_params.get("device_count", 1))
+              if hardware_env.get("device") == "ascend" and engine == "vllm_ascend" else None)
+    if pd_ext and pd_ext["dp_size"] > 1:
+        # 大 EP 直接以精确 PD profile 为默认源，避免先加载 ascend_default 产生字段串扰。
+        entry = copy.deepcopy(_load_pd_config().get(model_architecture))
+        if not entry:
+            raise ValueError(f"PD large-EP has no registered profile for architecture={model_architecture}")
+        role_key = "prefill" if pd_ext["role"] == "P" else "decode"
+        engine_specific_defaults = {**entry.get("common", {}), **entry.get(role_key, {}).get("engine", {})}
+        return _merge_cmd_params(hardware_env, engine_specific_defaults, cmd_known_params, model_info)
 
     models_dict, fallback = _load_and_validate_models_dict(hardware_env, model_type, engine)
     if fallback is not None:

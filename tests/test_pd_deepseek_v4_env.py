@@ -102,7 +102,7 @@ def _write_arch_config(model_dir: Path, architecture: str) -> None:
     ("device", "engine"),
     (("nvidia", "vllm"), ("ascend", "vllm_ascend")),
 )
-def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
+def test_pd_1p1d_without_any_tp_dp_keeps_standalone_recipe_and_local_tp(
     monkeypatch,
     tmp_path,
     role,
@@ -145,35 +145,22 @@ def test_pd_1p1d_without_any_tp_dp_uses_local_device_count(
     assert params["engine_config"]["data_parallel_size"] == 1
     assert params["_pd_engine_overrides"]["tensor_parallel_size"] == device_count
     assert params["_pd_engine_overrides"]["data_parallel_size"] == 1
+    assert "_pd_external_lb" not in params
+    assert json.loads(params["engine_config"]["kv_transfer_config"]) == base_kv
     script = vllm_adapter.build_start_script(params)
     exec_line = next(
         line for line in script.splitlines()
         if "vllm serve" in line and not line.lstrip().startswith("echo ")
     )
     assert f"--tensor-parallel-size {device_count}" in exec_line
+    assert "--data-parallel-size 1" in exec_line
+    assert "Mooncake" not in exec_line
 
     if device == "nvidia":
-        assert "_pd_external_lb" not in params
-        assert json.loads(params["engine_config"]["kv_transfer_config"]) == base_kv
         assert "export VLLM_SSM_CONV_STATE_LAYOUT=DS" in script
-        assert "--data-parallel-size 1" in exec_line
-        assert "Mooncake" not in exec_line
         assert "ASCEND_RT_VISIBLE_DEVICES" not in exec_line
     else:
         assert "VLLM_SSM_CONV_STATE_LAYOUT" not in script
-        ext = params["_pd_external_lb"]
-        assert (ext["role"], ext["tp_size"], ext["dp_size"], ext["dp_size_local"]) == (
-            role, device_count, 1, 1,
-        )
-        kv_config = json.loads(params["engine_config"]["kv_transfer_config"])
-        assert kv_config["kv_connector"] == "MooncakeConnectorV1"
-        assert kv_config["kv_role"] == ("kv_producer" if role == "P" else "kv_consumer")
-        assert kv_config["kv_connector_extra_config"] == {
-            "prefill": {"dp_size": 1, "tp_size": device_count},
-            "decode": {"dp_size": 1, "tp_size": device_count},
-        }
-        assert f"ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 $(({device_count} - 1)))" in exec_line
-        assert "--data-parallel-size" not in exec_line
         assert "--data-parallel-external-lb" not in exec_line
 
 
@@ -344,6 +331,37 @@ def _extract_vllm_exec_line(script: str) -> str:
         for line in script.splitlines()
         if "vllm serve" in line and not line.lstrip().startswith("echo ")
     )
+
+
+@pytest.mark.parametrize("role", ("P", "D"))
+def test_pd_large_ep_does_not_load_ascend_defaults(tmp_path, monkeypatch, role):
+    monkeypatch.setattr(
+        config_loader, "_load_default_config",
+        lambda *_args, **_kwargs: pytest.fail("PD large-EP loaded ascend_default.json"),
+    )
+    script = _render_pd_deepseek_v4_script(
+        tmp_path, monkeypatch, role,
+        _PREFILL_IP if role == "P" else _DECODE_IP, 0,
+    )
+    assert "--data-parallel-external-lb" in _extract_vllm_exec_line(script)
+
+
+def test_pd_large_ep_rejects_unregistered_architecture_without_default_fallback(monkeypatch):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PD_ROLE", "P")
+    monkeypatch.setenv("PD_PREFILL_DP_SIZE", "2")
+    monkeypatch.setenv("PD_PREFILL_TP_SIZE", "4")
+
+    params = {
+        "engine": "vllm_ascend",
+        "device_count": 8,
+        "engine_config": {},
+    }
+    model_info = SimpleNamespace(model_architecture="UnknownArchitecture")
+
+    with pytest.raises(ValueError, match="no registered profile"):
+        config_loader._apply_pd_external_lb(params, model_info, {"device": "ascend"})
 
 
 def _assert_user_pd_topology(script: str, role: str) -> None:

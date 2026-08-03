@@ -272,6 +272,7 @@
         "HCCL_INTRA_ROCE_ENABLE": "1"
       },
       "common": {
+        "use_vllm_serve": true,
         "enable_expert_parallel": true,
         "quantization": "ascend",
         "seed": 1024,

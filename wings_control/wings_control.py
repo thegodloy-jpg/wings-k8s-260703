@@ -605,7 +605,7 @@ def _determine_role() -> str:
 
     通过 DISTRIBUTED 环境变量判断是否为分布式模式:
       - 非分布式 → "standalone"（沿用原有单机流程）
-      - 分布式 + PD external-lb（PD_ROLE + DP_SIZE≥1）→ "standalone"（对等 pod，见设计 §13.7）
+      - 分布式 + PD 大 EP external-lb（PD_ROLE + DP_SIZE>1）→ "standalone"（对等 pod）
       - 分布式且 RANK_IP == MASTER_IP → "master"（含 DNS 解析）
       - 分布式且 RANK_IP != MASTER_IP → "worker"
 
@@ -620,18 +620,17 @@ def _determine_role() -> str:
     if not distributed:
         return "standalone"
 
-    # PD external-lb（PD_ROLE + DP_SIZE≥1）下，每个 pod 是对等的独立单元：自带 proxy/health/
+    # PD 大 EP external-lb（PD_ROLE + DP_SIZE>1）下，每个 pod 是对等的独立单元：自带 proxy/health/
     # monitor + 本地引擎 fork，跨 pod 靠 vLLM DP rendezvous（--data-parallel-address）组域。
     # Ray master/worker 编排（head 起 API、worker 仅 headless、health 端口偏移、BACKEND_URL 指
     # master、worker 不监控本地引擎）是为「单引擎跨节点」设计的，套在 external-lb 上会范式错位
     # （见设计文档 §13.7）。故 external-lb 命中时强制按 standalone 处理，绕开 master/worker。
-    # 门控信号 = 引擎脚本分发同源的 _get_pd_external_lb_params()（非空 ⇔ PD_ROLE 且 DP_SIZE≥1），
-    # 含 1P1D（DP_SIZE=1 默认），两层判定一致。非 PD 的 Ray 分布式无 PD_ROLE → 此处不命中，行为字节级不变。
+    # 门控信号复用引擎脚本的拓扑解析结果，仅 DP_SIZE>1 命中；1P1D 保留原角色流程。
     try:
         from core.config_loader import _get_pd_external_lb_params
-        if _get_pd_external_lb_params() is not None:
+        if (_get_pd_external_lb_params() or {}).get("dp_size", 1) > 1:
             logger.info(
-                "[role] PD external-lb active (PD_ROLE + DP_SIZE≥1) → standalone peer pod; "
+                "[role] PD large-EP external-lb active (PD_ROLE + DP_SIZE>1) → standalone peer pod; "
                 "skipping Ray master/worker orchestration (see design §13.7)"
             )
             return "standalone"
