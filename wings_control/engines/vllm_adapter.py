@@ -625,7 +625,7 @@ def _native_backend_auto_requested(params: Dict[str, Any], engine: str) -> bool:
 
 
 def _mtp_whitelist_override_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
-    """Return a spec whitelist row that explicitly owns MTP method selection."""
+    """Return a spec whitelist row that owns inline method selection."""
     row = resolve_feature_whitelist_row_from_params(params, engine, "spec")
     if not row or not row.get("mtp_method"):
         return None
@@ -4156,6 +4156,10 @@ def _build_mtp_speculative_cmd(
         token_range = str(row.get("speculative_token_range") or "").strip()
         if token_range:
             config.append(f'"speculative_token_range":"{token_range}"')
+        # DSpark 与 MTP 一样不依赖外部 draft path；采样方式仍由精确白名单静态约束。
+        draft_sample_method = str(row.get("draft_sample_method") or "").strip()
+        if draft_sample_method in {"greedy", "probabilistic"}:
+            config.append(f'"draft_sample_method":"{draft_sample_method}"')
         return _format_speculative_result(config, compact=True)
 
     strategy, is_v4_flash, is_v4_flash_pro5000, is_qwen35_nvfp4_native = (
@@ -4227,7 +4231,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     )
 
     mtp_row = _mtp_whitelist_override_row(params, engine)
-    if strategy not in {"suffix", "mtp"} and not strategy.endswith("_mtp"):
+    if not mtp_row and strategy not in {"suffix", "mtp"} and not strategy.endswith("_mtp"):
         return _build_whitelist_draft_speculative_cmd(params, engine)
 
     if spec_draft_raw and not mtp_row:
@@ -4268,7 +4272,7 @@ def build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
 def resolve_effective_speculative_details(
     params: Dict[str, Any], engine: str,
 ) -> Optional[Dict[str, Any]]:
-    """Return explicit MTP details from the same whitelist row used by the CLI."""
+    """Return inline speculative details from the same whitelist row used by the CLI."""
     if not params.get("enable_speculative_decode"):
         return None
     smart_feats = params.get("_smart_feats")
@@ -4289,6 +4293,9 @@ def resolve_effective_speculative_details(
         details["speculative_token_range"] = row.get("speculative_token_range")
     if row.get("enforce_eager") is True:
         details["enforce_eager"] = True
+    draft_sample_method = str(row.get("draft_sample_method") or "").strip()
+    if draft_sample_method in {"greedy", "probabilistic"}:
+        details["draft_sample_method"] = draft_sample_method
     return details
 
 
@@ -4353,7 +4360,8 @@ def _resolve_kv_sparse_plan(
     sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
     if sparse_row and sparse_row.get("strategy") == "indexcache":
         topk = _resolve_sparse_topk(params, engine, sparse_level, default=4)
-        return "whitelist_indexcache", topk, arch, sparse_level
+        kind = "whitelist_fp8_indexcache" if sparse_row.get("kv_cache_dtype") == "fp8" else "whitelist_indexcache"
+        return kind, topk, arch, sparse_level
     if sparse_row and sparse_row.get("strategy") == "fp8":
         return "fp8", None, arch, sparse_level
     if engine == "vllm_ascend":
@@ -4380,8 +4388,13 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
     if kind == "unsupported":
         return ""
     logger.info("[KV Sparse] effective SPARSE_LEVEL=%s (engine=%s)", sparse_level, engine)
-    if kind == "whitelist_indexcache":
-        logger.info("[KV Sparse] sparse whitelist -> IndexCache topk=%s", topk)
+    if kind in {"whitelist_indexcache", "whitelist_fp8_indexcache"}:
+        if kind == "whitelist_fp8_indexcache":
+            # 0731 的 FP8 KV dtype 与 IndexCache 是同一个 sparse 能力包，必须同时产出。
+            params.setdefault("engine_config", {})["kv_cache_dtype"] = "fp8"
+            logger.info("[KV Sparse] sparse whitelist -> FP8 KV cache + IndexCache topk=%s", topk)
+        else:
+            logger.info("[KV Sparse] sparse whitelist -> IndexCache topk=%s", topk)
         return f" --hf-overrides '{{\"use_index_cache\":true,\"index_topk_freq\":{topk}}}'"
     if kind == "ascend_glm51_indexcache":
         logger.info(
@@ -4414,6 +4427,8 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
     kind, topk, _, _ = _resolve_kv_sparse_plan(params, engine)
     if kind == "unsupported":
         return ""
+    if kind == "whitelist_fp8_indexcache":
+        return f"fp8_indexcache_use_index_cache_topk{topk}"
     if kind in {"whitelist_indexcache", "ascend_glm51_indexcache", "v4_indexcache"}:
         return f"indexcache_use_index_cache_topk{topk}"
     if kind == "ascend_noop":
@@ -5008,7 +5023,15 @@ def build_start_script(params: Dict[str, Any]) -> str:
     # enable_sparse 已由 config_loader.apply_effective_feature_enablement (§2.0 C14) 收口为
     # 「有效开关」（开关 on 且命中白名单才为真，无 forced）。原 _force_kv_sparse_* 已按 §0 裁定1 删除。
     should_emit_sparse = bool(params.get("enable_sparse"))
-    sparse_args = _build_kv_sparse_cmd(params, engine) if should_emit_sparse else ""
+    if should_emit_sparse:
+        sparse_args = _build_kv_sparse_cmd(params, engine)
+    else:
+        # 精确白名单拥有的 FP8 不允许通过 defaults/config-file 绕过 sparse 有效开关。
+        sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
+        engine_config = params.get("engine_config") or {}
+        if sparse_row and sparse_row.get("kv_cache_dtype") == "fp8" and engine_config.get("kv_cache_dtype") == "fp8":
+            engine_config.pop("kv_cache_dtype", None)
+        sparse_args = ""
     cmd = _build_vllm_cmd_parts(params)
     is_distributed = params.get("distributed", False)
     nnodes = params.get("nnodes", 1)

@@ -364,6 +364,21 @@
             "tool_call_parser": "deepseekv3"
           }
         },
+        "DeepSeek-V4-Flash-0731": {
+          "card_tokens": ["h20-96", "h20-141"],
+          "vllm": {
+            "default": {
+              "use_vllm_serve": true,
+              "trust_remote_code": true,
+              "max_model_len": 200000,
+              "block_size": 256,
+              "enable_expert_parallel": true,
+              "disable_custom_all_reduce": true,
+              "tokenizer_mode": "deepseek_v4",
+              "tool_call_parser": "deepseek_v4"
+            }
+          }
+        },
         "DeepSeek-V4-Flash": {
           "vllm": {
             "default": {
