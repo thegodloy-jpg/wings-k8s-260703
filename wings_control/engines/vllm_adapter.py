@@ -4475,6 +4475,23 @@ def _build_kv_sparse_cmd(params: Dict[str, Any], engine: str) -> str:
     return ""
 
 
+def _prepare_effective_kv_sparse_args(params: Dict[str, Any], engine: str) -> str:
+    """按 sparse 有效开关生成参数，并清理关闭态遗留的白名单 FP8 配置。"""
+    if params.get("enable_sparse"):
+        return _build_kv_sparse_cmd(params, engine)
+
+    # 仅清理精确白名单拥有的 FP8，避免误删其它来源显式配置的 kv_cache_dtype。
+    sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
+    engine_config = params.get("engine_config") or {}
+    if (
+        sparse_row
+        and sparse_row.get("kv_cache_dtype") == "fp8"
+        and engine_config.get("kv_cache_dtype") == "fp8"
+    ):
+        engine_config.pop("kv_cache_dtype", None)
+    return ""
+
+
 def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
     """Return the status variant from the shared sparse plan without mutations."""
     kind, topk, _, _ = _resolve_kv_sparse_plan(params, engine)
@@ -5094,16 +5111,7 @@ def build_start_script(params: Dict[str, Any]) -> str:
     # FP8 路径会就地修改 engine_config，避免 --kv-cache-dtype 重复。
     # enable_sparse 已由 config_loader.apply_effective_feature_enablement (§2.0 C14) 收口为
     # 「有效开关」（开关 on 且命中白名单才为真，无 forced）。原 _force_kv_sparse_* 已按 §0 裁定1 删除。
-    should_emit_sparse = bool(params.get("enable_sparse"))
-    if should_emit_sparse:
-        sparse_args = _build_kv_sparse_cmd(params, engine)
-    else:
-        # 精确白名单拥有的 FP8 不允许通过 defaults/config-file 绕过 sparse 有效开关。
-        sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
-        engine_config = params.get("engine_config") or {}
-        if sparse_row and sparse_row.get("kv_cache_dtype") == "fp8" and engine_config.get("kv_cache_dtype") == "fp8":
-            engine_config.pop("kv_cache_dtype", None)
-        sparse_args = ""
+    sparse_args = _prepare_effective_kv_sparse_args(params, engine)
     cmd = _build_vllm_cmd_parts(params)
     is_distributed = params.get("distributed", False)
     nnodes = params.get("nnodes", 1)
