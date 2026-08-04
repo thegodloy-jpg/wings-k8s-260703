@@ -1969,6 +1969,41 @@ def _is_deepseek_v4_flash_params(
     return False
 
 
+def _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(
+    params: Dict[str, Any],
+    model_info: Optional[ModelIdentifier] = None,
+) -> bool:
+    """Return whether the exact 0731 W8A8 A2 environment recipe applies."""
+    if params.get("engine") != "vllm_ascend":
+        return False
+    if get_pd_role_env() or _ascend_platform_from_runtime(params) != "a2":
+        return False
+
+    # 该配方只归属于精确的 0731-W8A8 模型身份；权重目录不含 0731，不能用宽泛路径
+    # 判定，否则会把旧 V4-Flash-w8a8-mtp 也带入这套不含 FlashComm1 的环境。
+    model_name = str(params.get("model_name") or "").strip().rstrip("/")
+    model_basename = model_name.rsplit("/", 1)[-1].lower()
+    if model_basename != "deepseek-v4-flash-0731-w8a8":
+        return False
+    if _deepseek_v4_arch_matches(params, model_info) is False:
+        return False
+
+    quantize = getattr(model_info, "model_quantize", None) if model_info else None
+    return not quantize or _is_w8a8_quantize(quantize)
+
+
+def _build_deepseek_v4_flash_0731_w8a8_910b_env() -> List[str]:
+    """Build the exact user-provided 0731 W8A8 A2 environment recipe."""
+    return [
+        "export OMP_NUM_THREADS=10",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
+        "export HCCL_BUFFSIZE=1024",
+        "export TASK_QUEUE_ENABLE=1",
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+    ]
+
+
 def is_deepseek_v4_pro_adapted_scope(
     params: Dict[str, Any],
     model_info: Optional[ModelIdentifier] = None,
@@ -2200,6 +2235,11 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
+    if _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(params, model_info):
+        logger.info(
+            "[DeepSeek-V4-Flash-0731-W8A8] Set dedicated Ascend A2 environment variables"
+        )
+        return _build_deepseek_v4_flash_0731_w8a8_910b_env()
     if _is_deepseek_v4_flash_params(params, model_info):
         return _build_deepseek_v4_flash_env(params)
     if is_deepseek_v4_pro_adapted_scope(params, model_info):
@@ -4626,6 +4666,22 @@ def _top_level_export_name(command: str) -> str:
     return stripped[len("export "):].split("=", 1)[0].strip()
 
 
+def _filter_deepseek_v4_flash_0731_w8a8_910b_env(
+    commands: List[str],
+    params: Dict[str, Any],
+) -> List[str]:
+    """按 0731-W8A8/910B 目标配方剔除公共层额外注入的环境变量。"""
+    if not _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(params):
+        return commands
+
+    # 基础 Ascend 脚本和 forced 默认都会注入该变量，必须在去重后统一收口。
+    return [
+        command
+        for command in commands
+        if _top_level_export_name(command) != "OMP_PROC_BIND"
+    ]
+
+
 def _align_minimax_m27_quarot_env(
     commands: List[str],
     params: Dict[str, Any],
@@ -4763,6 +4819,7 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     # 多个 builder（内联 set_vllm_ascend_env.sh / 架构块 / forced 软默认）会重复导出同名变量，
     # 这里收口去重，保证每个变量最终只有一条 export 生效（等价最终值，不动累加型与块内导出）。
     cmds = dedupe_env_exports(cmds)
+    cmds = _filter_deepseek_v4_flash_0731_w8a8_910b_env(cmds, params)
     cmds = _align_minimax_m27_quarot_env(cmds, params, engine)
     cmds = _align_qwen35_397b_w8a8_mtp_910c_env(cmds, params, engine)
     # 单机 GLM-5.2(a3) 对齐官方 recipe：去重后剔除 TASK_QUEUE_ENABLE（官方单机命令不设）。
