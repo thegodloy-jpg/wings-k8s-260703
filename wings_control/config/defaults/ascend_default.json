@@ -247,7 +247,6 @@
             "block_size": 128,
             "async_scheduling": true,
             "safetensors_load_strategy": "prefetch",
-            "model_loader_extra_config": {"enable_multithread_load": "true", "num_threads": 128},
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {
               "ascend_compilation_config": {
