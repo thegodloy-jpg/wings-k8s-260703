@@ -1437,16 +1437,27 @@ def _build_pd_external_lb_kv(entry, ext):
     return cfg
 
 
-def _resolve_ascend_platform() -> str:
-    """返回当前 Ascend 平台标识 'a2' / 'a3' / ''（供 PD 注册表 platform_overrides 用）。
+def _resolve_ascend_platform(
+    hardware_env: Optional[Dict[str, Any]] = None,
+) -> str:
+    """解析 Ascend A2/A3；PD 传参时只认硬件，无参时保留原环境变量兼容逻辑。"""
+    # PD 大 EP 的 A2/A3 唯一真相源是本次启动已探测的 hardware_env；显式传入空字典也不回退。
+    if hardware_env is not None:
+        details = hardware_env.get("details") or []
+        card_names = [
+            str(details[0].get("name") or "")
+            if details and isinstance(details[0], dict)
+            else "",
+            str(hardware_env.get("hardware_family") or ""),
+        ]
+        for card_name in card_names:
+            card_token = re.sub(r"[^a-z0-9]+", "", card_name.lower())
+            if "910c" in card_token or card_token in {"a3", "atlasa3", "ascend910"}:
+                return "a3"
+            if "910b" in card_token or card_token in {"a2", "atlasa2"}:
+                return "a2"
+        return ""
 
-    与 ``vllm_adapter._get_engine_config_platform`` 的 env 信号保持一致：
-      1. 显式声明：WINGS_ASCEND_PLATFORM / ASCEND_PLATFORM / ENGINE_IMAGE_FLAVOR
-         （归一 a2/a3/atlas-*/910b/910c）；
-      2. 次级信号（无显式声明时）：ENGINE_VERSION 镜像后缀 ``-a3``（如 "0.13.0rc3-a3"）
-         或 ASCEND_A3_ENABLE 真值 → a3。
-    解析不到返回空串 —— 不应用平台 overlay（退化为基条目，对 V4-Flash 即 a3 默认值）。
-    """
     val = (os.getenv("WINGS_ASCEND_PLATFORM") or os.getenv("ASCEND_PLATFORM")
            or os.getenv("ENGINE_IMAGE_FLAVOR") or "").strip().lower()
     if val in {"a3", "atlas-a3", "atlas_a3", "910c"}:
@@ -1579,19 +1590,16 @@ def _apply_pd_external_lb(cmd_known_params, model_info, hardware_env=None):
 
     # 注册表来自模块级缓存(_load_pd_config)；下面会对 entry 做 overlay/pop —— 先 deepcopy 防污染缓存。
     entry = copy.deepcopy(entry)
-    # L4 平台 overlay：基条目放平台无关值，platform_overrides[<plat>] 深合并覆盖（A2/A3 等）。
-    # 无 platform_overrides 的条目或平台解析为空 → 不动，退化为基条目（向后兼容）。
-    # default_platform（条目级，opt-in）：声明「无显式平台信号时按哪个平台」。仅本条目生效，
-    # 不动全局 _resolve_ascend_platform —— 其「空串→不 overlay→基条目」语义对 DeepseekV4(空→基=a3)
-    # 等条目必须保持。GlmMoeDsa 设 default_platform=a2：A2 部署即使漏设 WINGS_ASCEND_PLATFORM，
-    # 也按 a2 overlay 而非静默退成基条目(A3)；显式 a3 信号(-a3/ASCEND_A3_ENABLE/WINGS_ASCEND_PLATFORM=a3)
-    # 仍解析为 'a3' → 不命中 a2 overlay → 走基条目(A3 口径)。无 default_platform 的条目行为不变。
-    plat = _resolve_ascend_platform()
+    # L4 平台 overlay：PD 大 EP 只允许 hardware_env 决定 A2/A3；注册表中的 default_platform
+    # 仅保留为历史元数据，不参与选择，避免硬件缺失时静默误套另一平台 recipe。
     overrides = entry.pop("platform_overrides", None)
-    default_plat = entry.pop("default_platform", None)
-    if not plat and default_plat:
-        plat = default_plat
-        logger.info("[PD external-lb] 无显式平台信号 → 用条目默认平台 '%s' (arch=%s)", plat, arch)
+    entry.pop("default_platform", None)
+    plat = _resolve_ascend_platform(hardware_env)
+    if overrides and not plat:
+        raise ValueError(
+            "PD large-EP cannot resolve Ascend platform from hardware_info.json "
+            f"for architecture={arch}"
+        )
     if overrides and plat and plat in overrides:
         entry = _merge_configs(entry, overrides[plat])
         logger.info("[PD external-lb] applied platform_overrides[%s] for arch=%s", plat, arch)

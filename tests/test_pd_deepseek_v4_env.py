@@ -19,6 +19,7 @@ from engines import vllm_adapter  # noqa: E402
 
 
 _CLEAR_ENV = (
+    "ASCEND_A3_ENABLE",
     "ASCEND_PLATFORM",
     "BLOCK_SIZE",
     "CONFIG_FILE",
@@ -28,6 +29,8 @@ _CLEAR_ENV = (
     "DP_SIZE_LOCAL",
     "DTYPE",
     "DISTRIBUTED_EXECUTOR_BACKEND",
+    "ENGINE_IMAGE_FLAVOR",
+    "ENGINE_VERSION",
     "ENABLE_AUTO_THINK_CHOICE",
     "ENABLE_AUTO_TOOL_CHOICE",
     "ENABLE_CHUNKED_PREFILL",
@@ -269,6 +272,7 @@ def _render_pd_deepseek_v4_script(
     decode_tp: int = 1,
     dp_size_local: int | None = None,
     device_count: int = 8,
+    hardware_name: str = "Ascend910C",
 ) -> str:
     for name in _CLEAR_ENV:
         monkeypatch.delenv(name, raising=False)
@@ -288,7 +292,6 @@ def _render_pd_deepseek_v4_script(
     monkeypatch.setenv("POD_IP", local_ip)
     monkeypatch.setenv("NODE_IPS", local_ip)
     monkeypatch.setenv("NETWORK_INTERFACE", "xxxx")
-    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", platform)
 
     model_dir = tmp_path / f"deepseek-v4-{role}"
     _write_deepseek_v4_config(model_dir)
@@ -319,7 +322,7 @@ def _render_pd_deepseek_v4_script(
         {
             "device": "ascend",
             "count": device_count,
-            "details": [{"name": "Ascend"}] * device_count,
+            "details": [{"name": hardware_name}] * device_count,
         },
     )
     return start_engine_service(merged)
@@ -519,6 +522,7 @@ def test_deepseek_v4_pd_final_command_matches_v023_profile_with_no_async_overrid
         decode_tp=decode_tp,
         dp_size_local=dp_size_local,
         device_count=device_count,
+        hardware_name="Ascend910C" if platform == "a3" else "Ascend910B_64G",
     )
     exports = _extract_exports(script)
     exec_line = _extract_vllm_exec_line(script)
@@ -550,6 +554,50 @@ def test_deepseek_v4_pd_final_command_matches_v023_profile_with_no_async_overrid
     assert "--no-async-scheduling" in exec_line
     if platform == "a2" and role == "P":
         assert "--no-enable-prefix-caching" not in exec_line
+
+
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "hardware_name", "expected"),
+    (
+        ("WINGS_ASCEND_PLATFORM", "a3", "Ascend910B_64G", "a2"),
+        ("ASCEND_PLATFORM", "a3", "Ascend910B_64G", "a2"),
+        ("ENGINE_IMAGE_FLAVOR", "a3", "Ascend910B_64G", "a2"),
+        ("ENGINE_VERSION", "0.23.0-a3", "Ascend910B_64G", "a2"),
+        ("ASCEND_A3_ENABLE", "1", "Ascend910B_64G", "a2"),
+        ("WINGS_ASCEND_PLATFORM", "a2", "Ascend910C", "a3"),
+    ),
+)
+def test_pd_platform_uses_only_hardware_info(
+    monkeypatch, env_name, env_value, hardware_name, expected
+):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, env_value)
+    assert config_loader._resolve_ascend_platform(
+        {"device": "ascend", "details": [{"name": hardware_name}]}
+    ) == expected
+
+
+def test_pd_platform_falls_back_to_hardware_family_for_generic_detail():
+    assert config_loader._resolve_ascend_platform(
+        {
+            "device": "ascend",
+            "details": [{"name": "Ascend"}],
+            "hardware_family": "Ascend910C",
+        }
+    ) == "a3"
+
+
+def test_pd_large_ep_rejects_unknown_hardware_platform(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="cannot resolve Ascend platform"):
+        _render_pd_deepseek_v4_script(
+            tmp_path,
+            monkeypatch,
+            "P",
+            _PREFILL_IP,
+            0,
+            hardware_name="Ascend",
+        )
 
 
 def test_deepseek_v4_pd_refreshes_mooncake_linker_cache_without_env_leak(tmp_path, monkeypatch):
