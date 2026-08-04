@@ -251,11 +251,10 @@
     },
     "DeepseekV4ForCausalLM": {
       "_source": "https://docs.vllm.ai/projects/ascend/en/v0.23.0/tutorials/models/DeepSeek-V4-Flash.html",
-      "_fix": "2026-08-01 对齐 vLLM-Ascend v0.23.0 DeepSeek-V4-Flash PD：公共层只保留 A2/A3 共用参数，A3/A2 的 max_model_len、P 容量、Prefix Cache、通信参数按平台 overlay 分开；无显式平台信号时仍默认 A3。按 PD 专项要求，P/D 均清除模型默认的 async_scheduling 并显式启用 no_async_scheduling。engine_id 与 KV port 保持 Wings 现有 PD_INDEX 派生逻辑，不改 config-loader。enable_auto_tool_choice、模型路径、Pod IP、API 端口及 Wings 固定 DP RPC 端口继续遵循现有产品和编排契约。按部署要求保留 V4 系列 P/D 的 FUSED_MC2、MC2 hierarchy、逻辑 SuperPod 及 HCCS/RoCE 环境扩展。",
+      "_fix": "2026-08-01 对齐 vLLM-Ascend v0.23.0 DeepSeek-V4-Flash PD：公共层只保留 A2/A3 共用参数，A3/A2 的 max_model_len、P 容量、Prefix Cache、通信参数按平台 overlay 分开；平台只由 hardware_info 识别，无法识别时拒绝加载，不再静默默认 A3。按 PD 专项要求，P/D 均清除模型默认的 async_scheduling 并显式启用 no_async_scheduling。engine_id 与 KV port 保持 Wings 现有 PD_INDEX 派生逻辑，不改 config-loader。enable_auto_tool_choice、模型路径、Pod IP、API 端口及 Wings 固定 DP RPC 端口继续遵循现有产品和编排契约。2026-08-05 将 FUSED_MC2、MC2 hierarchy 与逻辑 SuperPod 收窄到 A3，A2 最终环境和 additional_config 均不得出现；HCCS/RoCE 环境仍由公共层承载。",
       "connector": "MooncakeHybridConnector",
       "kv_port": { "P": "30000", "D": "30100" },
       "extra_config": {},
-      "default_platform": "a3",
       "strip_env": [
         "VLLM_USE_V1",
         "LCCL_DETERMINISTIC",
@@ -274,8 +273,6 @@
         "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
         "TASK_QUEUE_ENABLE": "1",
         "HCCL_OP_EXPANSION_MODE": "AIV",
-        "VLLM_ASCEND_ENABLE_FUSED_MC2": "0",
-        "HCCL_LOGIC_SUPERPOD_ID": "__PD_INDEX__",
         "HCCL_INTER_HCCS_DISABLE": "true",
         "HCCL_INTRA_ROCE_ENABLE": "1"
       },
@@ -304,8 +301,7 @@
           "compilation_config": null,
           "additional_config": {
             "enable_cpu_binding": true,
-            "enable_shared_expert_dp": true,
-            "enable_mc2_hierarchy_comm": true
+            "enable_shared_expert_dp": true
           }
         }
       },
@@ -322,8 +318,7 @@
             "ascend_compilation_config": { "enable_npugraph_ex": true, "enable_static_kernel": false },
             "enable_cpu_binding": true,
             "multistream_overlap_shared_expert": true,
-            "recompute_scheduler_enable": true,
-            "enable_mc2_hierarchy_comm": true
+            "recompute_scheduler_enable": true
           }
         },
         "env": {
@@ -334,13 +329,20 @@
       },
       "platform_overrides": {
         "a3": {
+          "common_env": {
+            "VLLM_ASCEND_ENABLE_FUSED_MC2": "0",
+            "HCCL_LOGIC_SUPERPOD_ID": "__PD_INDEX__"
+          },
           "common": { "max_model_len": 1048576 },
           "prefill": {
             "engine": {
               "max_num_batched_tokens": 8192,
               "enable_prefix_caching": false,
               "no_enable_prefix_caching": true,
-              "additional_config": { "enable_dsa_cp": true }
+              "additional_config": {
+                "enable_dsa_cp": true,
+                "enable_mc2_hierarchy_comm": true
+              }
             },
             "env": {
               "VLLM_ASCEND_ENABLE_FLASHCOMM1": "1",
@@ -348,7 +350,13 @@
               "HCCL_CONNECT_TIMEOUT": "120"
             }
           },
-          "decode": { "engine": { "max_num_batched_tokens": 120, "max_num_seqs": 60 } }
+          "decode": {
+            "engine": {
+              "max_num_batched_tokens": 120,
+              "max_num_seqs": 60,
+              "additional_config": { "enable_mc2_hierarchy_comm": true }
+            }
+          }
         },
         "a2": {
           "common": { "max_model_len": 135000 },

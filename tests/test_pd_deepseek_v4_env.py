@@ -397,9 +397,6 @@ def _assert_common_official_deepseek_v4_pd_env(exports: dict[str, str]) -> None:
     )
     assert exports["TASK_QUEUE_ENABLE"] == "export TASK_QUEUE_ENABLE=1"
     assert exports["HCCL_OP_EXPANSION_MODE"] == "export HCCL_OP_EXPANSION_MODE=AIV"
-    assert exports["VLLM_ASCEND_ENABLE_FUSED_MC2"] == (
-        "export VLLM_ASCEND_ENABLE_FUSED_MC2=0"
-    )
     assert exports["HCCL_INTER_HCCS_DISABLE"] == "export HCCL_INTER_HCCS_DISABLE=true"
     assert exports["HCCL_INTRA_ROCE_ENABLE"] == "export HCCL_INTRA_ROCE_ENABLE=1"
 
@@ -413,6 +410,19 @@ def _assert_common_official_deepseek_v4_pd_env(exports: dict[str, str]) -> None:
         "VLLM_USE_V1",
     ):
         assert unwanted not in exports
+
+
+def _assert_a3_only_deepseek_v4_pd_fields(
+    exports: dict[str, str], script: str, pd_index: int
+) -> None:
+    """A3 独占 MC2/SuperPod 配置，A2 不得从公共层继承。"""
+    assert exports["VLLM_ASCEND_ENABLE_FUSED_MC2"] == (
+        "export VLLM_ASCEND_ENABLE_FUSED_MC2=0"
+    )
+    assert exports["HCCL_LOGIC_SUPERPOD_ID"] == (
+        f"export HCCL_LOGIC_SUPERPOD_ID={pd_index}"
+    )
+    assert '"enable_mc2_hierarchy_comm":true' in script
 
 
 def test_deepseek_v4_pd_prefill_env_matches_official_recipe(tmp_path, monkeypatch):
@@ -431,8 +441,7 @@ def test_deepseek_v4_pd_prefill_env_matches_official_recipe(tmp_path, monkeypatc
     assert exports["VLLM_ASCEND_ENABLE_FLASHCOMM1"] == (
         "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1"
     )
-    assert exports["HCCL_LOGIC_SUPERPOD_ID"] == "export HCCL_LOGIC_SUPERPOD_ID=0"
-    assert '"enable_mc2_hierarchy_comm":true' in script
+    _assert_a3_only_deepseek_v4_pd_fields(exports, script, 0)
     assert "VLLM_ASCEND_ENABLE_MLAPO" not in exports
     assert "VLLM_MOONCAKE_BOOTSTRAP_PORT=" not in script
 
@@ -451,8 +460,7 @@ def test_deepseek_v4_pd_decode_env_matches_official_recipe(tmp_path, monkeypatch
     assert exports["HCCL_BUFFSIZE"] == "export HCCL_BUFFSIZE=1024"
     assert exports["HCCL_CONNECT_TIMEOUT"] == "export HCCL_CONNECT_TIMEOUT=1200"
     assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in exports
-    assert exports["HCCL_LOGIC_SUPERPOD_ID"] == "export HCCL_LOGIC_SUPERPOD_ID=1"
-    assert '"enable_mc2_hierarchy_comm":true' in script
+    _assert_a3_only_deepseek_v4_pd_fields(exports, script, 1)
     assert "VLLM_ASCEND_ENABLE_MLAPO" not in exports
     assert "VLLM_MOONCAKE_BOOTSTRAP_PORT=" not in script
 
@@ -542,9 +550,12 @@ def test_deepseek_v4_pd_final_command_matches_v023_profile_with_no_async_overrid
     assert exports["HCCL_BUFFSIZE"] == f"export HCCL_BUFFSIZE={hccl_buffsize}"
     assert ("VLLM_ASCEND_ENABLE_FLASHCOMM1" in exports) is has_flashcomm
     assert ('"enable_dsa_cp":true' in exec_line) is has_dsa_cp
-    assert exports["HCCL_LOGIC_SUPERPOD_ID"] == (
-        f"export HCCL_LOGIC_SUPERPOD_ID={pd_index}"
-    )
+    has_a3_mc2 = platform == "a3"
+    assert ("VLLM_ASCEND_ENABLE_FUSED_MC2" in exports) is has_a3_mc2
+    assert ("HCCL_LOGIC_SUPERPOD_ID" in exports) is has_a3_mc2
+    assert ('"enable_mc2_hierarchy_comm":true' in exec_line) is has_a3_mc2
+    if has_a3_mc2:
+        _assert_a3_only_deepseek_v4_pd_fields(exports, exec_line, pd_index)
 
     if role == "P":
         assert "--enforce-eager" in exec_line
