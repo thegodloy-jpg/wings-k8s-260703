@@ -17,9 +17,9 @@
       "kv_port": { "P": "30100", "D": "30400" },
       "extra_config": {},
       "common": { "trust_remote_code": true, "disable_hybrid_kv_cache_manager": true },
-      "prefill": { "engine": { "enforce_eager": true }, "env": {} },
+      "prefill": { "engine": { "host": "0.0.0.0", "enforce_eager": true }, "env": {} },
       "decode": {
-        "engine": { "compilation_config": { "cudagraph_mode": "FULL_DECODE_ONLY" } },
+        "engine": { "host": "0.0.0.0", "compilation_config": { "cudagraph_mode": "FULL_DECODE_ONLY" } },
         "env": { "TASK_QUEUE_ENABLE": "1" }
       }
     },
@@ -37,6 +37,7 @@
       },
       "prefill": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_batched_tokens": 8192,
           "max_num_seqs": 4,
           "gpu_memory_utilization": 0.9,
@@ -58,6 +59,7 @@
       },
       "decode": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_batched_tokens": 120,
           "max_num_seqs": 60,
           "gpu_memory_utilization": 0.88,
@@ -94,6 +96,7 @@
       },
       "prefill": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_batched_tokens": 32560,
           "max_num_seqs": 64,
           "gpu_memory_utilization": 0.82,
@@ -104,6 +107,7 @@
       },
       "decode": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_batched_tokens": 12,
           "max_num_seqs": 4,
           "gpu_memory_utilization": 0.95,
@@ -157,6 +161,7 @@
       },
       "prefill": {
         "engine": {
+          "host": "0.0.0.0",
           "max_model_len": 131072,
           "max_num_batched_tokens": 4096,
           "max_num_seqs": 64,
@@ -182,6 +187,7 @@
       },
       "decode": {
         "engine": {
+          "host": "0.0.0.0",
           "max_model_len": 200000,
           "max_num_batched_tokens": 32,
           "max_num_seqs": 8,
@@ -221,6 +227,7 @@
       },
       "prefill": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_batched_tokens": 4096,
           "max_num_seqs": 64,
           "gpu_memory_utilization": 0.9,
@@ -231,6 +238,7 @@
       },
       "decode": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_batched_tokens": 128,
           "max_num_seqs": 32,
           "gpu_memory_utilization": 0.96,
@@ -287,6 +295,7 @@
       },
       "prefill": {
         "engine": {
+          "host": "0.0.0.0",
           "max_num_seqs": 16,
           "gpu_memory_utilization": 0.9,
           "enforce_eager": true,
@@ -302,6 +311,7 @@
       },
       "decode": {
         "engine": {
+          "host": "0.0.0.0",
           "gpu_memory_utilization": 0.9,
           "async_scheduling": false,
           "no_async_scheduling": true,
