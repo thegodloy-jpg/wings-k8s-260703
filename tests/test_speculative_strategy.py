@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
-from core import wings_entry  # noqa: E402
+from core import config_loader, wings_entry  # noqa: E402
 from engines import vllm_adapter  # noqa: E402
 
 
@@ -410,6 +410,99 @@ def test_deepseek_v4_flash_h20_vllm_speculative_config_matches_day0_recipe(monke
         "num_speculative_tokens": 1,
         "moe_backend": None,
     }
+
+
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_deepseek_v4_flash_0731_h20_final_command_contains_complete_recipe(
+    monkeypatch,
+    card_token,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
+    model_path = "/var/ai-model/LocalStorage/DeepSeek-V4-Flash-0731"
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Flash-0731",
+        "model_path": model_path,
+        "model_type": "llm",
+        "device_count": 8,
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_card_token": card_token,
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": model_path,
+            "trust_remote_code": True,
+            "block_size": 256,
+            "enable_expert_parallel": True,
+            "tensor_parallel_size": 8,
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "enable_auto_tool_choice": True,
+            "reasoning_parser": "deepseek_v4",
+            "max_model_len": 200000,
+            "disable_custom_all_reduce": True,
+            "served_model_name": "DeepSeek-V4-Flash-0731",
+            "port": 18000,
+        },
+    }
+
+    card_name = "NVIDIA H20 96GB" if card_token == "h20-96" else "NVIDIA H20 141GB"
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 8, "details": [{"name": card_name}]},
+    )
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
+    assert params["_smart_feats"] == ["sparse", "spec"]
+    assert params["_smart_feature_gate_trace"]["features"]["kv_offload"] == {
+        "requested": True,
+        "whitelist": False,
+        "gate": False,
+        "reason": "whitelist_miss",
+    }
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
+    assert os.environ["LMCACHE_OFFLOAD"] == "false"
+
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm") == "dspark"
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "dspark",
+        "num_speculative_tokens": 7,
+        "moe_backend": None,
+        "draft_sample_method": "greedy",
+    }
+
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert exec_line.startswith(f"exec vllm serve {model_path} ")
+    assert exec_line.count("--kv-cache-dtype fp8") == 1
+    assert exec_line.count("--hf-overrides") == 1
+    assert "'{}'" not in exec_line
+    assert "'" + '{"use_index_cache":true,"index_topk_freq":4}' + "'" in exec_line
+    assert "'" + '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}' + "'" in exec_line
+    assert "--max-model-len 200000" in exec_line
+    assert "--disable-custom-all-reduce" in exec_line
+    assert "--kv-offloading-backend" not in exec_line
+    assert "--kv-offloading-size" not in exec_line
+    assert wings_entry._should_install_nvidia_native_offload_packages(
+        "vllm", params
+    ) is False
+    feature_status = wings_entry._resolve_advanced_feature_status("vllm", params)
+    assert feature_status["features"]["kv_offload"] is False
+    assert feature_status["variants"]["kv_offload"] is None
+    assert feature_status["others"]["kv_mem_offload_size"] is None
+    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == (
+        "fp8_indexcache_use_index_cache_topk4"
+    )
+    params["enable_sparse"] = False
+    params["_smart_feats"] = ["spec"]
+    sparse_off_script = vllm_adapter.build_start_script(params)
+    assert "--kv-cache-dtype" not in sparse_off_script
+    assert "--hf-overrides" not in sparse_off_script
+    assert "kv_cache_dtype" not in params["engine_config"]
 
 
 def test_qwen35_nvfp4_native_offload_keeps_mtp_strategy(monkeypatch):
