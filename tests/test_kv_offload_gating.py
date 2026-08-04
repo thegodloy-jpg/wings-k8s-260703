@@ -2398,6 +2398,37 @@ def test_deepseek_pro5000_native_overlap_installs_packages_once(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("engine_version", ["v0.22.0", "v0.24.0", "v0.25.0"])
+def test_nvidia_registered_package_payloads_require_v023(
+    monkeypatch,
+    engine_version,
+):
+    # 两个 NVIDIA 场景共享固定依赖组合，只允许在已验证的 vLLM 0.23.x 安装。
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("ENGINE_VERSION", engine_version)
+    native_params = _nvidia_native_offload_params()
+    pro5000_params = {
+        "engine": "vllm",
+        "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_path": "/models/deepseek-ai/DeepSeek-V4-Flash",
+        "_smart_card_token": "rtxpro5000-72",
+        "_smart_feats": [],
+    }
+
+    assert wings_entry._should_install_nvidia_native_offload_packages(
+        "vllm",
+        native_params,
+    )
+    assert wings_entry._should_install_deepseek_v4_flash_pro5000_packages(
+        "vllm",
+        pro5000_params,
+    )
+    assert wings_entry._build_accel_preamble("vllm", native_params) == ""
+    assert wings_entry._build_accel_preamble("vllm", pro5000_params) == ""
+
+
 def test_nvidia_native_install_rejects_raw_request_without_effective_gate(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")

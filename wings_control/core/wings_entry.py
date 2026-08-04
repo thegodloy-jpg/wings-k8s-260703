@@ -345,7 +345,8 @@ def _build_nvidia_accel_package_config(
     packages 固定来自适配需求；engine.name/version 必须跟随本次启动参数。
     """
     version = _resolve_engine_version_for_install(merged)
-    if not version:
+    # 固定依赖组合仅适配 vLLM 0.23.x，其他版本沿用镜像自带依赖。
+    if not version.startswith("v0.23."):
         return ""
     return json.dumps(
         {
@@ -397,8 +398,8 @@ def _build_nvidia_native_offload_package_install_snippet(
     package_config = _build_nvidia_accel_package_config(engine, merged)
     if not package_config:
         logger.warning(
-            "ENGINE_VERSION is missing or unrecognized; skipping NVIDIA native "
-            "offload package install."
+            "ENGINE_VERSION is missing, unrecognized, or unsupported; "
+            "skipping NVIDIA native offload package install."
         )
         return ""
     return _render_nvidia_accel_package_install_snippet(package_config)
@@ -414,8 +415,8 @@ def _build_deepseek_v4_flash_pro5000_package_install_snippet(
     package_config = _build_nvidia_accel_package_config(engine, merged)
     if not package_config:
         logger.warning(
-            "ENGINE_VERSION is missing or unrecognized; skipping DeepSeek-V4-Flash "
-            "RTX PRO 5000 package install."
+            "ENGINE_VERSION is missing, unrecognized, or unsupported; "
+            "skipping DeepSeek-V4-Flash RTX PRO 5000 package install."
         )
         return ""
     return _render_nvidia_accel_package_install_snippet(package_config)
