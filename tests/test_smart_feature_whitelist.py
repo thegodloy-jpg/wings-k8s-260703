@@ -447,6 +447,27 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
 
 
+def test_deepseek_v4_flash_0731_w8a8_spec_is_exactly_gated_to_910b():
+    model_name = "DeepSeek-V4-Flash-0731-w8a8"
+    model_path = f"/var/ai-model/{model_name}/"
+
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910b", "spec"
+    )
+
+    assert row is not None
+    assert row["arch"] == "DeepseekV4ForCausalLM"
+    assert row["mtp_method"] == "dspark"
+    assert row["mtp_num_speculative_tokens"] == 7
+    assert row["enforce_eager"] is True
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend", model_name, model_path, "910b"
+    ) == frozenset({"spec"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend", model_name, model_path, "910c"
+    ) == frozenset()
+
+
 def test_deepseek_coder_v2_spec_row_uses_model_config_architecture():
     row = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend",

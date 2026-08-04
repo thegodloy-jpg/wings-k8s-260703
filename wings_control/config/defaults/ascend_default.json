@@ -203,6 +203,38 @@
             "use_vllm_serve": true
           }
         },
+        "DeepSeek-V4-Flash-0731-w8a8-Ascend910B": {
+          "vllm_ascend": {
+            "max_model_len": 800000,
+            "max_num_batched_tokens": 8192,
+            "gpu_memory_utilization": 0.9,
+            "max_num_seqs": 32,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "block_size": 128,
+            "no_disable_hybrid_kv_cache_manager": true,
+            "model_loader_extra_config": {"enable_multithread_load": true, "num_threads": 128},
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "use_vllm_serve": true
+          },
+          "vllm_ascend_distributed": {
+            "max_model_len": 800000,
+            "max_num_batched_tokens": 8192,
+            "gpu_memory_utilization": 0.9,
+            "max_num_seqs": 32,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "block_size": 128,
+            "no_disable_hybrid_kv_cache_manager": true,
+            "model_loader_extra_config": {"enable_multithread_load": true, "num_threads": 128},
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "use_vllm_serve": true
+          }
+        },
         "DeepSeek-V4-Flash-w8a8-mtp-Ascend910C": {
           "vllm_ascend": {
             "trust_remote_code": true,

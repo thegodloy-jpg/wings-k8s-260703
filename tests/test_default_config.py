@@ -339,6 +339,144 @@ def test_deepseek_v4_flash_ascend_a2_defaults_are_selected_without_static_topolo
     }
 
 
+@pytest.mark.parametrize("distributed", [False, True])
+def test_deepseek_v4_flash_0731_w8a8_910b_selects_exact_recipe(monkeypatch, distributed):
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a2")
+    model_name = "DeepSeek-V4-Flash-0731-w8a8"
+    model_path = f"/var/ai-model/{model_name}/"
+
+    config = config_loader._get_model_specific_config(
+        {"device": "ascend", "count": 8, "details": [{"name": "Ascend910B"}]},
+        {
+            "engine": "vllm_ascend",
+            "model_name": model_name,
+            "model_path": model_path,
+            "model_type": "llm",
+            "distributed": distributed,
+            "enable_auto_tool_choice": True,
+            "enable_auto_think_choice": True,
+        },
+        _FakeDeepSeekV4Info(),
+    )
+
+    assert config["max_model_len"] == 800000
+    assert config["max_num_batched_tokens"] == 8192
+    assert config["gpu_memory_utilization"] == 0.9
+    assert config["max_num_seqs"] == 32
+    assert config["enable_expert_parallel"] is True
+    assert config["quantization"] == "ascend"
+    assert config["block_size"] == 128
+    assert config["no_disable_hybrid_kv_cache_manager"] is True
+    assert _as_dict(config["model_loader_extra_config"]) == {
+        "enable_multithread_load": True,
+        "num_threads": 128,
+    }
+    assert _as_dict(config["compilation_config"]) == {
+        "cudagraph_mode": "FULL_DECODE_ONLY",
+    }
+    assert config["tokenizer_mode"] == "deepseek_v4"
+    assert config["tool_call_parser"] == "deepseek_v4"
+    assert config["reasoning_parser"] == "deepseek_v4"
+    assert config["served_model_name"] == model_name
+    # 0731 DSpark ?????? w8a8-mtp profile ????? async ??????????
+    for legacy_key in (
+        "trust_remote_code",
+        "async_scheduling",
+        "no_enable_prefix_caching",
+        "safetensors_load_strategy",
+        "additional_config",
+    ):
+        assert legacy_key not in config
+    assert "tensor_parallel_size" not in config
+    assert "data_parallel_size" not in config
+
+
+def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypatch):
+    monkeypatch.setattr(
+        vllm_adapter,
+        "ModelIdentifier",
+        lambda *_args: SimpleNamespace(
+            model_architecture="DeepseekV4ForCausalLM",
+            model_quantize="w8a8",
+            config={},
+        ),
+    )
+    model_name = "DeepSeek-V4-Flash-0731-w8a8"
+    model_path = f"/var/ai-model/{model_name}/"
+    profile = _model_deploy_config("ascend")["llm"]["DeepseekV4ForCausalLM"][
+        "DeepSeek-V4-Flash-0731-w8a8-Ascend910B"
+    ]["vllm_ascend"]
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_type": "llm",
+        "device_count": 8,
+        "nnodes": 1,
+        "device_details": [{"name": "Ascend910B"}],
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_smart_feats": ["spec"],
+        "_smart_card_token": "910b",
+        "_explicit_cli_keys": set(),
+        "engine_config": {
+            **profile,
+            "served_model_name": "dsv4-dspark",
+            "enable_auto_tool_choice": True,
+            "reasoning_parser": "deepseek_v4",
+            "port": 8000,
+        },
+    }
+
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    for export in (
+        "export OMP_NUM_THREADS=10",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
+        "export HCCL_BUFFSIZE=1024",
+        "export TASK_QUEUE_ENABLE=1",
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+    ):
+        assert script.count(export) == 1
+    assert exec_line.startswith(f"exec vllm serve {model_path} ")
+    assert "--max-model-len 800000" in exec_line
+    assert "--max-num-batched-tokens 8192" in exec_line
+    assert "--served-model-name dsv4-dspark" in exec_line
+    assert "--tensor-parallel-size 8 --data-parallel-size 1" in exec_line
+    assert "--enable-expert-parallel" in exec_line
+    assert "--tokenizer-mode deepseek_v4" in exec_line
+    assert "--tool-call-parser deepseek_v4" in exec_line
+    assert "--enable-auto-tool-choice" in exec_line
+    assert "--reasoning-parser deepseek_v4" in exec_line
+    assert "--no-disable-hybrid-kv-cache-manager" in exec_line
+    assert "--quantization ascend" in exec_line
+    assert "--block-size 128" in exec_line
+    assert "--model-loader-extra-config " in exec_line
+    assert '"enable_multithread_load":true' in exec_line
+    assert "--compilation-config " in exec_line
+    assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
+    assert (
+        "'" + '{"method":"dspark","num_speculative_tokens":7,"enforce_eager":true}' + "'"
+        in exec_line
+    )
+    for legacy_flag in (
+        "--async-scheduling",
+        "--no-enable-prefix-caching",
+        "--safetensors-load-strategy",
+        "--additional-config",
+    ):
+        assert legacy_flag not in exec_line
+    assert "--kv-cache-dtype" not in exec_line
+    assert "--hf-overrides" not in exec_line
+    assert "--kv-offloading-backend" not in exec_line
+
+    params["enable_speculative_decode"] = False
+    params["_smart_feats"] = []
+    assert "--speculative-config" not in vllm_adapter.build_start_script(params)
+
+
 def test_deepseek_v4_flash_ascend_a3_defaults_are_selected_without_static_topology(monkeypatch):
     monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
 
@@ -1074,8 +1212,8 @@ def test_all_ascend_card_profiles_select_without_smart_whitelist(monkeypatch):
                         engine_key,
                     )
 
-    assert profile_count == 25
-    assert engine_config_count == 49
+    assert profile_count == 27
+    assert engine_config_count == 52
 
 
 def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monkeypatch):
