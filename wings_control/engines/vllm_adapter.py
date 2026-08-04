@@ -1981,15 +1981,28 @@ def _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(
 
     # 该配方只归属于精确的 0731-W8A8 模型身份；权重目录不含 0731，不能用宽泛路径
     # 判定，否则会把旧 V4-Flash-w8a8-mtp 也带入这套不含 FlashComm1 的环境。
-    model_name = str(params.get("model_name") or "").strip().rstrip("/")
-    model_basename = model_name.rsplit("/", 1)[-1].lower()
-    if model_basename != "deepseek-v4-flash-0731-w8a8":
+    engine_config = params.get("engine_config") or {}
+    identity_names = (
+        params.get("model_name"),
+        params.get("served_model_name"),
+        engine_config.get("served_model_name"),
+    )
+    exact_names = {
+        "deepseek-v4-flash-0731-w8a8",
+        "deepseek-v4-flash-0731-w8a8-ascend910b",
+    }
+    if not any(
+        str(value or "").strip().rstrip("/").rsplit("/", 1)[-1].lower()
+        in exact_names
+        for value in identity_names
+    ):
         return False
     if _deepseek_v4_arch_matches(params, model_info) is False:
         return False
 
-    quantize = getattr(model_info, "model_quantize", None) if model_info else None
-    return not quantize or _is_w8a8_quantize(quantize)
+    # 精确模型名已经携带 W8A8 身份；昇腾权重的 config.json 可能把 quant_method
+    # 写成 ascend/compressed-tensors 等后端名，不能再用该不稳定字段否决配方。
+    return True
 
 
 def _build_deepseek_v4_flash_0731_w8a8_910b_env() -> List[str]:
@@ -4674,11 +4687,13 @@ def _filter_deepseek_v4_flash_0731_w8a8_910b_env(
     if not _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(params):
         return commands
 
-    # 基础 Ascend 脚本和 forced 默认都会注入该变量，必须在去重后统一收口。
+    # 基础 Ascend 脚本、forced 默认或后续公共 builder 都可能注入这些变量，
+    # 必须在去重后按最终输出合同统一收口。
+    blocked_names = {"OMP_PROC_BIND", "VLLM_ASCEND_ENABLE_FLASHCOMM1"}
     return [
         command
         for command in commands
-        if _top_level_export_name(command) != "OMP_PROC_BIND"
+        if _top_level_export_name(command) not in blocked_names
     ]
 
 
