@@ -100,6 +100,23 @@ def _write_arch_config(model_dir: Path, architecture: str) -> None:
 
 
 @pytest.mark.parametrize("role", ("P", "D"))
+def test_pd_standalone_kv_topology_uses_local_device_count(monkeypatch, role):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PD_ROLE", role)
+
+    config = config_loader._get_pd_config(
+        {"device": "ascend", "device_count": 2},
+        role,
+    )
+
+    extra = config["kv_connector_extra_config"]
+    expected = {"tp_size": 2, "dp_size": 1, "pp_size": 1}
+    assert extra["prefill"] == expected
+    assert extra["decode"] == expected
+
+
+@pytest.mark.parametrize("role", ("P", "D"))
 @pytest.mark.parametrize("device_count", (1, 2, 8))
 @pytest.mark.parametrize(
     ("device", "engine"),

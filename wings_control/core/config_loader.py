@@ -1152,10 +1152,9 @@ def _get_pd_config(ctx, pd_role):
         # Ascend Mooncake 系列 connector 要求 kv_connector_extra_config 中包含
         # prefill 和 decode 双方的并行配置 (tp_size, dp_size, pp_size)，
         # 用于 KV cache 传输时的 TP/DP 映射计算。
-        # PD 拓扑仅由 PD_* 环境契约决定，**不**回退到 device_count：
-        #   TP_SIZE > PD_TP_SIZE > PD_{ROLE}_TP_SIZE（缺省 1）
-        # 与独立 PD 路径 _set_pd_parallelism_params / _apply_pd_topology_fallback 保持一致。
-        default_tp = 1
+        # 非大 EP 不下发全局 TP/DP；单 service 使用当前 Pod 全部可见卡。
+        # 大 EP 显式下发的 PD_PREFILL_*/PD_DECODE_* 仍然优先。
+        default_tp = max(1, int(ctx.get("device_count") or 1))
         role_tp_override = os.getenv("TP_SIZE") or os.getenv("PD_TP_SIZE")
         if pd_role == "P":
             prefill_tp = int(role_tp_override or os.getenv("PD_PREFILL_TP_SIZE", str(default_tp)))
@@ -1165,7 +1164,6 @@ def _get_pd_config(ctx, pd_role):
             decode_tp = int(role_tp_override or os.getenv("PD_DECODE_TP_SIZE", str(default_tp)))
         prefill_dp = int(os.getenv("PD_PREFILL_DP_SIZE", "1"))
         prefill_pp = int(os.getenv("PD_PREFILL_PP_SIZE", "1"))
-        decode_tp = int(os.getenv("PD_DECODE_TP_SIZE", str(default_tp)))
         decode_dp = int(os.getenv("PD_DECODE_DP_SIZE", "1"))
         decode_pp = int(os.getenv("PD_DECODE_PP_SIZE", "1"))
 
