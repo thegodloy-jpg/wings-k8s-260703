@@ -160,11 +160,15 @@ def test_pd_1p1d_without_any_tp_dp_keeps_standalone_recipe_and_local_tp(
     }
 
     config_loader._apply_pd_external_lb(params, model_info, {"device": device})
+    config_loader._apply_pd_final_guard(params["engine_config"], params)
 
     assert params["engine_config"]["tensor_parallel_size"] == device_count
     assert params["engine_config"]["data_parallel_size"] == 1
+    assert params["engine_config"]["no_disable_hybrid_kv_cache_manager"] is True
+    assert "disable_hybrid_kv_cache_manager" not in params["engine_config"]
     assert params["_pd_engine_overrides"]["tensor_parallel_size"] == device_count
     assert params["_pd_engine_overrides"]["data_parallel_size"] == 1
+    assert params["_pd_engine_overrides"]["no_disable_hybrid_kv_cache_manager"] is True
     assert "_pd_external_lb" not in params
     assert json.loads(params["engine_config"]["kv_transfer_config"]) == base_kv
     script = vllm_adapter.build_start_script(params)
@@ -174,6 +178,8 @@ def test_pd_1p1d_without_any_tp_dp_keeps_standalone_recipe_and_local_tp(
     )
     assert f"--tensor-parallel-size {device_count}" in exec_line
     assert "--data-parallel-size 1" in exec_line
+    assert "--no-disable-hybrid-kv-cache-manager" in exec_line
+    assert "--disable-hybrid-kv-cache-manager" not in exec_line
     assert "Mooncake" not in exec_line
 
     if device == "nvidia":
@@ -182,6 +188,97 @@ def test_pd_1p1d_without_any_tp_dp_keeps_standalone_recipe_and_local_tp(
     else:
         assert "VLLM_SSM_CONV_STATE_LAYOUT" not in script
         assert "--data-parallel-external-lb" not in exec_line
+
+
+@pytest.mark.parametrize("role", ("P", "D"))
+def test_qwen36_1p1d_final_command_enables_hybrid_kv_manager(
+    monkeypatch, tmp_path, role
+):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    monkeypatch.setenv("PD_ROLE", role)
+    model_dir = tmp_path / f"qwen36-{role}"
+    _write_arch_config(model_dir, "Qwen3_5MoeForConditionalGeneration")
+    launch_args = parse_launch_args(
+        [
+            "--model-name",
+            "Qwen3.6-35B-A3B",
+            "--model-path",
+            str(model_dir),
+            "--model-type",
+            "llm",
+            "--engine",
+            "vllm_ascend",
+            "--device-count",
+            "2",
+        ]
+    )
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+
+    merged = _prepare_merged_params(
+        launch_args,
+        PortPlan(
+            enable_proxy=True,
+            backend_port=7100,
+            proxy_port=18000,
+            health_port=19000,
+        ),
+        {
+            "device": "ascend",
+            "count": 2,
+            "details": [{"name": "Ascend910C"}] * 2,
+        },
+    )
+    exec_line = _extract_vllm_exec_line(start_engine_service(merged))
+
+    assert "--tensor-parallel-size 2" in exec_line
+    assert "--data-parallel-size 1" in exec_line
+    assert "--no-disable-hybrid-kv-cache-manager" in exec_line
+    assert "--disable-hybrid-kv-cache-manager" not in exec_line
+
+
+@pytest.mark.parametrize("role", ("P", "D"))
+def test_pd_final_guard_overrides_conflicting_hybrid_manager_setting(monkeypatch, role):
+    for name in _CLEAR_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PD_ROLE", role)
+    engine_config = {
+        "disable_hybrid_kv_cache_manager": True,
+        "no_disable_hybrid_kv_cache_manager": False,
+    }
+    params = {
+        "engine": "vllm_ascend",
+        "engine_config": engine_config,
+        "_pd_engine_overrides": {"disable_hybrid_kv_cache_manager": True},
+    }
+
+    config_loader._apply_pd_final_guard(engine_config, params)
+
+    assert engine_config["no_disable_hybrid_kv_cache_manager"] is True
+    assert "disable_hybrid_kv_cache_manager" not in engine_config
+    assert params["_pd_engine_overrides"]["no_disable_hybrid_kv_cache_manager"] is True
+    assert "disable_hybrid_kv_cache_manager" not in params["_pd_engine_overrides"]
+
+
+def test_non_pd_keeps_hybrid_manager_setting_unchanged(monkeypatch):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    params = {"disable_hybrid_kv_cache_manager": True}
+
+    config_loader._guard_pd_hybrid_kv_cache(params)
+
+    assert params == {"disable_hybrid_kv_cache_manager": True}
+
+
+def test_pd_final_guard_does_not_emit_vllm_hybrid_flag_for_other_engines(monkeypatch):
+    monkeypatch.setenv("PD_ROLE", "P")
+    engine_config = {}
+    params = {"engine": "sglang", "engine_config": engine_config}
+
+    config_loader._apply_pd_final_guard(engine_config, params)
+
+    assert "no_disable_hybrid_kv_cache_manager" not in engine_config
+    assert "_pd_engine_overrides" not in params
 
 
 @pytest.mark.parametrize(
@@ -349,7 +446,11 @@ def _extract_vllm_exec_line(script: str) -> str:
     return next(
         line.strip()
         for line in script.splitlines()
-        if "vllm serve" in line and not line.lstrip().startswith("echo ")
+        if (
+            "vllm serve" in line
+            or "vllm.entrypoints.openai.api_server" in line
+        )
+        and not line.lstrip().startswith("echo ")
     )
 
 
@@ -580,6 +681,8 @@ def test_deepseek_v4_pd_final_command_matches_v023_profile_with_no_async_overrid
         assert "--enforce-eager" not in exec_line
     assert "--async-scheduling" not in exec_line
     assert "--no-async-scheduling" in exec_line
+    assert "--no-disable-hybrid-kv-cache-manager" in exec_line
+    assert "--disable-hybrid-kv-cache-manager" not in exec_line
     if platform == "a2" and role == "P":
         assert "--no-enable-prefix-caching" not in exec_line
 

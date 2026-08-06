@@ -562,7 +562,7 @@ def _merge_vllm_params(params, ctx, engine_cmd_parameter, model_info):
         2. _set_sequence_length     → 合并序列长度（embedding/rerank 只用 input_length）
         3. _set_parallelism_params  → 设置张量并行度
         4. _set_kv_cache_config     → LMCache / PD 分离 KV Transfer 配置
-        5. _guard_pd_hybrid_kv_cache → PD 模式移除不兼容的 hybrid KV flag
+        5. _guard_pd_hybrid_kv_cache → PD 模式统一保留 hybrid KV manager
         6. _ensure_pd_head_dim      → PD 模式补全 config.json 缺失的 head_dim
         7. _set_router_config       → Wings Router NATS 配置
         8. _set_task               → embedding/rerank 任务类型
@@ -1993,23 +1993,26 @@ def _enforce_glm51_nvidia_no_kv_offload(engine_config: Dict[str, Any],
 
 
 def _guard_pd_hybrid_kv_cache(params):
-    """PD 分离模式下移除显式传入的 hybrid KV cache manager 开关。
+    """PD 分离模式下统一保留 hybrid KV cache manager。
 
-    该函数只做 PD 保护，不再根据模型架构自动注入
-    --no-disable-hybrid-kv-cache-manager。若用户或上层配置显式传入该字段，
-    且当前开启 PD 分离，则移除它，避免 MooncakeConnectorV1 / NixlConnector
-    等 KV 连接器与 HMA（Hybrid Memory Architecture）路径不兼容。
+    Qwen3.5/Qwen3.6 等混合架构无法在关闭 HMA 后将 KV cache spec
+    强制统一为单一类型。当前产品策略是优先保证这类模型的 PD 启动，
+    因此所有 PD 路径都清理相反开关，并生成
+    --no-disable-hybrid-kv-cache-manager。
     """
     if not get_pd_role_env():
         return
-    if "no_disable_hybrid_kv_cache_manager" not in params:
-        return
-    params.pop("no_disable_hybrid_kv_cache_manager", None)
-    logger.warning(
-        "[HybridKV] PD separation is enabled; removed "
-        "--no-disable-hybrid-kv-cache-manager because current KV connectors "
-        "do not support HMA."
-    )
+    opposite_key = "disable_hybrid_kv_cache_manager"
+    target_key = "no_disable_hybrid_kv_cache_manager"
+    had_opposite = opposite_key in params
+    already_enabled = params.get(target_key) is True
+    params.pop(opposite_key, None)
+    params[target_key] = True
+    if had_opposite or not already_enabled:
+        logger.warning(
+            "[HybridKV] PD separation is enabled; forcing "
+            "--no-disable-hybrid-kv-cache-manager."
+        )
 
 
 def _ensure_pd_head_dim(params, model_info):
@@ -4545,7 +4548,7 @@ def _merge_final_config(engine_config: Dict[str, Any],
 
 
 def _apply_pd_final_guard(engine_config: Dict[str, Any],
-                         final_engine_params: Dict[str, Any]) -> None:
+                          final_engine_params: Dict[str, Any]) -> None:
     """PD 最终守卫：无条件从 PD_* env 覆盖当前角色的 TP/DP。
 
     无论上游哪个步骤（_set_pd_parallelism_params / _apply_pd_external_lb
@@ -4559,6 +4562,14 @@ def _apply_pd_final_guard(engine_config: Dict[str, Any],
     pd_role = get_pd_role_env()
     if not pd_role:
         return
+
+    # HMA 开关是 vLLM 专用参数，必须在 user config 和大 EP recipe
+    # 合并后再重申；其它引擎仍只执行既有 PD 拓扑守卫。
+    if final_engine_params.get("engine") in {"vllm", "vllm_ascend"}:
+        _guard_pd_hybrid_kv_cache(engine_config)
+        pd_overrides = final_engine_params.setdefault("_pd_engine_overrides", {})
+        pd_overrides.pop("disable_hybrid_kv_cache_manager", None)
+        pd_overrides["no_disable_hybrid_kv_cache_manager"] = True
 
     role_prefix = "PREFILL" if pd_role == "P" else "DECODE"
     raw_tp = (
