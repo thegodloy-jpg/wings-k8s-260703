@@ -69,10 +69,12 @@ except ImportError:
     )
 try:
     from wings_control.engines.vllm_adapter import (
+        resolve_kimi_k3_h20_simple_cpu_config,
         resolve_kv_offload_effective_state,
     )
 except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
+        resolve_kimi_k3_h20_simple_cpu_config,
         resolve_kv_offload_effective_state,
     )
 logger = logging.getLogger(__name__)
@@ -1795,7 +1797,38 @@ def _set_kv_cache_config(params, ctx, model_info=None):
     if ctx.get("_smart_feats") is not None:
         lmcache_offload = "offload" in ctx.get("_smart_feats")
 
-    if lmcache_offload and resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) == "native":
+    offload_backend = resolve_offload_whitelist_backend(ctx, ctx.get("engine", ""))
+    if lmcache_offload and offload_backend == "simple_cpu":
+        if pd_role:
+            # 该调优配方不覆盖 PD；仅关闭本次 offload 组合，后续仍沿用已有 PD connector。
+            lmcache_offload = False
+            logger.info(
+                "[SimpleCPU Offload] PD role is active; preserving the existing "
+                "PD-only connector path."
+            )
+        else:
+            # Kimi-K3/H20 调优场景只注入 SimpleCPU connector；提前返回以隔离其它卸载后端。
+            effective_ctx = dict(ctx)
+            effective_ctx["engine_config"] = params
+            connector_config = resolve_kimi_k3_h20_simple_cpu_config(
+                effective_ctx,
+                ctx.get("engine", ""),
+            )
+            params.pop("kv_transfer_config", None)
+            if connector_config is not None:
+                params["kv_transfer_config"] = json.dumps(connector_config)
+                logger.info(
+                    "[SimpleCPU Offload] injected SimpleCPUOffloadConnector "
+                    "kv_transfer_config."
+                )
+            else:
+                logger.warning(
+                    "[SimpleCPU Offload] exact scene matched but runtime constraints failed; "
+                    "not injecting kv_transfer_config."
+                )
+            return
+
+    if lmcache_offload and offload_backend == "native":
         # native backend 是 vLLM CLI 层的 ``--kv-offloading-backend native``，
         # 与 ``kv_transfer_config`` 里的 LMCacheConnector/MemCacheConnector 互斥。
         # 这里早退是为了让白名单 backend=native 成为唯一能力来源；否则后续通用
@@ -1959,6 +1992,43 @@ def _enforce_native_offload_no_kv_transfer_config(
             "[KVCache Offload] removed kv_transfer_config=%s from native offload scene.",
             removed,
         )
+
+
+def _enforce_simple_cpu_offload_kv_transfer_config(
+    engine_config: Dict[str, Any], ctx: Dict[str, Any],
+) -> None:
+    """最终仅在精确 Kimi-K3 四节点 H20 拓扑写入 SimpleCPU connector。"""
+    if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) != "simple_cpu":
+        return
+    smart_feats = ctx.get("_smart_feats")
+    if smart_feats is not None and "offload" not in smart_feats:
+        return
+    if smart_feats is None and not get_lmcache_env():
+        return
+    # PD 仍由已有 Mooncake/NIXL 路径负责，不能在最终合并阶段覆盖其 connector。
+    if get_pd_role_env():
+        return
+
+    effective_ctx = dict(ctx)
+    effective_ctx["engine_config"] = engine_config
+    connector_config = resolve_kimi_k3_h20_simple_cpu_config(
+        effective_ctx,
+        ctx.get("engine", ""),
+    )
+    if connector_config is None:
+        removed = engine_config.pop("kv_transfer_config", None)
+        if removed is not None:
+            logger.warning(
+                "[SimpleCPU Offload] removed kv_transfer_config because final "
+                "runtime constraints did not match the tuned recipe."
+            )
+        return
+
+    engine_config["kv_transfer_config"] = json.dumps(connector_config)
+    logger.info(
+        "[SimpleCPU Offload] enforced final SimpleCPUOffloadConnector "
+        "kv_transfer_config."
+    )
 
 
 def _enforce_glm51_nvidia_no_kv_offload(engine_config: Dict[str, Any],
@@ -4855,6 +4925,10 @@ def load_and_merge_configs(
     #     必须放在所有合并之后，确保 user_config、CLI 或 Master 下发的
     #     raw engine_config 中即使带 kv_transfer_config 也会被强制移除。
     _enforce_native_offload_no_kv_transfer_config(
+        engine_config,
+        {**cmd_known_params, "device": hardware_env.get("device")},
+    )
+    _enforce_simple_cpu_offload_kv_transfer_config(
         engine_config,
         {**cmd_known_params, "device": hardware_env.get("device")},
     )

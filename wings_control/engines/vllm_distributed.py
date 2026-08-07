@@ -577,9 +577,22 @@ def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: 
         speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
     mp_cmd = f"{mp_cmd}{speculative_extra}{sparse_args}"
 
-    # Worker 不启动 OpenAI frontend；模型与推理参数保持和 rank0 一致。
+    # Worker 不启动 OpenAI frontend；通用前端参数沿用既有清理边界。
     if ctx.node_rank != 0:
-        for flag in ("--host", "--port", "--tool-call-parser", "--reasoning-parser"):
+        frontend_only_flags = [
+            "--host",
+            "--port",
+            "--tool-call-parser",
+            "--reasoning-parser",
+        ]
+        # 仅 Kimi-K3 H20 调优配方要求 worker 不携带 served-model-name；其它 MP 场景不改行为。
+        if (
+            str(params.get("model_name") or "").strip().lower() == "kimi-k3"
+            and str(params.get("_smart_card_token") or "").strip().lower()
+            in {"h20-96", "h20-141"}
+        ):
+            frontend_only_flags.append("--served-model-name")
+        for flag in frontend_only_flags:
             mp_cmd = _strip_cli_flag(mp_cmd, flag)
         mp_cmd = re.sub(r"\s+--enable-auto-tool-choice\b", "", mp_cmd)
         mp_cmd = f"{mp_cmd} --headless"

@@ -2377,16 +2377,19 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert kimi_k3["vllm_distributed"] == {
         "use_vllm_serve": True,
         "trust_remote_code": True,
-        "gpu_memory_utilization": 0.98,
+        "gpu_memory_utilization": 0.90,
+        "tensor_parallel_size": 8,
+        "data_parallel_size": 4,
+        "enable_expert_parallel": True,
         "no_enable_flashinfer_autotune": True,
         "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"],
         "moe_backend": "marlin",
         "disable_custom_all_reduce": True,
         "distributed_timeout_seconds": 1200,
-        "max_num_seqs": 32,
         "tool_call_parser": "kimi_k3",
+        "served_model_name": "kimi_k3",
         "max_num_batched_tokens": 8192,
-        "max_model_len": 40960,
+        "max_model_len": "auto",
     }
     assert llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["card_tokens"] == [
         "l20",
@@ -2853,7 +2856,7 @@ def test_qwen35_moe_non_397b_distributed_still_uses_ray(monkeypatch):
     assert params["distributed_executor_backend"] == "ray"
 
 
-def test_kimi_k3_nvidia_four_node_routes_to_mp_and_tp32(monkeypatch):
+def test_kimi_k3_nvidia_four_node_routes_to_mp_with_tp8_dp4(monkeypatch):
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
     distributed_config = {
@@ -2880,9 +2883,11 @@ def test_kimi_k3_nvidia_four_node_routes_to_mp_and_tp32(monkeypatch):
     assert params["distributed_executor_backend"] == "mp"
     assert "ray_head_port" not in params
     assert "rpc_port" not in params
-    engine_config = {}
+    # TP32 是原始基线；H20 调优配方显式提供 TP8/DP4，通用 TP 计算不得再改写回 TP32。
+    engine_config = {"tensor_parallel_size": 8, "data_parallel_size": 4}
     config_loader._set_parallelism_params(engine_config, params)
-    assert engine_config["tensor_parallel_size"] == 32
+    assert engine_config["tensor_parallel_size"] == 8
+    assert engine_config["data_parallel_size"] == 4
 
 
 def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
@@ -2936,11 +2941,16 @@ def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
         model_info,
     )
 
-    assert "served_model_name" not in h20_config
+    assert h20_config["served_model_name"] == "kimi_k3"
     assert h20_config["tool_call_parser"] == "kimi_k3"
     assert a100_config == {}
     assert found is True
     assert parser == "kimi_k3"
     assert merged_config["reasoning_parser"] == "kimi_k3"
     assert merged_config["enable_auto_tool_choice"] is True
-    assert merged_config["tensor_parallel_size"] == 32
+    assert merged_config["tensor_parallel_size"] == 8
+    assert merged_config["data_parallel_size"] == 4
+    assert merged_config["gpu_memory_utilization"] == 0.90
+    assert merged_config["enable_expert_parallel"] is True
+    assert merged_config["max_model_len"] == "auto"
+    assert "max_num_seqs" not in merged_config

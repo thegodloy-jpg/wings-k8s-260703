@@ -324,7 +324,10 @@
           "vllm_distributed": {
             "use_vllm_serve": true,
             "trust_remote_code": true,
-            "gpu_memory_utilization": 0.98,
+            "gpu_memory_utilization": 0.90,
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 4,
+            "enable_expert_parallel": true,
             "no_enable_flashinfer_autotune": true,
             "extra_cli_args": [
               "-cc.pass_config.fuse_allreduce_rms=False"
@@ -332,10 +335,10 @@
             "moe_backend": "marlin",
             "disable_custom_all_reduce": true,
             "distributed_timeout_seconds": 1200,
-            "max_num_seqs": 32,
             "tool_call_parser": "kimi_k3",
+            "served_model_name": "kimi_k3",
             "max_num_batched_tokens": 8192,
-            "max_model_len": 40960
+            "max_model_len": "auto"
           }
         }
       },

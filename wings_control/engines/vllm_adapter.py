@@ -638,6 +638,16 @@ _OFFLOAD_NATIVE_NONE = ""                            # 无特例 → 走 LMCache
 _OFFLOAD_GLM51_NV_DISABLED = "glm51_nv_disabled"     # GLM-5.1·NV 强制关
 _OFFLOAD_V4_FLASH_NATIVE = "v4_flash_native"         # V4-Flash·NV native --kv-offloading-backend
 _OFFLOAD_NATIVE_BACKEND_VARIANT = "native_kv_offloading_backend"
+_OFFLOAD_SIMPLE_CPU_BACKEND = "simple_cpu"
+_OFFLOAD_SIMPLE_CPU_VARIANT = "simple_cpu_offload_connector+custom"
+_SIMPLE_CPU_OFFLOAD_GIB = 1024 ** 3
+_SIMPLE_CPU_OFFLOAD_TOPOLOGY = {
+    "device_count": 8,
+    "tensor_parallel_size": 8,
+    "data_parallel_size": 4,
+    "pipeline_parallel_size": 1,
+    "nnodes": 4,
+}
 _OFFLOAD_AUTO_FLOOR_VARIANT = "lmcache_cpu+auto+floor_disabled"
 _OFFLOAD_CPU_AUTO_FLOOR_MODIFIER = "cpu_auto_floor_disabled"
 _OFFLOAD_AUTO_UNAVAILABLE_MODIFIER = "auto+unavailable"
@@ -663,6 +673,116 @@ _OFFLOAD_VARIANT_BY_SPECIAL = {                      # 特例 → resolve_offloa
     _OFFLOAD_GLM51_NV_DISABLED: "disabled",
     _OFFLOAD_V4_FLASH_NATIVE: _OFFLOAD_NATIVE_BACKEND_VARIANT,
 }
+
+
+def _offload_runtime_value(params: Optional[Dict[str, Any]], key: str) -> Any:
+    """Read a resolved runtime value without changing existing merge precedence."""
+    if not params:
+        return None
+    value = params.get(key)
+    if value not in (None, ""):
+        return value
+    engine_config = params.get("engine_config")
+    if isinstance(engine_config, dict):
+        return engine_config.get(key)
+    return None
+
+
+def _is_kimi_k3_h20_simple_cpu_scope(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> bool:
+    """仅允许已调优的 Kimi-K3 四节点 H20 拓扑进入 SimpleCPU 卸载。"""
+    if not params or engine != "vllm":
+        return False
+    if resolve_offload_whitelist_backend(params, engine) != _OFFLOAD_SIMPLE_CPU_BACKEND:
+        return False
+    # 白名单使用子串匹配；这里再收紧为基础 Kimi-K3，避免同名前缀的新变体误入固定拓扑。
+    if str(params.get("model_name") or "").strip().lower() != "kimi-k3":
+        return False
+    if get_pd_role_env():
+        return False
+    if params.get("distributed") is not True:
+        return False
+
+    for key, expected in _SIMPLE_CPU_OFFLOAD_TOPOLOGY.items():
+        raw_value = _offload_runtime_value(params, key)
+        if key == "pipeline_parallel_size" and raw_value in (None, ""):
+            raw_value = 1
+        if _safe_int(raw_value) != expected:
+            return False
+
+    # SimpleCPUOffloadConnector 依赖 prefix caching；只拒绝显式关闭，保留 vLLM 默认开启语义。
+    if _offload_runtime_value(params, "no_enable_prefix_caching") is True:
+        return False
+    if _offload_runtime_value(params, "enable_prefix_caching") is False:
+        return False
+    return True
+
+
+def resolve_kimi_k3_h20_simple_cpu_config(
+    params: Optional[Dict[str, Any]],
+    engine: str = "vllm",
+) -> Optional[Dict[str, Any]]:
+    """Build the exact Kimi-K3 H20 SimpleCPU connector config, or return None.
+
+    第一版只接收页面显式下发的节点总 GiB，不复用共享 auto 公式，避免改变其它
+    native/LMCache/MemCache 场景。节点总量按本地 8 个 worker 均分后转为字节。
+    """
+    if not _is_kimi_k3_h20_simple_cpu_scope(params, engine):
+        return None
+    if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
+        logger.info("[SimpleCPU Offload] memory offload switch is disabled.")
+        return None
+
+    raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
+    if raw_size.lower() == "auto":
+        logger.warning(
+            "[SimpleCPU Offload] KV_MEM_OFFLOAD_SIZE=auto is not supported by the "
+            "narrow Kimi-K3 H20 recipe; request discarded."
+        )
+        return None
+    node_size_gib = _safe_int(raw_size)
+    local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
+    if node_size_gib is None or node_size_gib <= 0:
+        logger.warning(
+            "[SimpleCPU Offload] invalid KV_MEM_OFFLOAD_SIZE=%r; request discarded.",
+            raw_size,
+        )
+        return None
+    if node_size_gib % local_rank_count != 0:
+        logger.warning(
+            "[SimpleCPU Offload] node size %dGiB is not divisible by %d local ranks; "
+            "request discarded.",
+            node_size_gib,
+            local_rank_count,
+        )
+        return None
+
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "offload",
+        require_enabled=True,
+    )
+    lazy_offload = row.get("lazy_offload") if row else None
+    # 用户调优标准要求保留字符串 "false"，这里精确校验并原样下发，避免序列化为布尔值。
+    if lazy_offload != "false":
+        logger.warning(
+            "[SimpleCPU Offload] whitelist lazy_offload must be the string 'false'; "
+            "request discarded."
+        )
+        return None
+
+    per_rank_gib = node_size_gib // local_rank_count
+    return {
+        "kv_connector": "SimpleCPUOffloadConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "cpu_bytes_to_use_per_rank": per_rank_gib * _SIMPLE_CPU_OFFLOAD_GIB,
+            "lazy_offload": lazy_offload,
+        },
+    }
 
 
 def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str) -> str:
@@ -1027,6 +1147,13 @@ def _build_cache_env_commands(engine: str, params: Optional[Dict[str, Any]] = No
         return env_commands
 
     # 守卫（条件由 _classify_offload_special_case 统一裁定；互斥特例跳过 env 导出）
+    # Kimi-K3 H20 的 SimpleCPU connector 只通过 kv_transfer_config 承载，不能泄漏 LMCache env。
+    if resolve_offload_whitelist_backend(params, engine) == _OFFLOAD_SIMPLE_CPU_BACKEND:
+        logger.info(
+            "[SimpleCPU Offload] connector backend selected; skipping LMCache env exports."
+        )
+        return env_commands
+
     special = _classify_offload_special_case(params, engine)
     if memcache_hybrid.is_memcache_hybrid_params(params, engine):
         logger.info("[MemCache] Model uses MemCache; skipping LMCache env exports.")
@@ -1181,6 +1308,9 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     """
     if not _is_kv_offload_requested(params):
         return ""
+    if resolve_offload_whitelist_backend(params, engine) == _OFFLOAD_SIMPLE_CPU_BACKEND:
+        config = resolve_kimi_k3_h20_simple_cpu_config(params, engine)
+        return _OFFLOAD_SIMPLE_CPU_VARIANT if config is not None else "disabled"
     memcache_variant = _resolve_memcache_offload_variant(params, engine)
     if memcache_variant is not None:
         return memcache_variant
@@ -1239,6 +1369,9 @@ def resolve_effective_kv_mem_offload_size(
         return 0
     if resolved_variant == memcache_hybrid.MEMCACHE_OFFLOAD_VARIANT:
         # 状态回显使用页面口径的节点总容量；MemCache 启动落地时仍按卡数拆分 dram.size。
+        return _resolve_status_kv_mem_offload_node_size_gb(params)
+    if resolved_variant == _OFFLOAD_SIMPLE_CPU_VARIANT:
+        # 页面继续展示节点总 GiB；per-rank 字节数只属于 connector 内部落地口径。
         return _resolve_status_kv_mem_offload_node_size_gb(params)
     if resolved_variant.startswith("native_kv_offloading_backend"):
         special = _classify_offload_special_case(params, engine)
@@ -4531,6 +4664,10 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         logger.info("[KV Offload] offload not in effective smart features; skipping native offload CLI.")
         return ""
     if not _is_kv_offload_requested(params):
+        return ""
+
+    # 精确的 Kimi-K3 H20 行由 kv_transfer_config 承载，不能落入其它 offload 分支。
+    if resolve_offload_whitelist_backend(params, engine) == _OFFLOAD_SIMPLE_CPU_BACKEND:
         return ""
 
     # 白名单 native 分支优先，承接 Qwen3.5 NVFP4 等 Day0 收编场景。

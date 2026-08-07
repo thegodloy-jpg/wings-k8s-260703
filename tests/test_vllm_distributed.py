@@ -34,7 +34,8 @@ def _mp_ctx(*, node_rank=0, net_ips=None):
         engine="vllm",
         cmd=(
             "vllm serve /models/Kimi-K3 --trust-remote-code "
-            "--tensor-parallel-size 32 --host 0.0.0.0 --port 17000 "
+            "--tensor-parallel-size 8 --data-parallel-size 4 "
+            "--host 0.0.0.0 --port 17000 "
             "--enable-auto-tool-choice --tool-call-parser kimi_k3 "
             "--reasoning-parser kimi_k3 --served-model-name kimi_k3"
         ),
@@ -71,7 +72,7 @@ def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
     assert "--tool-call-parser kimi_k3" in final_command
     assert "--reasoning-parser kimi_k3" in final_command
     assert "--headless" not in final_command
-    assert "--data-parallel-" not in final_command
+    assert "--data-parallel-size 4" in final_command
 
 
 @pytest.mark.parametrize("node_rank", [1, 2, 3])
@@ -80,7 +81,10 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     monkeypatch.setenv("NCCL_SOCKET_IFNAME", "ens3f3")
     monkeypatch.setenv("GLOO_SOCKET_IFNAME", "ens3f3")
 
-    commands = vllm_distributed._build_mp_commands({}, _mp_ctx(node_rank=node_rank))
+    commands = vllm_distributed._build_mp_commands(
+        {"model_name": "Kimi-K3", "_smart_card_token": "h20-141"},
+        _mp_ctx(node_rank=node_rank),
+    )
     final_command = commands[-1]
 
     assert "export NCCL_SOCKET_IFNAME=ens3f3" in commands
@@ -95,9 +99,17 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     assert "--enable-auto-tool-choice" not in final_command
     assert "--tool-call-parser" not in final_command
     assert "--reasoning-parser" not in final_command
-    assert "--served-model-name kimi_k3" in final_command
-    assert "--tensor-parallel-size 32" in final_command
-    assert "--data-parallel-" not in final_command
+    assert "--served-model-name" not in final_command
+    assert "--tensor-parallel-size 8" in final_command
+    assert "--data-parallel-size 4" in final_command
+
+
+def test_mp_worker_keeps_served_model_name_outside_kimi_k3_h20_scope(monkeypatch):
+    monkeypatch.setenv("MASTER_PORT", "29501")
+
+    commands = vllm_distributed._build_mp_commands({}, _mp_ctx(node_rank=1))
+
+    assert "--served-model-name kimi_k3" in commands[-1]
 
 
 def test_vllm_distributed_mp_branch_does_not_fall_through_to_dp(monkeypatch):
@@ -119,7 +131,7 @@ def test_vllm_distributed_mp_branch_does_not_fall_through_to_dp(monkeypatch):
     assert "export COMMON_ENV=1" in script
     assert "--distributed-executor-backend mp" in script
     assert "--node-rank 1" in script
-    assert "--data-parallel-" not in script
+    assert "--data-parallel-size 4" in script
     assert "ray start" not in script
 
 

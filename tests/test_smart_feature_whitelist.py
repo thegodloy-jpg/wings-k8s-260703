@@ -468,6 +468,32 @@ def test_deepseek_v4_flash_0731_h20_excludes_only_offload(card_token):
     ) is True
 
 
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_kimi_k3_h20_uses_exact_simple_cpu_offload(card_token):
+    """SimpleCPU 只授予基础 Kimi-K3 H20 场景，不扩散到同名前缀变体。"""
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "Kimi-K3",
+        "/models/Kimi-K3",
+        card_token,
+        "offload",
+    )
+
+    assert row is not None
+    assert row["backend"] == "simple_cpu"
+    assert row["arch"] == "KimiK3ForConditionalGeneration"
+    assert row["lazy_offload"] == "false"
+    assert model_utils.resolve_feature_whitelist(
+        "vllm", "Kimi-K3", "/models/Kimi-K3", card_token
+    ) == frozenset({"offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm", "Kimi-K3-w4a8", "/models/Kimi-K3-w4a8", card_token
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm", "Kimi-K3", "/models/Kimi-K3", "l20"
+    ) == frozenset()
+
+
 def test_deepseek_v4_flash_0731_w8a8_spec_is_exactly_gated_to_910b():
     model_name = "DeepSeek-V4-Flash-0731-w8a8"
     model_path = f"/var/ai-model/{model_name}/"

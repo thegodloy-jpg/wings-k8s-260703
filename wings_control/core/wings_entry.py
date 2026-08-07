@@ -1167,6 +1167,7 @@ def _detect_offload_command_emitted(command: str) -> bool:
         "--kv-offloading-backend",
         "LMCacheConnector",
         "LMCacheAscendConnector",
+        "SimpleCPUOffloadConnector",
         "AscendStoreConnector",
         "WINGS_MEMCACHE_DRAM_GB",
         "LMCACHE_",
