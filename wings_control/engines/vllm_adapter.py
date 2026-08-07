@@ -726,8 +726,10 @@ def resolve_kimi_k3_h20_simple_cpu_config(
 ) -> Optional[Dict[str, Any]]:
     """Build the exact Kimi-K3 H20 SimpleCPU connector config, or return None.
 
-    第一版只接收页面显式下发的节点总 GiB，不复用共享 auto 公式，避免改变其它
-    native/LMCache/MemCache 场景。节点总量按本地 8 个 worker 均分后转为字节。
+    容量入口仍是页面下发的节点总 GiB：显式整数原样校验，``auto`` 只在
+    该 Kimi-K3/H20 精确场景复用已有节点反向预算，再按本地 8 个 worker 向下对齐。
+    这里不改动通用 native/LMCache/MemCache 分支，仅让 SimpleCPU connector 接受页面的
+    现有 ``auto`` 输入；节点总量均分后再转为每 rank 字节数。
     """
     if not _is_kimi_k3_h20_simple_cpu_scope(params, engine):
         return None
@@ -737,12 +739,24 @@ def resolve_kimi_k3_h20_simple_cpu_config(
 
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
     if raw_size.lower() == "auto":
-        logger.warning(
-            "[SimpleCPU Offload] KV_MEM_OFFLOAD_SIZE=auto is not supported by the "
-            "narrow Kimi-K3 H20 recipe; request discarded."
-        )
-        return None
-    node_size_gib = _safe_int(raw_size)
+        auto_total_gib = resolve_offload_cpu_capacity_gb(params)
+        if auto_total_gib is None:
+            logger.warning(
+                "[SimpleCPU Offload] KV_MEM_OFFLOAD_SIZE=auto but node capacity "
+                "is unavailable; request discarded."
+            )
+            return None
+        if auto_total_gib <= 0:
+            logger.warning(
+                "[SimpleCPU Offload] auto node capacity is below the %dGiB floor; "
+                "request discarded.",
+                _OFFLOAD_MIN_GB,
+            )
+            return None
+        node_size_gib = auto_total_gib
+    else:
+        node_size_gib = _safe_int(raw_size)
+
     local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
     if node_size_gib is None or node_size_gib <= 0:
         logger.warning(
@@ -750,6 +764,23 @@ def resolve_kimi_k3_h20_simple_cpu_config(
             raw_size,
         )
         return None
+    if raw_size.lower() == "auto":
+        # SimpleCPU 按本地 rank 均分；auto 向下对齐可保证状态容量与真实落地字节数一致。
+        node_size_gib -= node_size_gib % local_rank_count
+        if node_size_gib < _OFFLOAD_MIN_GB:
+            logger.warning(
+                "[SimpleCPU Offload] aligned auto node capacity %dGiB is below "
+                "the %dGiB floor; request discarded.",
+                node_size_gib,
+                _OFFLOAD_MIN_GB,
+            )
+            return None
+        logger.info(
+            "[SimpleCPU Offload] auto node capacity resolved to %dGiB "
+            "across %d local ranks.",
+            node_size_gib,
+            local_rank_count,
+        )
     if node_size_gib % local_rank_count != 0:
         logger.warning(
             "[SimpleCPU Offload] node size %dGiB is not divisible by %d local ranks; "
@@ -1371,8 +1402,16 @@ def resolve_effective_kv_mem_offload_size(
         # 状态回显使用页面口径的节点总容量；MemCache 启动落地时仍按卡数拆分 dram.size。
         return _resolve_status_kv_mem_offload_node_size_gb(params)
     if resolved_variant == _OFFLOAD_SIMPLE_CPU_VARIANT:
-        # 页面继续展示节点总 GiB；per-rank 字节数只属于 connector 内部落地口径。
-        return _resolve_status_kv_mem_offload_node_size_gb(params)
+        # 从同一 connector 解析结果反推节点总 GiB，确保 auto 对齐后的状态与命令同源。
+        config = resolve_kimi_k3_h20_simple_cpu_config(params, engine)
+        if config is None:
+            return None
+        extra_config = config.get("kv_connector_extra_config") or {}
+        per_rank_bytes = _safe_int(extra_config.get("cpu_bytes_to_use_per_rank"))
+        if per_rank_bytes is None or per_rank_bytes <= 0:
+            return None
+        local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
+        return (per_rank_bytes // _SIMPLE_CPU_OFFLOAD_GIB) * local_rank_count
     if resolved_variant.startswith("native_kv_offloading_backend"):
         special = _classify_offload_special_case(params, engine)
         if special == _OFFLOAD_V4_FLASH_NATIVE:

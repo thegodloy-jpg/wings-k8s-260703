@@ -677,12 +677,87 @@ def test_kimi_k3_h20_simple_cpu_offload_rejects_other_runtime_scopes(
         False,
         "disabled",
     )
+    assert vllm_adapter.resolve_kv_offload_effective_state(params, "vllm") == (
+        False,
+        "disabled",
+    )
 
 
-def test_kimi_k3_h20_simple_cpu_offload_rejects_auto_size(monkeypatch):
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_kimi_k3_h20_simple_cpu_offload_resolves_auto_size(monkeypatch, card_token):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeKimiK3Identifier)
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.setenv("AVAILABLE_POD_MEM_SIZE", str(652 * 1024))
+    params = {
+        "engine": "vllm",
+        "model_name": "Kimi-K3",
+        "model_path": "/models/Kimi-K3",
+        "model_type": "llm",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": 4,
+        "node_rank": 0,
+        "master_ip": "7.6.25.57",
+        "master_port": 29501,
+        "enable_sparse": False,
+        "enable_speculative_decode": False,
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": "/models/Kimi-K3",
+            "tensor_parallel_size": 8,
+            "data_parallel_size": 4,
+        },
+    }
+
+    card_name = "NVIDIA H20 96GB" if card_token == "h20-96" else "NVIDIA H20 141GB"
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 8, "details": [{"name": card_name}]},
+    )
+    assert params["_allowed_smart_feats"] == ["offload"]
+    assert params["_smart_feats"] == ["offload"]
+
+    config = vllm_adapter.resolve_kimi_k3_h20_simple_cpu_config(
+        params,
+        "vllm",
+    )
+    # 652GiB 扣除 TP8×DP4 引擎预留和 10% 安全垫后为 359GiB，
+    # SimpleCPU 再按本地 8 rank 向下对齐为 352GiB，每 rank 44GiB。
+    assert config == {
+        "kv_connector": "SimpleCPUOffloadConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "cpu_bytes_to_use_per_rank": 44 * 1024 ** 3,
+            "lazy_offload": "false",
+        },
+    }
+    config_loader._set_kv_cache_config(
+        params["engine_config"],
+        params,
+        _FakeKimiK3Identifier(params["model_name"], params["model_path"], "llm"),
+    )
+    assert json.loads(params["engine_config"]["kv_transfer_config"]) == config
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+    assert "--kv-transfer-config" in exec_line
+    assert "47244640256" in exec_line
+    assert '"lazy_offload":"false"' in exec_line
+    assert vllm_adapter.resolve_kv_offload_effective_state(params, "vllm") == (
+        True,
+        "simple_cpu_offload_connector+custom",
+    )
+    assert vllm_adapter.resolve_effective_kv_mem_offload_size(params, "vllm") == 352
+
+
+def test_kimi_k3_h20_simple_cpu_offload_rejects_auto_without_capacity(monkeypatch):
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "auto")
+    monkeypatch.delenv("AVAILABLE_POD_MEM_SIZE", raising=False)
     params = {
         "engine": "vllm",
         "model_name": "Kimi-K3",
@@ -703,10 +778,6 @@ def test_kimi_k3_h20_simple_cpu_offload_rejects_auto_size(monkeypatch):
         params,
         "vllm",
     ) is None
-    assert vllm_adapter.resolve_kv_offload_effective_state(params, "vllm") == (
-        False,
-        "disabled",
-    )
 
 
 def test_kimi_k3_h20_simple_cpu_offload_preserves_pd_connector(
