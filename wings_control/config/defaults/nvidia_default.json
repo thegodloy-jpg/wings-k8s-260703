@@ -364,6 +364,22 @@
             "tool_call_parser": "deepseekv3"
           }
         },
+        "DeepSeek-V4-Flash-0731-RTX-PRO-5000": {
+          "exact_model_names": [
+            "deepseek-ai/deepseek-v4-flash-0731",
+            "deepseek-v4-flash-0731"
+          ],
+          "card_tokens": ["rtxpro5000-72"],
+          "vllm": {
+            "rtx_pro_5000_72G": {
+              "use_vllm_serve": true,
+              "max_model_len": 1048576,
+              "enable_expert_parallel": true,
+              "tokenizer_mode": "deepseek_v4",
+              "tool_call_parser": "deepseek_v4"
+            }
+          }
+        },
         "DeepSeek-V4-Flash-0731": {
           "card_tokens": ["h20-96", "h20-141"],
           "vllm": {

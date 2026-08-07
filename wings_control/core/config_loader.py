@@ -3916,6 +3916,20 @@ def _model_profile_key_matches_lookup_names(
     """支持带 card_tokens 的模型 profile key 复用同一模型名匹配。"""
     if not config.get("card_tokens"):
         return False
+    exact_model_names = config.get("exact_model_names")
+    if exact_model_names:
+        if isinstance(exact_model_names, str):
+            exact_model_names = [exact_model_names]
+        if not isinstance(exact_model_names, (list, tuple, set)):
+            return False
+        # 独立硬件配方只允许精确模型身份命中，避免 profile key 的前缀复用把
+        # 基础模型或其它 0731 硬件场景带入本条配置。
+        exact_names = {
+            str(name or "").strip().lower()
+            for name in exact_model_names
+            if str(name or "").strip()
+        }
+        return any(name in exact_names for name in lookup_names)
     return any(
         name and _model_name_contains_config_token(config_key_lower, name)
         for name in lookup_names
