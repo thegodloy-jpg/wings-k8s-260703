@@ -740,6 +740,12 @@ def test_kimi_k3_h20_simple_cpu_offload_resolves_auto_size(monkeypatch, card_tok
         params,
         _FakeKimiK3Identifier(params["model_name"], params["model_path"], "llm"),
     )
+    # 真实 launcher 的最终参数会携带该默认值；它不能覆盖已经终定的引擎语义。
+    params["enable_prefix_caching"] = False
+    config_loader._enforce_simple_cpu_offload_kv_transfer_config(
+        params["engine_config"],
+        params,
+    )
     assert json.loads(params["engine_config"]["kv_transfer_config"]) == config
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))

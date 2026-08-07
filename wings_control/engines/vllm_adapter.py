@@ -715,7 +715,11 @@ def _is_kimi_k3_h20_simple_cpu_scope(
     # SimpleCPUOffloadConnector 依赖 prefix caching；只拒绝显式关闭，保留 vLLM 默认开启语义。
     if _offload_runtime_value(params, "no_enable_prefix_caching") is True:
         return False
-    if _offload_runtime_value(params, "enable_prefix_caching") is False:
+    # launcher 未收到页面参数时仍会在顶层携带 False；真正显式的 CLI/ENV/config
+    # 覆盖会在合并阶段写入 engine_config。这里只读取最终引擎值，避免默认值同时
+    # 误伤最终守卫、状态回显和容量解析；边界仅限 Kimi-K3 SimpleCPU 场景。
+    engine_config = params.get("engine_config")
+    if isinstance(engine_config, dict) and engine_config.get("enable_prefix_caching") is False:
         return False
     return True
 
