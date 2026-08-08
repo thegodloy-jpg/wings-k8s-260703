@@ -541,7 +541,7 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
         "master_ip": "7.6.25.57",
         "master_port": 29501,
         "enable_sparse": False,
-        "enable_speculative_decode": False,
+        "enable_speculative_decode": True,
         "_smart_card_token": card_token,
         "engine_config": {
             "use_vllm_serve": True,
@@ -574,6 +574,9 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     )
     assert params["_allowed_smart_feats"] == ["offload"]
     assert params["_smart_feats"] == ["offload"]
+    assert params["enable_speculative_decode"] is False
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["SD_ENABLE"] == "false"
 
     config_loader._set_kv_cache_config(
         params["engine_config"],
@@ -622,6 +625,8 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     assert "--kv-offloading-backend" not in exec_line
     assert "LMCacheConnector" not in exec_line
     assert "LMCACHE_" not in script
+    assert "--speculative-config" not in exec_line
+    assert "suffix" not in exec_line
     assert wings_entry._detect_offload_command_emitted(script) is True
 
     feature_status = wings_entry._resolve_advanced_feature_status("vllm", params)
@@ -630,6 +635,31 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
         "simple_cpu_offload_connector+custom"
     )
     assert feature_status["others"]["kv_mem_offload_size"] == 1760
+
+
+def test_kimi_k3_h20_non_tuned_topology_keeps_suffix_fallback(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    params = {
+        "engine": "vllm",
+        "model_name": "Kimi-K3",
+        "model_path": "/models/Kimi-K3",
+        "model_type": "llm",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": 2,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 8, "details": [{"name": "NVIDIA H20 141GB"}]},
+    )
+
+    assert params["enable_speculative_decode"] is True
+    assert vllm_adapter.resolve_speculative_strategy(params, "vllm") == "suffix"
+    assert '"method" : "suffix"' in vllm_adapter.build_speculative_cmd(params, "vllm")
 
 
 @pytest.mark.parametrize(

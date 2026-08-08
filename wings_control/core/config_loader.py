@@ -3275,6 +3275,25 @@ def _apply_offload_feature_effect(
     return offload_req, offload_eff
 
 
+def _should_suppress_kimi_k3_simple_cpu_suffix(
+    context: _SmartFeatureEffectContext,
+    spec_enabled: bool,
+) -> bool:
+    """仅在已调优的 Kimi-K3 四节点 H20 SimpleCPU 场景关闭 suffix 兜底。"""
+    p = context.p
+    # 复用 offload 白名单识别模型、H20 卡型和 vLLM 引擎；这里只补充固定拓扑边界。
+    # 元组一次匹配避免在 SmartFeature 主流程堆叠模型特例判定。
+    return (
+        spec_enabled,
+        str(p.get("model_name", "")).strip().lower(),
+        p.get("distributed"),
+        p.get("distributed_executor_backend"),
+        p.get("device_count"),
+        p.get("nnodes"),
+        resolve_offload_whitelist_backend(p, context.engine),
+    ) == (True, "kimi-k3", True, "mp", 8, 4, "simple_cpu")
+
+
 def _apply_spec_feature_effect(
     context: _SmartFeatureEffectContext,
 ) -> Tuple[bool, bool, bool]:
@@ -3286,7 +3305,8 @@ def _apply_spec_feature_effect(
     用 suffix 兜底”的产品语义，同时只有真正命中白名单的场景才写入 ``_smart_feats``。
 
     Kimi K2.7 Code 是例外：当前 DAY0 规则明确不做自动投机，因此即便页面请求了 spec，
-    这里也会在收口层关闭，避免后续 suffix fallback 误把它当成可投机场景。
+    这里也会在收口层关闭。Kimi-K3 四节点 H20 SimpleCPU 调优配方同样不使用自动
+    suffix，两个场景都在进入 adapter 前收口，保证命令与状态一致。
     """
     p = context.p
     feats = context.feats
@@ -3313,11 +3333,18 @@ def _apply_spec_feature_effect(
     ):
         logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
         spec_eff = False
+    if _should_suppress_kimi_k3_simple_cpu_suffix(context, spec_eff):
+        # 该调优配方只启用 SimpleCPU KV 卸载，不允许页面 spec 开关落入通用 suffix。
+        logger.info(
+            "[SmartFeature] Kimi-K3 H20 SimpleCPU topology does not use automatic "
+            "suffix speculative decode -> suppressed"
+        )
+        spec_eff = False
     p["enable_speculative_decode"] = spec_eff
     os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
     if spec_eff and spec_whitelisted:
         context.effective_feats.add("spec")
-    if spec_req and not spec_whitelisted:
+    if spec_eff and spec_req and not spec_whitelisted:
         logger.info(
             "[SmartFeature] spec requested but not in whitelist (engine=%s card=%s) "
             "-> suffix fallback (ENABLE_SPECULATIVE_DECODE=true)",
