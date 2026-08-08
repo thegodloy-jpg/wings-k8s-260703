@@ -165,7 +165,7 @@
           "max_model_len": 131072,
           "max_num_batched_tokens": 4096,
           "max_num_seqs": 64,
-          "gpu_memory_utilization": 0.95,
+          "gpu_memory_utilization": 0.88,
           "enforce_eager": true,
           "enable_prefix_caching": false,
           "enable_chunked_prefill": true,

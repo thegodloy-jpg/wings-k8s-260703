@@ -135,6 +135,8 @@ def test_default_smart_feature_whitelist_file_is_loaded():
         "/models/deepseek-ai/DeepSeek-V4-Flash",
         "rtxpro5000-72",
     ) == frozenset({"spec", "sparse"})
+
+
     assert model_utils.resolve_feature_whitelist(
         "vllm",
         "deepseek-ai/DeepSeek-V3.2",
@@ -494,25 +496,33 @@ def test_kimi_k3_h20_uses_exact_simple_cpu_offload(card_token):
     ) == frozenset()
 
 
-def test_deepseek_v4_flash_0731_w8a8_spec_is_exactly_gated_to_910b():
+def test_deepseek_v4_flash_0731_w8a8_spec_is_card_specific():
     model_name = "DeepSeek-V4-Flash-0731-w8a8"
     model_path = f"/var/ai-model/{model_name}/"
 
-    row = model_utils.resolve_feature_whitelist_row(
+    row_910b = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend", model_name, model_path, "910b", "spec"
     )
+    row_910c = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910c", "spec"
+    )
 
-    assert row is not None
-    assert row["arch"] == "DeepseekV4ForCausalLM"
-    assert row["mtp_method"] == "dspark"
-    assert row["mtp_num_speculative_tokens"] == 7
-    assert row["enforce_eager"] is True
+    assert row_910b is not None
+    assert row_910b["arch"] == "DeepseekV4ForCausalLM"
+    assert row_910b["mtp_method"] == "dspark"
+    assert row_910b["mtp_num_speculative_tokens"] == 7
+    assert row_910b["enforce_eager"] is True
+    assert row_910c is not None
+    assert row_910c["arch"] == "DeepseekV4ForCausalLM"
+    assert row_910c["mtp_method"] == "dspark"
+    assert row_910c["mtp_num_speculative_tokens"] == 7
+    assert row_910c["enforce_eager"] is True
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", model_name, model_path, "910b"
     ) == frozenset({"spec"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", model_name, model_path, "910c"
-    ) == frozenset()
+    ) == frozenset({"spec"})
 
 
 def test_deepseek_coder_v2_spec_row_uses_model_config_architecture():

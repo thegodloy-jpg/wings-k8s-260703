@@ -51,6 +51,9 @@ class _FakeModelInfo:
     def identify_model_type(self):
         return self.model_type
 
+    def is_wings_supported(self):
+        return True
+
 
 def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -101,6 +104,35 @@ def test_deepseek_v4_flash_repo_name_selects_pro5000_vllm_defaults():
 
     _assert_deepseek_v4_flash_pro5000_profile(config)
     assert "rtx_pro_5000_72G" not in config
+
+
+@pytest.mark.parametrize("card_name", ["NVIDIA H20 96GB", "NVIDIA H20 141GB"])
+def test_deepseek_v4_flash_0731_h20_selects_exact_defaults_without_sparse_fp8(card_name):
+    arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV4ForCausalLM"]
+    scenario = config_loader._SpecialEngineScenario(
+        deepseek_v4_flash_vllm_nvidia=True,
+    )
+
+    config = config_loader._match_model_engine_config(
+        arch_dict,
+        "deepseek-ai/deepseek-v4-flash-0731",
+        "vllm",
+        scenario,
+        _FakeDeepSeekV4Info(),
+        {"device": "nvidia", "details": [{"name": card_name}]},
+    )
+
+    assert config == {
+        "use_vllm_serve": True,
+        "trust_remote_code": True,
+        "max_model_len": 200000,
+        "block_size": 256,
+        "enable_expert_parallel": True,
+        "disable_custom_all_reduce": True,
+        "tokenizer_mode": "deepseek_v4",
+        "tool_call_parser": "deepseek_v4",
+    }
+    assert "kv_cache_dtype" not in config
 
 
 def test_model_card_profile_key_reuses_model_name_and_card_tokens():
@@ -378,7 +410,7 @@ def test_deepseek_v4_flash_0731_w8a8_910b_selects_exact_recipe(monkeypatch, dist
     assert config["tool_call_parser"] == "deepseek_v4"
     assert config["reasoning_parser"] == "deepseek_v4"
     assert config["served_model_name"] == model_name
-    # 0731 DSpark ?????? w8a8-mtp profile ????? async ??????????
+    # 0731 DSpark 配方必须与旧 w8a8-mtp profile 隔离，避免 async 冲突后关闭投机解码。
     for legacy_key in (
         "trust_remote_code",
         "async_scheduling",
@@ -440,6 +472,8 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
         'export HCCL_OP_EXPANSION_MODE="AIV"',
     ):
         assert script.count(export) == 1
+    assert "export OMP_PROC_BIND=" not in script
+    assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in script
     assert exec_line.startswith(f"exec vllm serve {model_path} ")
     assert "--max-model-len 800000" in exec_line
     assert "--max-num-batched-tokens 8192" in exec_line
@@ -881,6 +915,10 @@ def test_ascend_defaults_follow_parameter_reduction_plan():
             "tool_call_parser": "deepseek_v4",
         },
     )
+    assert (
+        "served_model_name"
+        not in deepseek_v4["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"]
+    )
     deepseek_v4_pro = deepseek_v4["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"]
     assert "trust_remote_code" not in deepseek_v4_pro
     assert "enable_chunked_prefill" not in deepseek_v4_pro
@@ -1212,8 +1250,8 @@ def test_all_ascend_card_profiles_select_without_smart_whitelist(monkeypatch):
                         engine_key,
                     )
 
-    assert profile_count == 27
-    assert engine_config_count == 52
+    assert profile_count == 28
+    assert engine_config_count == 54
 
 
 def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monkeypatch):
@@ -2378,8 +2416,6 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
         "use_vllm_serve": True,
         "trust_remote_code": True,
         "gpu_memory_utilization": 0.90,
-        "tensor_parallel_size": 8,
-        "data_parallel_size": 4,
         "enable_expert_parallel": True,
         "no_enable_flashinfer_autotune": True,
         "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"],
@@ -2387,7 +2423,6 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
         "disable_custom_all_reduce": True,
         "distributed_timeout_seconds": 1200,
         "tool_call_parser": "kimi_k3",
-        "served_model_name": "kimi_k3",
         "max_num_batched_tokens": 8192,
         "max_model_len": "auto",
     }
@@ -2856,7 +2891,8 @@ def test_qwen35_moe_non_397b_distributed_still_uses_ray(monkeypatch):
     assert params["distributed_executor_backend"] == "ray"
 
 
-def test_kimi_k3_nvidia_four_node_routes_to_mp_with_tp8_dp4(monkeypatch):
+@pytest.mark.parametrize("nnodes", [1, 2, 4])
+def test_kimi_k3_nvidia_routes_to_mp_with_runtime_tp_dp(monkeypatch, nnodes):
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
     distributed_config = {
@@ -2868,12 +2904,13 @@ def test_kimi_k3_nvidia_four_node_routes_to_mp_with_tp8_dp4(monkeypatch):
     }
     params = {
         "engine": "vllm",
+        "device": "nvidia",
         "model_name": "Kimi-K3",
         "model_path": "/models/Kimi-K3",
         "device_count": 8,
         "distributed": True,
-        "nnodes": 4,
-        "node_ips": "7.6.25.57,7.6.25.58,7.6.25.59,7.6.25.60",
+        "nnodes": nnodes,
+        "node_ips": ",".join(f"7.6.25.{57 + index}" for index in range(nnodes)),
         "distributed_executor_backend": "ray",
     }
     model_info = _FakeModelInfo("Kimi-K3", "KimiK3ForConditionalGeneration")
@@ -2883,11 +2920,150 @@ def test_kimi_k3_nvidia_four_node_routes_to_mp_with_tp8_dp4(monkeypatch):
     assert params["distributed_executor_backend"] == "mp"
     assert "ray_head_port" not in params
     assert "rpc_port" not in params
-    # TP32 是原始基线；H20 调优配方显式提供 TP8/DP4，通用 TP 计算不得再改写回 TP32。
-    engine_config = {"tensor_parallel_size": 8, "data_parallel_size": 4}
+    params.update({
+        "model_architecture": "KimiK3ForConditionalGeneration",
+        "card_model": "h20_96G",
+    })
+    engine_config = {}
     config_loader._set_parallelism_params(engine_config, params)
     assert engine_config["tensor_parallel_size"] == 8
-    assert engine_config["data_parallel_size"] == 4
+    assert engine_config["data_parallel_size"] == nnodes
+
+
+def test_kimi_k3_w4a8_ascend_auto_selects_vllm_ascend_without_broadening_k3(monkeypatch):
+    monkeypatch.setenv("WINGS_ROUTE_ENABLE", "false")
+    exact_model = _FakeModelInfo("Kimi-K3-w4a8", "KimiK3ForConditionalGeneration")
+    generic_model = _FakeModelInfo("Kimi-K3", "KimiK3ForConditionalGeneration")
+
+    assert config_loader._select_ascend_engine("Ascend910C", exact_model) == "vllm_ascend"
+    assert config_loader._select_ascend_engine("Ascend910C", generic_model) == "mindie"
+
+
+def test_kimi_k3_w4a8_ascend_four_node_routes_to_dp_with_recipe_markers(monkeypatch):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
+    monkeypatch.delenv("VLLM_DP_RPC_PORT", raising=False)
+    distributed_config = {
+        "vllm_distributed": {
+            "nixl_port": 5759,
+            "rpc_port": 13355,
+            "ray_head_port": 28020,
+        }
+    }
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K3-w4a8",
+        "model_path": "/data/Kimi-K3-w4a8",
+        "device_count": 16,
+        "distributed": True,
+        "nnodes": 4,
+        "node_ips": "7.6.28.252,7.6.28.253,7.6.28.241,7.6.28.240",
+        "distributed_executor_backend": "ray",
+    }
+    model_info = _FakeModelInfo("Kimi-K3-w4a8", "KimiK3ForConditionalGeneration")
+
+    config_loader._handle_vllm_distributed(distributed_config, params, model_info)
+
+    assert params["distributed_executor_backend"] == "dp_deployment"
+    assert params["rpc_port"] == "27777"
+    assert params["_kimi_k3_910c_dp"] is True
+    assert params["_preserve_dp_worker_port"] is True
+    assert "_force_data_parallel_start_rank_on_rank0" not in params
+
+
+@pytest.mark.parametrize("nnodes", [1, 2, 3, 5])
+def test_kimi_k3_w4a8_ascend_rejects_non_four_node_topology(monkeypatch, nnodes):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K3-w4a8",
+        "model_path": "/data/Kimi-K3-w4a8",
+        "distributed": True,
+        "nnodes": nnodes,
+    }
+
+    with pytest.raises(ValueError, match="requires exactly 4 nodes"):
+        config_loader._handle_vllm_distributed(
+            {"vllm_distributed": {}},
+            params,
+            _FakeModelInfo("Kimi-K3-w4a8", "KimiK3ForConditionalGeneration"),
+        )
+
+
+def test_kimi_k3_w4a8_910c_defaults_match_standard_and_reject_910b():
+    kimi_arch = _model_deploy_config("ascend")["llm"]["KimiK3ForConditionalGeneration"]
+    model_info = _FakeModelInfo("Kimi-K3-w4a8", "KimiK3ForConditionalGeneration")
+    scenario = config_loader._SpecialEngineScenario()
+    hardware_910c = {"device": "ascend", "details": [{"name": "Ascend910C"}]}
+    hardware_910b = {"device": "ascend", "details": [{"name": "Ascend910B_64G"}]}
+
+    config = config_loader._match_model_engine_config(
+        kimi_arch,
+        "kimi-k3-w4a8",
+        "vllm_ascend_distributed",
+        scenario,
+        model_info,
+        hardware_910c,
+        "/data/kimi-k3-w4a8",
+    )
+    wrong_card = config_loader._match_model_engine_config(
+        kimi_arch,
+        "kimi-k3-w4a8",
+        "vllm_ascend_distributed",
+        scenario,
+        model_info,
+        hardware_910b,
+        "/data/kimi-k3-w4a8",
+    )
+
+    assert config["use_vllm_serve"] is True
+    assert "served_model_name" not in config
+    assert config["tensor_parallel_size"] == 16
+    assert config["max_num_seqs"] == 16
+    assert config["max_model_len"] == 131027
+    assert config["max_num_batched_tokens"] == 4096
+    assert config["gpu_memory_utilization"] == 0.9
+    assert config["compilation_config"] == {"cudagraph_mode": "FULL_DECODE_ONLY"}
+    assert config["profiler_config"] == {
+        "profiler": "torch",
+        "torch_profiler_dir": "./vllm_profile",
+        "torch_profiler_with_stack": False,
+    }
+    assert config["additional_config"] == {
+        "enable_cpu_binding": True,
+        "enable_flashcomm1": True,
+        "enable_mc2_hierarchy_comm": True,
+    }
+    assert config["limit_mm_per_prompt"] == {"vision_chunk": 40}
+    assert config["tool_call_parser"] == "kimi_k3"
+    assert "quantization" not in config
+    assert "tokenizer_mode" not in config
+    assert wrong_card == {}
+
+    command_config = dict(config)
+    command_config.update({
+        "host": "0.0.0.0",
+        "port": 18000,
+        "enable_auto_tool_choice": True,
+        "reasoning_parser": "kimi_k3",
+    })
+    command = vllm_adapter._build_vllm_cmd_parts({
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K3-w4a8",
+        "model_path": "/data/Kimi-K3-w4a8",
+        "model_type": "llm",
+        "device_count": 16,
+        "_smart_card_token": "910c",
+        "engine_config": command_config,
+    })
+    assert command.startswith("vllm serve /data/Kimi-K3-w4a8 ")
+    assert "--profiler-config " in command
+    assert '"torch_profiler_with_stack":false' in command
+    assert "--additional-config " in command
+    assert '"enable_mc2_hierarchy_comm":true' in command
+    assert "--enable-auto-tool-choice" in command
+    assert "--reasoning-parser kimi_k3" in command
+    assert "--tool-call-parser kimi_k3" in command
 
 
 def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
@@ -2941,12 +3117,13 @@ def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
         model_info,
     )
 
-    assert h20_config["served_model_name"] == "kimi_k3"
+    assert "served_model_name" not in h20_config
     assert h20_config["tool_call_parser"] == "kimi_k3"
     assert a100_config == {}
     assert found is True
     assert parser == "kimi_k3"
     assert merged_config["reasoning_parser"] == "kimi_k3"
+    assert merged_config["served_model_name"] == "Kimi-K3"
     assert merged_config["enable_auto_tool_choice"] is True
     assert merged_config["tensor_parallel_size"] == 8
     assert merged_config["data_parallel_size"] == 4

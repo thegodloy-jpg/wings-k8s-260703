@@ -17,12 +17,15 @@ def test_startup_accel_route_is_served_before_proxy_catch_all(monkeypatch, tmp_p
             {
                 "engine": "vllm",
                 "features": {
-                    "speculative_decode": True,
-                    "lmcache_offload": False,
+                    "speculative_decode": False,
+                    "sparse_kv": False,
+                    "kv_offload": False,
+                    "rag_acc": False,
                 },
                 "variants": {
-                    "speculative_decode": "mtp",
-                    "lmcache_offload": None,
+                    "speculative_decode": None,
+                    "sparse_kv": None,
+                    "kv_offload": None,
                 },
                 "others": {
                     "kv_mem_offload_size": 40,
@@ -47,11 +50,14 @@ def test_startup_accel_route_is_served_before_proxy_catch_all(monkeypatch, tmp_p
             "engine": "vllm",
             "features": {
                 "speculative_decode": True,
-                "lmcache_offload": False,
+                "sparse_kv": True,
+                "kv_offload": True,
+                "rag_acc": False,
             },
             "variants": {
-                "speculative_decode": "mtp",
-                "lmcache_offload": None,
+                "speculative_decode": None,
+                "sparse_kv": None,
+                "kv_offload": None,
             },
             "others": {
                 "kv_mem_offload_size": 40,
