@@ -1738,11 +1738,6 @@
             "compilation_config": {
               "cudagraph_mode": "FULL_DECODE_ONLY"
             },
-            "profiler_config": {
-              "profiler": "torch",
-              "torch_profiler_dir": "./vllm_profile",
-              "torch_profiler_with_stack": false
-            },
             "mm_processor_cache_gb": 0,
             "additional_config": {
               "enable_cpu_binding": true,

@@ -3026,11 +3026,8 @@ def test_kimi_k3_w4a8_910c_defaults_match_standard_and_reject_910b():
     assert config["max_num_batched_tokens"] == 4096
     assert config["gpu_memory_utilization"] == 0.9
     assert config["compilation_config"] == {"cudagraph_mode": "FULL_DECODE_ONLY"}
-    assert config["profiler_config"] == {
-        "profiler": "torch",
-        "torch_profiler_dir": "./vllm_profile",
-        "torch_profiler_with_stack": False,
-    }
+    # 标准启动不默认开启 torch profiler，避免持续采集影响正式推理性能。
+    assert "profiler_config" not in config
     assert config["additional_config"] == {
         "enable_cpu_binding": True,
         "enable_flashcomm1": True,
@@ -3059,8 +3056,8 @@ def test_kimi_k3_w4a8_910c_defaults_match_standard_and_reject_910b():
         "engine_config": command_config,
     })
     assert command.startswith("vllm serve /data/Kimi-K3-w4a8 ")
-    assert "--profiler-config " in command
-    assert '"torch_profiler_with_stack":false' in command
+    assert "--profiler-config " not in command
+    assert "vllm_profile" not in command
     assert "--additional-config " in command
     assert '"enable_mc2_hierarchy_comm":true' in command
     assert "--enable-auto-tool-choice" in command
