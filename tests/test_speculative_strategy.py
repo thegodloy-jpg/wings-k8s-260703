@@ -603,8 +603,8 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in script
     assert "export VLLM_USE_V2_MODEL_RUNNER=1" in script
     assert "export VLLM_USE_RUST_FRONTEND=1" in script
-    assert "unset PYTORCH_CUDA_ALLOC_CONF" in script
-    assert "ulimit -l unlimited" in script
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" not in script
+    assert "ulimit -l unlimited" not in script
     assert exec_line.startswith(f"exec vllm serve {model_path} ")
     for expected in (
         "--trust-remote-code",

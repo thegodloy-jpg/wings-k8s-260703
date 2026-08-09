@@ -127,8 +127,9 @@ def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
     assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in commands
     assert "export VLLM_USE_V2_MODEL_RUNNER=1" in commands
     assert "export VLLM_USE_RUST_FRONTEND=1" in commands
-    assert "unset PYTORCH_CUDA_ALLOC_CONF" in commands
-    assert "ulimit -l unlimited" in commands
+    # MP 配方不再改写宿主内存策略或 memlock 上限，只保留 vLLM 必需环境。
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" not in commands
+    assert "ulimit -l unlimited" not in commands
     # 新配方只补充镜像要求的运行环境，不恢复旧 NCCL/SSM 强制策略。
     for env_name in ("NCCL_NVLS_ENABLE", "NCCL_DEBUG", "VLLM_SSM_CONV_STATE_LAYOUT"):
         assert not any(command.startswith(f"export {env_name}=") for command in commands)
@@ -164,8 +165,8 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in commands
     assert "export VLLM_USE_V2_MODEL_RUNNER=1" in commands
     assert "export VLLM_USE_RUST_FRONTEND=1" in commands
-    assert "unset PYTORCH_CUDA_ALLOC_CONF" in commands
-    assert "ulimit -l unlimited" in commands
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" not in commands
+    assert "ulimit -l unlimited" not in commands
     assert f"--node-rank {node_rank}" in final_command
     assert "--nnodes 4" in final_command
     assert "--master-addr 7.6.25.57" in final_command

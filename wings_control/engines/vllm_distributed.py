@@ -582,8 +582,6 @@ def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
             "export VLLM_ENGINE_READY_TIMEOUT_S=3600",
             "export VLLM_USE_V2_MODEL_RUNNER=1",
             "export VLLM_USE_RUST_FRONTEND=1",
-            "unset PYTORCH_CUDA_ALLOC_CONF",
-            "ulimit -l unlimited",
         ])
     return env_commands
 
