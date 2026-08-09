@@ -680,6 +680,67 @@ def test_kimi_k3_h20_non_tuned_topology_keeps_suffix_fallback(monkeypatch):
     assert '"method" : "suffix"' in vllm_adapter.build_speculative_cmd(params, "vllm")
 
 
+def test_kimi_k3_w4a8_910c_suppresses_suffix_without_offload(monkeypatch):
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K3-w4a8",
+        "model_path": "/data/Kimi-K3-w4a8",
+        "model_type": "llm",
+        "device_count": 16,
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "nnodes": 4,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "_kimi_k3_910c_dp": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "ascend", "count": 16, "details": [{"name": "Ascend910C"}]},
+    )
+
+    assert params["_allowed_smart_feats"] == ["offload"]
+    assert params["_smart_feats"] == []
+    assert params["enable_speculative_decode"] is False
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["SD_ENABLE"] == "false"
+    assert vllm_adapter.build_speculative_cmd(params, "vllm_ascend") == ""
+
+
+def test_kimi_k3_w4a8_910c_removes_explicit_suffix_config(monkeypatch):
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K3-w4a8",
+        "model_path": "/data/Kimi-K3-w4a8",
+        "model_type": "llm",
+        "device_count": 16,
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "nnodes": 4,
+        "enable_speculative_decode": True,
+        "_smart_card_token": "910c",
+        "_smart_feats": ["spec"],
+        "_kimi_k3_910c_dp": True,
+        "engine_config": {
+            "tensor_parallel_size": 16,
+            "speculative_config": {"method": "suffix", "num_speculative_tokens": 5},
+        },
+    }
+
+    engine_config = vllm_adapter._prepare_engine_config(params)
+
+    assert "speculative_config" not in engine_config
+    assert "speculative_config" not in params["engine_config"]
+    assert params["enable_speculative_decode"] is False
+    assert params["_smart_feats"] == []
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
+    assert os.environ["SD_ENABLE"] == "false"
+
+
 @pytest.mark.parametrize(
     ("param_path", "invalid_value"),
     [

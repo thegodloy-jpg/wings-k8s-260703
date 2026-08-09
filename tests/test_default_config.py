@@ -3068,6 +3068,62 @@ def test_kimi_k3_w4a8_910c_defaults_match_standard_and_reject_910b():
     assert "--tool-call-parser kimi_k3" in command
 
 
+def _kimi_k3_w4a8_910c_native_params():
+    return {
+        "engine": "vllm_ascend",
+        "model_name": "Kimi-K3-w4a8",
+        "model_path": "/data/Kimi-K3-w4a8",
+        "model_type": "llm",
+        "device_count": 16,
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "nnodes": 4,
+        "_smart_card_token": "910c",
+        "_smart_feats": ["offload"],
+        "_kimi_k3_910c_dp": True,
+    }
+
+
+@pytest.mark.parametrize("page_size", [64, 200])
+def test_kimi_k3_w4a8_910c_native_offload_uses_page_node_size(monkeypatch, page_size):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", str(page_size))
+    params = _kimi_k3_w4a8_910c_native_params()
+    engine_config = {"kv_transfer_config": json.dumps({"kv_connector": "stale"})}
+
+    config_loader._enforce_native_offload_no_kv_transfer_config(engine_config, params)
+
+    assert json.loads(engine_config["kv_transfer_config"]) == {
+        "kv_connector_extra_config": {"lazy_offload": False}
+    }
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm_ascend") == (
+        f" --kv-offloading-backend native --kv-offloading-size {page_size}"
+    )
+    assert vllm_adapter.resolve_kv_offload_effective_state(
+        params, "vllm_ascend"
+    ) == (True, "native_kv_offloading_backend")
+    assert vllm_adapter.resolve_effective_kv_mem_offload_size(
+        params, "vllm_ascend"
+    ) == page_size
+
+
+def test_kimi_k3_w4a8_910c_native_offload_drops_invalid_page_size(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "0")
+    params = _kimi_k3_w4a8_910c_native_params()
+    engine_config = {"kv_transfer_config": json.dumps({"kv_connector": "stale"})}
+
+    config_loader._enforce_native_offload_no_kv_transfer_config(engine_config, params)
+
+    assert "kv_transfer_config" not in engine_config
+    assert vllm_adapter._build_kv_offload_cmd(params, "vllm_ascend") == ""
+    assert vllm_adapter.resolve_kv_offload_effective_state(
+        params, "vllm_ascend"
+    ) == (False, "disabled")
+
+
 def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
     kimi_arch = _model_deploy_config("nvidia")["llm"]["KimiK3ForConditionalGeneration"]
     scenario = config_loader._SpecialEngineScenario()

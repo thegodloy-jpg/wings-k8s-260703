@@ -496,6 +496,29 @@ def test_kimi_k3_h20_uses_exact_simple_cpu_offload(card_token):
     ) == frozenset()
 
 
+def test_kimi_k3_w4a8_910c_uses_exact_native_offload():
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "Kimi-K3-w4a8",
+        "/data/Kimi-K3-w4a8",
+        "910c",
+        "offload",
+    )
+
+    assert row is not None
+    assert row["backend"] == "native"
+    assert row["lazy_offload"] is False
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend", "Kimi-K3-w4a8", "/data/Kimi-K3-w4a8", "910c"
+    ) == frozenset({"offload"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend", "Kimi-K3-w4a8", "/data/Kimi-K3-w4a8", "910b"
+    ) == frozenset()
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend", "Kimi-K3", "/data/Kimi-K3", "910c"
+    ) == frozenset()
+
+
 def test_deepseek_v4_flash_0731_w8a8_spec_is_card_specific():
     model_name = "DeepSeek-V4-Flash-0731-w8a8"
     model_path = f"/var/ai-model/{model_name}/"

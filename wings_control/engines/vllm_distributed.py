@@ -276,6 +276,15 @@ def _build_kimi_k3_910c_dp_env_commands(params: Dict[str, Any], net_if: str) -> 
         f"export TP_SOCKET_IFNAME={net_if}",
         f"export HCCL_SOCKET_IFNAME={hccl_socket_if}",
     ]
+    if vllm_adapter.resolve_kimi_k3_910c_native_transfer_config(
+        params,
+        "vllm_ascend",
+    ) is not None:
+        # 两个变量只属于已完整生效的 native 配方；容量无效时不能留下半启用环境。
+        env_commands.extend([
+            "export VLLM_WORKER_MULTIPROC_METHOD=spawn",
+            "export VLLM_USE_SIMPLE_KV_OFFLOAD=1",
+        ])
     if node_rank == 0:
         env_commands.append(
             f"export VLLM_ENGINE_READY_TIMEOUT_S={os.getenv('VLLM_ENGINE_READY_TIMEOUT_S', '7200')}"
@@ -520,9 +529,13 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     speculative_extra = ""
     if vllm_adapter.should_append_auto_speculative_config(params):
         speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
+    kv_offload_extra = ""
+    if vllm_adapter.is_kimi_k3_910c_dp_scope(params, ctx.engine):
+        # 分布式命令不会经过单机脚本的 native CLI 追加点，只给该精确配方补齐。
+        kv_offload_extra = vllm_adapter.build_kv_offload_cmd(params, ctx.engine)
     parts = _build_dp_env_commands(ctx.is_ascend, params, model_info.model_architecture)
     exec_spec = _DpExecCommandSpec(
-        command=f"{dp_cmd}{speculative_extra}{sparse_args}",
+        command=f"{dp_cmd}{speculative_extra}{sparse_args}{kv_offload_extra}",
         rpc_port=dp_rpc_port,
         topology=topology,
         include_rank0_start_rank=bool(params.get("_force_data_parallel_start_rank_on_rank0")),

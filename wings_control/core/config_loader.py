@@ -69,12 +69,18 @@ except ImportError:
     )
 try:
     from wings_control.engines.vllm_adapter import (
+        is_deepseek_v4_flash_0731_rtx_pro_5000_scope,
+        is_kimi_k3_910c_dp_scope,
         resolve_kimi_k3_h20_simple_cpu_config,
+        resolve_kimi_k3_910c_native_transfer_config,
         resolve_kv_offload_effective_state,
     )
 except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
+        is_deepseek_v4_flash_0731_rtx_pro_5000_scope,
+        is_kimi_k3_910c_dp_scope,
         resolve_kimi_k3_h20_simple_cpu_config,
+        resolve_kimi_k3_910c_native_transfer_config,
         resolve_kv_offload_effective_state,
     )
 logger = logging.getLogger(__name__)
@@ -1976,17 +1982,29 @@ def _set_kv_cache_config(params, ctx, model_info=None):
 def _enforce_native_offload_no_kv_transfer_config(
     engine_config: Dict[str, Any], ctx: Dict[str, Any],
 ) -> None:
-    """最终兜底：native 白名单场景必须和 LMCache/MemCache connector 互斥。
+    """最终兜底：native 白名单场景不得残留 LMCache/MemCache connector。
 
     ``_set_kv_cache_config`` 会在标准流程里避免注入 connector，但用户 config、
-    默认配置或历史字段仍可能在更早阶段带入 ``kv_transfer_config``。这里在
-    engine_config 合并后再清一次，确保 backend=native 场景最终只通过
-    ``vllm_adapter._build_kv_offload_cmd`` 生成 CLI，不会残留 connector JSON。
+    默认配置或历史字段仍可能在更早阶段带入 ``kv_transfer_config``。这里在最终
+    合并后再收口：通用 native 场景继续移除 connector JSON；精确的 Kimi-K3/910C
+    配方只保留镜像要求的 ``lazy_offload=false`` 最小配置。
     """
     if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) != "native":
         return
     smart_feats = ctx.get("_smart_feats")
     if smart_feats is not None and "offload" not in smart_feats:
+        return
+    effective_ctx = dict(ctx)
+    effective_ctx["engine_config"] = engine_config
+    kimi_transfer_config = resolve_kimi_k3_910c_native_transfer_config(
+        effective_ctx,
+        ctx.get("engine", ""),
+    )
+    if kimi_transfer_config is not None:
+        engine_config["kv_transfer_config"] = json.dumps(kimi_transfer_config)
+        logger.info(
+            "[Kimi-K3-W4A8-910C] injected native lazy_offload transfer config."
+        )
         return
     removed = engine_config.pop("kv_transfer_config", None)
     if removed is not None:
@@ -3261,7 +3279,9 @@ def _apply_spec_feature_effect(
 
     Kimi K2.7 Code 是例外：当前 DAY0 规则明确不做自动投机，因此即便页面请求了 spec，
     这里也会在收口层关闭。Kimi-K3 四节点 H20 SimpleCPU 调优配方同样不使用自动
-    suffix，两个场景都在进入 adapter 前收口，保证命令与状态一致。
+    suffix。Kimi-K3-W4A8 四节点 910C 配方也不支持 suffix；DeepSeek-V4-Flash-0731
+    + RTX PRO 5000 的独立 profile 只允许 FP8 sparse。四个场景都在进入 adapter 前
+    收口，保证命令与状态一致。
     """
     p = context.p
     feats = context.feats
@@ -3293,6 +3313,24 @@ def _apply_spec_feature_effect(
         logger.info(
             "[SmartFeature] Kimi-K3 H20 SimpleCPU topology does not use automatic "
             "suffix speculative decode -> suppressed"
+        )
+        spec_eff = False
+    if spec_eff and is_kimi_k3_910c_dp_scope(p, context.engine):
+        # suffix 禁用是该 910C 配方本身的能力边界，不依赖 offload 是否成功启用。
+        logger.info(
+            "[SmartFeature] Kimi-K3-W4A8 910C DP topology does not support "
+            "suffix speculative decode -> suppressed"
+        )
+        spec_eff = False
+    if spec_eff and is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
+        p,
+        context.engine,
+    ):
+        # 该独立 profile 的能力边界是 FP8 sparse-only；页面投机请求不得再落入
+        # 全局 suffix 兜底，同时不能影响基础 V4-Flash/Pro5000 的 MTP 配方。
+        logger.info(
+            "[SmartFeature] DeepSeek-V4-Flash-0731 RTX PRO 5000 profile is "
+            "sparse-only; speculative decode -> suppressed"
         )
         spec_eff = False
     p["enable_speculative_decode"] = spec_eff

@@ -648,6 +648,15 @@ _SIMPLE_CPU_OFFLOAD_TOPOLOGY = {
     "pipeline_parallel_size": 1,
     "nnodes": 4,
 }
+_KIMI_K3_910C_DP_TOPOLOGY = {
+    "device_count": 16,
+    "nnodes": 4,
+}
+_KIMI_K3_910C_OPTIONAL_PARALLELISM = {
+    "tensor_parallel_size": 16,
+    "data_parallel_size": 4,
+    "data_parallel_size_local": 1,
+}
 _OFFLOAD_AUTO_FLOOR_VARIANT = "lmcache_cpu+auto+floor_disabled"
 _OFFLOAD_CPU_AUTO_FLOOR_MODIFIER = "cpu_auto_floor_disabled"
 _OFFLOAD_AUTO_UNAVAILABLE_MODIFIER = "auto+unavailable"
@@ -686,6 +695,54 @@ def _offload_runtime_value(params: Optional[Dict[str, Any]], key: str) -> Any:
     if isinstance(engine_config, dict):
         return engine_config.get(key)
     return None
+
+
+def is_kimi_k3_910c_dp_scope(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> bool:
+    """精确识别 Kimi-K3-W4A8 四节点 910C 原生 DP 配方。"""
+    if not params or engine != "vllm_ascend":
+        return False
+    if (
+        str(params.get("model_name") or "").strip().lower() != "kimi-k3-w4a8"
+        or "910c" not in str(params.get("_smart_card_token") or "").strip().lower()
+        or params.get("_kimi_k3_910c_dp") is not True
+        or params.get("distributed") is not True
+        or params.get("distributed_executor_backend") != "dp_deployment"
+    ):
+        return False
+    if not all(
+        _safe_int(_offload_runtime_value(params, key)) == expected
+        for key, expected in _KIMI_K3_910C_DP_TOPOLOGY.items()
+    ):
+        return False
+    for key, expected in _KIMI_K3_910C_OPTIONAL_PARALLELISM.items():
+        raw_value = _offload_runtime_value(params, key)
+        if raw_value not in (None, "") and _safe_int(raw_value) != expected:
+            return False
+    return True
+
+
+_DEEPSEEK_V4_FLASH_0731_EXACT_NAMES = {
+    "deepseek-ai/deepseek-v4-flash-0731",
+    "deepseek-v4-flash-0731",
+}
+
+
+def is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> bool:
+    """精确识别只允许 FP8 sparse 的 0731 + RTX PRO 5000 72G 配方。"""
+    if not params or engine != "vllm":
+        return False
+    model_name = str(params.get("model_name") or "").strip().rstrip("/").lower()
+    if model_name not in _DEEPSEEK_V4_FLASH_0731_EXACT_NAMES:
+        return False
+    # 复用现有 Pro5000-72 硬件口径，但先以精确模型名收口，避免基础 V4-Flash
+    # 以及 H20/Ascend 0731 配方被带入 sparse-only 能力边界。
+    return is_deepseek_v4_flash_rtx_pro_5000(params, engine)
 
 
 def _is_kimi_k3_h20_simple_cpu_scope(
@@ -1014,6 +1071,33 @@ def resolve_kv_offload_effective_state(
     return offload_variant_has_active_backend(variant), (variant or None)
 
 
+def resolve_kimi_k3_910c_native_transfer_config(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> Optional[Dict[str, Any]]:
+    """返回 Kimi-K3/910C native offload 要求的最小 transfer 配置。"""
+    if not is_kimi_k3_910c_dp_scope(params, engine):
+        return None
+    offload_active, _ = resolve_kv_offload_effective_state(params, engine)
+    if not offload_active:
+        return None
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "offload",
+        require_enabled=True,
+    )
+    lazy_offload = row.get("lazy_offload") if row else None
+    # 镜像要求保留该 JSON 布尔字段；异常白名单不能留下半启用的 native 配置。
+    if lazy_offload is not False:
+        logger.warning(
+            "[Kimi-K3-W4A8-910C] whitelist lazy_offload must be boolean false; "
+            "native request discarded."
+        )
+        return None
+    return {"kv_connector_extra_config": {"lazy_offload": lazy_offload}}
+
+
 def lmcache_auto_floor_disables_all_backends(params: Optional[Dict[str, Any]]) -> bool:
     """True when auto memory floor leaves no LMCache backend that needs a patch."""
     if not is_kv_mem_offload_auto_floor_disabled(params):
@@ -1313,6 +1397,20 @@ def _resolve_native_backend_variant(
     """解析白名单声明 native backend 时的最终状态。"""
     if backend != _OFFLOAD_NATIVE_BACKEND_VARIANT:
         return None
+    if (
+        engine == "vllm_ascend"
+        and str((params or {}).get("model_name") or "").strip().lower() == "kimi-k3-w4a8"
+    ):
+        if not is_kimi_k3_910c_dp_scope(params, engine):
+            return "disabled"
+        row = resolve_feature_whitelist_row_from_params(
+            params,
+            engine,
+            "offload",
+            require_enabled=True,
+        )
+        if not row or row.get("lazy_offload") is not False:
+            return "disabled"
     size_gb = _resolve_native_backend_offload_gb(params or {}, engine)
     if size_gb > 0:
         return backend
@@ -2942,6 +3040,47 @@ def _remove_effective_spec_feature(params: Dict[str, Any]) -> None:
     ]
 
 
+def _resolve_no_speculative_profile_label(
+    params: Dict[str, Any],
+    engine: str,
+) -> str:
+    """返回必须完全移除投机配置的精确 profile 标识。"""
+    if is_kimi_k3_910c_dp_scope(params, engine):
+        return "Kimi-K3-W4A8-910C"
+    if is_deepseek_v4_flash_0731_rtx_pro_5000_scope(params, engine):
+        return "DeepSeek-V4-Flash-0731-RTX-PRO-5000"
+    return ""
+
+
+def _enforce_exact_profile_no_speculative_config(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+) -> None:
+    """最终移除不支持投机的精确 profile 中显式或自动配置。"""
+    profile_label = _resolve_no_speculative_profile_label(
+        params,
+        params.get("engine", ""),
+    )
+    if not profile_label:
+        return
+    removed = engine_config.pop("speculative_config", None)
+    params_engine_config = params.get("engine_config")
+    if isinstance(params_engine_config, dict):
+        if removed is None:
+            removed = params_engine_config.pop("speculative_config", None)
+        params_engine_config.pop("speculative_config", None)
+    params["enable_speculative_decode"] = False
+    os.environ["ENABLE_SPECULATIVE_DECODE"] = "false"
+    os.environ["SD_ENABLE"] = "false"
+    _remove_effective_spec_feature(params)
+    if removed is not None:
+        logger.info(
+            "[%s] removed unsupported speculative_config=%s",
+            profile_label,
+            removed,
+        )
+
+
 def _disable_speculative_decode_for_async_suffix_conflict(
     params: Dict[str, Any],
     engine_config: Dict[str, Any],
@@ -3206,6 +3345,9 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[vLLM] Mapping deprecated task=%s to --runner pooling", removed_task)
         engine_config.setdefault("runner", "pooling")
 
+    # 精确 sparse-only/no-spec 配方不支持 suffix；这里还要清理显式
+    # CONFIG_FORCE/engine_config 入口，保证状态和最终命令一致。
+    _enforce_exact_profile_no_speculative_config(params, engine_config)
     _disable_speculative_decode_for_async_suffix_conflict(params, engine_config)
     _align_implicit_dp_to_final_tp(params, engine_config, explicit_keys)
     _writeback_dp_topology_to_params(params, engine_config)
@@ -4470,6 +4612,13 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
     Returns:
         str: --speculative-config 参数字符串，未启用时返回空字符串
     """
+    no_spec_profile = _resolve_no_speculative_profile_label(params, engine)
+    if no_spec_profile:
+        logger.info(
+            "[SmartFeature] %s does not support speculative decode; skipping CLI.",
+            no_spec_profile,
+        )
+        return ""
     model_info = ModelIdentifier(params.get("model_name"),
                                  params.get("model_path"),
                                  params.get("model_type"))
@@ -4716,10 +4865,10 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
 
 
 def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
-    """构建 NVIDIA/vLLM native KV 卸载 CLI 片段。
+    """构建白名单 native KV 卸载 CLI 片段。
 
-    - 仅 ``engine == "vllm"`` 且 effective offload 已开启时生效
-      （Ascend 0.21 走 LMCache/MemCache 路径）。
+    - 通用路径仍仅允许 ``engine == "vllm"``；Ascend 只放行精确的
+      Kimi-K3-W4A8 四节点 910C 原生 DP 配方。
     - 复用 ``ENABLE_KV_OFFLOAD`` 总开关（get_lmcache_env）作为触发条件。
     - Pro 5000 新增场景优先读白名单 backend：Qwen / MiniMax-M2.5 / MiniMax-M3
       命中 native，MiniMax-M2.7 命中 lmcache，不在这里生成 native CLI。
@@ -4728,7 +4877,8 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     - 与 LMCache env 路径互斥：命中时 ``_build_cache_env_commands`` 跳过 LMCache 导出。
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。
     """
-    if engine != "vllm":
+    kimi_k3_910c_native = is_kimi_k3_910c_dp_scope(params, engine)
+    if engine != "vllm" and not kimi_k3_910c_native:
         return ""
     if params.get("_wings_fallback_no_kv_offload"):
         return ""
@@ -4737,6 +4887,8 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         logger.info("[KV Offload] offload not in effective smart features; skipping native offload CLI.")
         return ""
     if not _is_kv_offload_requested(params):
+        return ""
+    if kimi_k3_910c_native and resolve_kimi_k3_910c_native_transfer_config(params, engine) is None:
         return ""
 
     # 精确的 Kimi-K3 H20 行由 kv_transfer_config 承载，不能落入其它 offload 分支。
@@ -4762,6 +4914,11 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
         )
         return ""
     return f" --kv-offloading-backend native --kv-offloading-size {size_gb}"
+
+
+def build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
+    """Public wrapper used by distributed command builders."""
+    return _build_kv_offload_cmd(params, engine)
 
 
 # ── MiniMax-M2.7 + RTX-PRO-5000 + vLLM 集成（融入通用流程）──────────────────────

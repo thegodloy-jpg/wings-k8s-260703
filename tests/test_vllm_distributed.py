@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -312,6 +313,74 @@ def test_kimi_k3_w4a8_910c_full_script_drops_generic_ascend_env_defaults(
     assert f"export HCCL_LOGIC_SUPERPOD_ID={node_rank}" in exports
     assert "source /usr/local/Ascend/ascend-toolkit/set_env.sh" in script
     assert "libascend_hal.so" in script
+
+
+@pytest.mark.parametrize("node_rank", [0, 1, 2, 3])
+def test_kimi_k3_w4a8_910c_native_offload_reaches_every_node_script(
+    monkeypatch,
+    node_rank,
+):
+    vllm_adapter = vllm_distributed._import_vllm_adapter()
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeKimiK3ModelIdentifier)
+    monkeypatch.setattr(vllm_distributed, "ModelIdentifier", _FakeKimiK3ModelIdentifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
+    monkeypatch.setenv("POD_IP", "7.6.28.252")
+    monkeypatch.setenv("NETWORK_INTERFACE", "enp196s0f0")
+    monkeypatch.setenv("HCCL_SOCKET_IFNAME", "enp196")
+
+    params = _kimi_k3_910c_params(node_rank)
+    params.update({
+        "distributed_executor_backend": "dp_deployment",
+        "master_ip": "7.6.28.252",
+        "node_ips": "7.6.28.252,7.6.28.253,7.6.28.241,7.6.28.240",
+        "host": "0.0.0.0",
+        "port": 18000,
+        "model_type": "llm",
+        "_smart_feats": ["offload"],
+    })
+    params["engine_config"]["kv_transfer_config"] = json.dumps({
+        "kv_connector_extra_config": {"lazy_offload": False}
+    })
+
+    script = vllm_adapter.build_start_script(params)
+    exports = [line for line in script.splitlines() if line.startswith("export ")]
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert exports.count("export VLLM_WORKER_MULTIPROC_METHOD=spawn") == 1
+    assert exports.count("export VLLM_USE_SIMPLE_KV_OFFLOAD=1") == 1
+    assert "--kv-offloading-backend native" in exec_line
+    assert "--kv-offloading-size 200" in exec_line
+    assert "--kv-transfer-config" in exec_line
+    assert '"lazy_offload":false' in exec_line
+    assert '"kv_connector":' not in exec_line
+    assert "--speculative-config" not in exec_line
+
+
+def test_kimi_k3_w4a8_910c_invalid_offload_size_leaves_no_partial_runtime(monkeypatch):
+    monkeypatch.setattr(vllm_distributed, "ModelIdentifier", _FakeKimiK3ModelIdentifier)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "0")
+    monkeypatch.setenv("NETWORK_INTERFACE", "enp196s0f0")
+    monkeypatch.setenv("HCCL_SOCKET_IFNAME", "enp196")
+    params = _kimi_k3_910c_params(0)
+    params.update({
+        "distributed_executor_backend": "dp_deployment",
+        "_smart_feats": ["offload"],
+    })
+
+    commands = vllm_distributed._build_dp_deployment_commands(
+        params,
+        _kimi_k3_910c_ctx(node_rank=0),
+    )
+    rendered = "\n".join(commands)
+
+    assert "VLLM_WORKER_MULTIPROC_METHOD" not in rendered
+    assert "VLLM_USE_SIMPLE_KV_OFFLOAD" not in rendered
+    assert "--kv-offloading-backend" not in rendered
+    assert "--kv-offloading-size" not in rendered
 
 
 @pytest.mark.parametrize("node_rank", [1, 2, 3])
