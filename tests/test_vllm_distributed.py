@@ -34,7 +34,7 @@ def _mp_ctx(*, node_rank=0, net_ips=None):
         engine="vllm",
         cmd=(
             "vllm serve /models/Kimi-K3 --trust-remote-code "
-            "--tensor-parallel-size 8 --data-parallel-size 4 "
+            "--tensor-parallel-size 32 "
             "--host 0.0.0.0 --port 17000 "
             "--enable-auto-tool-choice --tool-call-parser kimi_k3 "
             "--reasoning-parser kimi_k3 --served-model-name kimi_k3"
@@ -46,6 +46,15 @@ def _mp_ctx(*, node_rank=0, net_ips=None):
         ray_port="28020",
         node_ips=node_ips,
     )
+
+
+def _kimi_k3_h20_mp_params():
+    return {
+        "model_name": "Kimi-K3",
+        "device_count": 8,
+        "nnodes": 4,
+        "_smart_card_token": "h20-141",
+    }
 
 
 def _kimi_k3_910c_ctx(*, node_rank=0):
@@ -106,12 +115,20 @@ def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
     monkeypatch.setenv("NCCL_SOCKET_IFNAME", "enp66s0f1")
     monkeypatch.setenv("GLOO_SOCKET_IFNAME", "enp66s0f1")
 
-    commands = vllm_distributed._build_mp_commands({}, _mp_ctx(node_rank=0))
+    commands = vllm_distributed._build_mp_commands(
+        _kimi_k3_h20_mp_params(),
+        _mp_ctx(node_rank=0),
+    )
     final_command = commands[-1]
 
     assert "export NCCL_SOCKET_IFNAME=enp66s0f1" in commands
     assert "export GLOO_SOCKET_IFNAME=enp66s0f1" in commands
-    # MP 路径只保留网卡选择，不再替 Kimi-K3 强制覆盖 NCCL/SSM 运行时策略。
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in commands
+    assert "export VLLM_USE_V2_MODEL_RUNNER=1" in commands
+    assert "export VLLM_USE_RUST_FRONTEND=1" in commands
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" in commands
+    assert "ulimit -l unlimited" in commands
+    # 新配方只补充镜像要求的运行环境，不恢复旧 NCCL/SSM 强制策略。
     for env_name in ("NCCL_NVLS_ENABLE", "NCCL_DEBUG", "VLLM_SSM_CONV_STATE_LAYOUT"):
         assert not any(command.startswith(f"export {env_name}=") for command in commands)
     assert "--distributed-executor-backend mp" in final_command
@@ -125,7 +142,8 @@ def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
     assert "--tool-call-parser kimi_k3" in final_command
     assert "--reasoning-parser kimi_k3" in final_command
     assert "--headless" not in final_command
-    assert "--data-parallel-size 4" in final_command
+    assert "--tensor-parallel-size 32" in final_command
+    assert "--data-parallel-size" not in final_command
 
 
 @pytest.mark.parametrize("node_rank", [1, 2, 3])
@@ -135,13 +153,18 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     monkeypatch.setenv("GLOO_SOCKET_IFNAME", "ens3f3")
 
     commands = vllm_distributed._build_mp_commands(
-        {"model_name": "Kimi-K3", "_smart_card_token": "h20-141"},
+        _kimi_k3_h20_mp_params(),
         _mp_ctx(node_rank=node_rank),
     )
     final_command = commands[-1]
 
     assert "export NCCL_SOCKET_IFNAME=ens3f3" in commands
     assert "export GLOO_SOCKET_IFNAME=ens3f3" in commands
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in commands
+    assert "export VLLM_USE_V2_MODEL_RUNNER=1" in commands
+    assert "export VLLM_USE_RUST_FRONTEND=1" in commands
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" in commands
+    assert "ulimit -l unlimited" in commands
     assert f"--node-rank {node_rank}" in final_command
     assert "--nnodes 4" in final_command
     assert "--master-addr 7.6.25.57" in final_command
@@ -152,17 +175,21 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     assert "--enable-auto-tool-choice" not in final_command
     assert "--tool-call-parser" not in final_command
     assert "--reasoning-parser" not in final_command
-    assert "--served-model-name" not in final_command
-    assert "--tensor-parallel-size 8" in final_command
-    assert "--data-parallel-size 4" in final_command
+    assert "--served-model-name kimi_k3" in final_command
+    assert "--tensor-parallel-size 32" in final_command
+    assert "--data-parallel-size" not in final_command
 
 
-def test_mp_worker_keeps_served_model_name_outside_kimi_k3_h20_scope(monkeypatch):
+def test_generic_mp_worker_keeps_served_model_name_without_kimi_runtime_env(monkeypatch):
     monkeypatch.setenv("MASTER_PORT", "29501")
 
     commands = vllm_distributed._build_mp_commands({}, _mp_ctx(node_rank=1))
 
     assert "--served-model-name kimi_k3" in commands[-1]
+    assert not any("VLLM_USE_V2_MODEL_RUNNER" in command for command in commands)
+    assert not any("VLLM_USE_RUST_FRONTEND" in command for command in commands)
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" not in commands
+    assert "ulimit -l unlimited" not in commands
 
 
 def test_vllm_distributed_mp_branch_does_not_fall_through_to_dp(monkeypatch):
@@ -184,7 +211,8 @@ def test_vllm_distributed_mp_branch_does_not_fall_through_to_dp(monkeypatch):
     assert "export COMMON_ENV=1" in script
     assert "--distributed-executor-backend mp" in script
     assert "--node-rank 1" in script
-    assert "--data-parallel-size 4" in script
+    assert "--tensor-parallel-size 32" in script
+    assert "--data-parallel-size" not in script
     assert "ray start" not in script
 
 

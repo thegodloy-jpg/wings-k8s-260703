@@ -324,8 +324,7 @@
           "vllm_distributed": {
             "use_vllm_serve": true,
             "trust_remote_code": true,
-            "gpu_memory_utilization": 0.90,
-            "enable_expert_parallel": true,
+            "gpu_memory_utilization": 0.98,
             "no_enable_flashinfer_autotune": true,
             "extra_cli_args": [
               "-cc.pass_config.fuse_allreduce_rms=False"
@@ -334,8 +333,11 @@
             "disable_custom_all_reduce": true,
             "distributed_timeout_seconds": 1200,
             "tool_call_parser": "kimi_k3",
-            "max_num_batched_tokens": 8192,
-            "max_model_len": "auto"
+            "max_num_batched_tokens": 4096,
+            "max_num_seqs": 10,
+            "max_model_len": 32768,
+            "attention_backend": "FLASHMLA",
+            "enable_prefix_caching": true
           }
         }
       },

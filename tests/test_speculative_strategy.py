@@ -524,10 +524,10 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
-    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "1760")
-    monkeypatch.setenv("NCCL_SOCKET_IFNAME", "bond0")
-    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "bond0")
-    model_path = "/var/ai-model/LocalStorage/2-Administrator"
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
+    monkeypatch.setenv("NCCL_SOCKET_IFNAME", "eth0")
+    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "eth0")
+    model_path = "/usr/local/serving/models"
     params = {
         "engine": "vllm",
         "model_name": "Kimi-K3",
@@ -538,19 +538,17 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
         "distributed_executor_backend": "mp",
         "nnodes": 4,
         "node_rank": 0,
-        "master_ip": "7.6.25.57",
+        "master_ip": "10.254.114.238",
         "master_port": 29501,
-        "enable_sparse": False,
+        "enable_sparse": True,
         "enable_speculative_decode": True,
         "_smart_card_token": card_token,
         "engine_config": {
             "use_vllm_serve": True,
             "model": model_path,
             "trust_remote_code": True,
-            "gpu_memory_utilization": 0.90,
-            "tensor_parallel_size": 8,
-            "data_parallel_size": 4,
-            "enable_expert_parallel": True,
+            "gpu_memory_utilization": 0.98,
+            "tensor_parallel_size": 32,
             "no_enable_flashinfer_autotune": True,
             "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"],
             "moe_backend": "marlin",
@@ -561,9 +559,12 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
             "reasoning_parser": "kimi_k3",
             "served_model_name": "kimi_k3",
             "host": "0.0.0.0",
-            "max_num_batched_tokens": 8192,
-            "max_model_len": "auto",
-            "port": 8000,
+            "max_num_batched_tokens": 4096,
+            "max_num_seqs": 10,
+            "max_model_len": 32768,
+            "attention_backend": "FLASHMLA",
+            "enable_prefix_caching": True,
+            "port": 18000,
         },
     }
 
@@ -574,6 +575,7 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     )
     assert params["_allowed_smart_feats"] == ["offload"]
     assert params["_smart_feats"] == ["offload"]
+    assert params["enable_sparse"] is False
     assert params["enable_speculative_decode"] is False
     assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
     assert os.environ["SD_ENABLE"] == "false"
@@ -588,43 +590,59 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
         "kv_connector": "SimpleCPUOffloadConnector",
         "kv_role": "kv_both",
         "kv_connector_extra_config": {
-            "cpu_bytes_to_use_per_rank": 236223201280,
-            "lazy_offload": "false",
+            "cpu_bytes_to_use_per_rank": 5368709120,
+            "lazy_offload": False,
         },
     }
 
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
 
-    assert "export NCCL_SOCKET_IFNAME=bond0" in script
-    assert "export GLOO_SOCKET_IFNAME=bond0" in script
+    assert "export NCCL_SOCKET_IFNAME=eth0" in script
+    assert "export GLOO_SOCKET_IFNAME=eth0" in script
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in script
+    assert "export VLLM_USE_V2_MODEL_RUNNER=1" in script
+    assert "export VLLM_USE_RUST_FRONTEND=1" in script
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" in script
+    assert "ulimit -l unlimited" in script
     assert exec_line.startswith(f"exec vllm serve {model_path} ")
     for expected in (
-        "--gpu-memory-utilization 0.9",
-        "--tensor-parallel-size 8",
-        "--data-parallel-size 4",
-        "--enable-expert-parallel",
+        "--trust-remote-code",
+        "--gpu-memory-utilization 0.98",
+        "--tensor-parallel-size 32",
         "--no-enable-flashinfer-autotune",
         "-cc.pass_config.fuse_allreduce_rms=False",
         "--moe-backend marlin",
         "--disable-custom-all-reduce",
         "--distributed-timeout-seconds 1200",
-        "--max-num-batched-tokens 8192",
-        "--max-model-len auto",
+        "--max-num-batched-tokens 4096",
+        "--max-num-seqs 10",
+        "--max-model-len 32768",
+        "--attention-backend FLASHMLA",
+        "--enable-prefix-caching",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser kimi_k3",
+        "--reasoning-parser kimi_k3",
+        "--served-model-name kimi_k3",
+        "--host 0.0.0.0",
+        "--port 18000",
         "--distributed-executor-backend mp",
         "--nnodes 4",
         "--node-rank 0",
-        "--master-addr 7.6.25.57",
+        "--master-addr 10.254.114.238",
         "--master-port 29501",
     ):
         assert expected in exec_line
-    assert "--max-num-seqs" not in exec_line
+    assert "--data-parallel-size" not in exec_line
+    assert "--enable-expert-parallel" not in exec_line
     assert exec_line.count("SimpleCPUOffloadConnector") == 1
-    assert exec_line.count("236223201280") == 1
-    assert '"lazy_offload":"false"' in exec_line
+    assert exec_line.count("5368709120") == 1
+    assert '"lazy_offload":false' in exec_line
     assert "--kv-offloading-backend" not in exec_line
     assert "LMCacheConnector" not in exec_line
     assert "LMCACHE_" not in script
+    assert "--kv-cache-dtype" not in exec_line
+    assert "--hf-overrides" not in exec_line
     assert "--speculative-config" not in exec_line
     assert "suffix" not in exec_line
     assert wings_entry._detect_offload_command_emitted(script) is True
@@ -634,7 +652,7 @@ def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     assert feature_status["variants"]["kv_offload"] == (
         "simple_cpu_offload_connector+custom"
     )
-    assert feature_status["others"]["kv_mem_offload_size"] == 1760
+    assert feature_status["others"]["kv_mem_offload_size"] == 40
 
 
 def test_kimi_k3_h20_non_tuned_topology_keeps_suffix_fallback(monkeypatch):
@@ -678,7 +696,7 @@ def test_kimi_k3_h20_simple_cpu_offload_rejects_other_runtime_scopes(
 ):
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
-    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "1760")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
     params = {
         "engine": "vllm",
         "model_name": "Kimi-K3",
@@ -690,8 +708,7 @@ def test_kimi_k3_h20_simple_cpu_offload_rejects_other_runtime_scopes(
         "_smart_card_token": "h20-141",
         "_smart_feats": ["offload"],
         "engine_config": {
-            "tensor_parallel_size": 8,
-            "data_parallel_size": 4,
+            "tensor_parallel_size": 32,
         },
     }
     target = params
@@ -738,8 +755,7 @@ def test_kimi_k3_h20_simple_cpu_offload_resolves_auto_size(monkeypatch, card_tok
         "engine_config": {
             "use_vllm_serve": True,
             "model": "/models/Kimi-K3",
-            "tensor_parallel_size": 8,
-            "data_parallel_size": 4,
+            "tensor_parallel_size": 32,
         },
     }
 
@@ -762,7 +778,7 @@ def test_kimi_k3_h20_simple_cpu_offload_resolves_auto_size(monkeypatch, card_tok
         "kv_role": "kv_both",
         "kv_connector_extra_config": {
             "cpu_bytes_to_use_per_rank": 44 * 1024 ** 3,
-            "lazy_offload": "false",
+            "lazy_offload": False,
         },
     }
     config_loader._set_kv_cache_config(
@@ -781,7 +797,7 @@ def test_kimi_k3_h20_simple_cpu_offload_resolves_auto_size(monkeypatch, card_tok
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
     assert "--kv-transfer-config" in exec_line
     assert "47244640256" in exec_line
-    assert '"lazy_offload":"false"' in exec_line
+    assert '"lazy_offload":false' in exec_line
     assert vllm_adapter.resolve_kv_offload_effective_state(params, "vllm") == (
         True,
         "simple_cpu_offload_connector+custom",
@@ -805,8 +821,7 @@ def test_kimi_k3_h20_simple_cpu_offload_rejects_auto_without_capacity(monkeypatc
         "_smart_card_token": "h20-141",
         "_smart_feats": ["offload"],
         "engine_config": {
-            "tensor_parallel_size": 8,
-            "data_parallel_size": 4,
+            "tensor_parallel_size": 32,
         },
     }
 
@@ -822,7 +837,7 @@ def test_kimi_k3_h20_simple_cpu_offload_preserves_pd_connector(
     monkeypatch.setenv("PD_ROLE", "P")
     monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
-    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "1760")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "40")
     ctx = {
         "engine": "vllm",
         "device": "nvidia",
@@ -836,8 +851,7 @@ def test_kimi_k3_h20_simple_cpu_offload_preserves_pd_connector(
         "_smart_feats": ["offload"],
     }
     engine_config = {
-        "tensor_parallel_size": 8,
-        "data_parallel_size": 4,
+        "tensor_parallel_size": 32,
     }
 
     config_loader._set_kv_cache_config(engine_config, ctx)

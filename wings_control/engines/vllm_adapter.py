@@ -643,8 +643,8 @@ _OFFLOAD_SIMPLE_CPU_VARIANT = "simple_cpu_offload_connector+custom"
 _SIMPLE_CPU_OFFLOAD_GIB = 1024 ** 3
 _SIMPLE_CPU_OFFLOAD_TOPOLOGY = {
     "device_count": 8,
-    "tensor_parallel_size": 8,
-    "data_parallel_size": 4,
+    "tensor_parallel_size": 32,
+    "data_parallel_size": 1,
     "pipeline_parallel_size": 1,
     "nnodes": 4,
 }
@@ -707,7 +707,7 @@ def _is_kimi_k3_h20_simple_cpu_scope(
 
     for key, expected in _SIMPLE_CPU_OFFLOAD_TOPOLOGY.items():
         raw_value = _offload_runtime_value(params, key)
-        if key == "pipeline_parallel_size" and raw_value in (None, ""):
+        if key in {"data_parallel_size", "pipeline_parallel_size"} and raw_value in (None, ""):
             raw_value = 1
         if _safe_int(raw_value) != expected:
             return False
@@ -722,6 +722,78 @@ def _is_kimi_k3_h20_simple_cpu_scope(
     if isinstance(engine_config, dict) and engine_config.get("enable_prefix_caching") is False:
         return False
     return True
+
+
+def _resolve_kimi_k3_simple_cpu_auto_node_size_gib(
+    params: Optional[Dict[str, Any]],
+    local_rank_count: int,
+) -> Optional[int]:
+    """解析并按本地 rank 对齐 Kimi-K3 SimpleCPU 的 auto 容量。"""
+    node_size_gib = resolve_offload_cpu_capacity_gb(params)
+    if node_size_gib is None:
+        logger.warning(
+            "[SimpleCPU Offload] KV_MEM_OFFLOAD_SIZE=auto but node capacity "
+            "is unavailable; request discarded."
+        )
+        return None
+    if node_size_gib <= 0:
+        logger.warning(
+            "[SimpleCPU Offload] auto node capacity is below the %dGiB floor; "
+            "request discarded.",
+            _OFFLOAD_MIN_GB,
+        )
+        return None
+
+    # SimpleCPU 按本地 rank 均分；auto 向下对齐可保证状态容量与真实落地字节数一致。
+    node_size_gib -= node_size_gib % local_rank_count
+    if node_size_gib < _OFFLOAD_MIN_GB:
+        logger.warning(
+            "[SimpleCPU Offload] aligned auto node capacity %dGiB is below "
+            "the %dGiB floor; request discarded.",
+            node_size_gib,
+            _OFFLOAD_MIN_GB,
+        )
+        return None
+    logger.info(
+        "[SimpleCPU Offload] auto node capacity resolved to %dGiB "
+        "across %d local ranks.",
+        node_size_gib,
+        local_rank_count,
+    )
+    return node_size_gib
+
+
+def _resolve_kimi_k3_simple_cpu_node_size_gib(
+    params: Optional[Dict[str, Any]],
+    raw_size: str,
+    local_rank_count: int,
+) -> Optional[int]:
+    """解析并校验 Kimi-K3 SimpleCPU 的节点级 GiB 容量。"""
+    if raw_size.lower() == "auto":
+        node_size_gib = _resolve_kimi_k3_simple_cpu_auto_node_size_gib(
+            params,
+            local_rank_count,
+        )
+        if node_size_gib is None:
+            return None
+    else:
+        node_size_gib = _safe_int(raw_size)
+
+    if node_size_gib is None or node_size_gib <= 0:
+        logger.warning(
+            "[SimpleCPU Offload] invalid KV_MEM_OFFLOAD_SIZE=%r; request discarded.",
+            raw_size,
+        )
+        return None
+    if node_size_gib % local_rank_count != 0:
+        logger.warning(
+            "[SimpleCPU Offload] node size %dGiB is not divisible by %d local ranks; "
+            "request discarded.",
+            node_size_gib,
+            local_rank_count,
+        )
+        return None
+    return node_size_gib
 
 
 def resolve_kimi_k3_h20_simple_cpu_config(
@@ -742,56 +814,14 @@ def resolve_kimi_k3_h20_simple_cpu_config(
         return None
 
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
-    if raw_size.lower() == "auto":
-        auto_total_gib = resolve_offload_cpu_capacity_gb(params)
-        if auto_total_gib is None:
-            logger.warning(
-                "[SimpleCPU Offload] KV_MEM_OFFLOAD_SIZE=auto but node capacity "
-                "is unavailable; request discarded."
-            )
-            return None
-        if auto_total_gib <= 0:
-            logger.warning(
-                "[SimpleCPU Offload] auto node capacity is below the %dGiB floor; "
-                "request discarded.",
-                _OFFLOAD_MIN_GB,
-            )
-            return None
-        node_size_gib = auto_total_gib
-    else:
-        node_size_gib = _safe_int(raw_size)
-
     local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
-    if node_size_gib is None or node_size_gib <= 0:
-        logger.warning(
-            "[SimpleCPU Offload] invalid KV_MEM_OFFLOAD_SIZE=%r; request discarded.",
-            raw_size,
-        )
-        return None
-    if raw_size.lower() == "auto":
-        # SimpleCPU 按本地 rank 均分；auto 向下对齐可保证状态容量与真实落地字节数一致。
-        node_size_gib -= node_size_gib % local_rank_count
-        if node_size_gib < _OFFLOAD_MIN_GB:
-            logger.warning(
-                "[SimpleCPU Offload] aligned auto node capacity %dGiB is below "
-                "the %dGiB floor; request discarded.",
-                node_size_gib,
-                _OFFLOAD_MIN_GB,
-            )
-            return None
-        logger.info(
-            "[SimpleCPU Offload] auto node capacity resolved to %dGiB "
-            "across %d local ranks.",
-            node_size_gib,
-            local_rank_count,
-        )
-    if node_size_gib % local_rank_count != 0:
-        logger.warning(
-            "[SimpleCPU Offload] node size %dGiB is not divisible by %d local ranks; "
-            "request discarded.",
-            node_size_gib,
-            local_rank_count,
-        )
+    # 容量解析独立成 helper，避免单个场景解析器再次触发超大函数门禁；数值和日志保持原样。
+    node_size_gib = _resolve_kimi_k3_simple_cpu_node_size_gib(
+        params,
+        raw_size,
+        local_rank_count,
+    )
+    if node_size_gib is None:
         return None
 
     row = resolve_feature_whitelist_row_from_params(
@@ -801,10 +831,10 @@ def resolve_kimi_k3_h20_simple_cpu_config(
         require_enabled=True,
     )
     lazy_offload = row.get("lazy_offload") if row else None
-    # 用户调优标准要求保留字符串 "false"，这里精确校验并原样下发，避免序列化为布尔值。
-    if lazy_offload != "false":
+    # 最新 Kimi-K3 镜像按 JSON 布尔值消费该字段；严格校验可避免字符串再次混入运行命令。
+    if lazy_offload is not False:
         logger.warning(
-            "[SimpleCPU Offload] whitelist lazy_offload must be the string 'false'; "
+            "[SimpleCPU Offload] whitelist lazy_offload must be boolean false; "
             "request discarded."
         )
         return None

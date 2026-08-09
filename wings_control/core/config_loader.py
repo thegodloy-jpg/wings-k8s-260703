@@ -1103,51 +1103,9 @@ def _should_skip_generic_tensor_parallelism(ctx) -> bool:
     return False
 
 
-def _set_kimi_k3_nvidia_h20_mp_parallelism(params, ctx) -> bool:
-    """按实际节点拓扑设置 Kimi-K3 H20 原生 MP 的 TP/DP。"""
-    if not (
-        ctx.get("model_architecture") == "KimiK3ForConditionalGeneration"
-        and ctx.get("device") == "nvidia"
-        and ctx.get("engine") == "vllm"
-        and ctx.get("distributed") is True
-        and ctx.get("distributed_executor_backend") == "mp"
-    ):
-        return False
-
-    card_token = _normalize_card_token_for_match(
-        ctx.get("_smart_card_token") or ctx.get("card_model")
-    )
-    if card_token not in {"h2096", "h2096g", "h20141", "h20141g"}:
-        return False
-
-    try:
-        local_device_count = int(ctx.get("device_count") or 0)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Kimi-K3 NVIDIA H20 MP requires a valid device_count") from exc
-    if local_device_count <= 0:
-        raise ValueError("Kimi-K3 NVIDIA H20 MP requires device_count > 0")
-
-    node_count = _resolve_distributed_node_count(
-        ctx.get("node_ips"),
-        ctx.get("nnodes"),
-    )
-    # 维护边界：仅把已调优的 Kimi-K3 H20 MP 从通用全局 TP 公式中短路；
-    # 其他模型继续保持 TP=device_count*nnodes 的既有行为。
-    params["tensor_parallel_size"] = local_device_count
-    params["data_parallel_size"] = node_count
-    logger.info(
-        "Kimi-K3 NVIDIA H20 MP topology resolved from runtime: TP=%s, DP=%s",
-        local_device_count,
-        node_count,
-    )
-    return True
-
-
 def _set_parallelism_params(params, ctx):
     """根据设备数和分布式模式设置张量并行度（tensor_parallel_size）。"""
     if _set_pd_parallelism_params(params, ctx):
-        return
-    if _set_kimi_k3_nvidia_h20_mp_parallelism(params, ctx):
         return
     if _set_qwen397b_ascend_dp_tensor_parallel(params, ctx):
         return

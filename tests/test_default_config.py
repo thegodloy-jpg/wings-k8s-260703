@@ -2415,16 +2415,18 @@ def test_nvidia_day0_exact_defaults_live_in_nvidia_default_json():
     assert kimi_k3["vllm_distributed"] == {
         "use_vllm_serve": True,
         "trust_remote_code": True,
-        "gpu_memory_utilization": 0.90,
-        "enable_expert_parallel": True,
+        "gpu_memory_utilization": 0.98,
         "no_enable_flashinfer_autotune": True,
         "extra_cli_args": ["-cc.pass_config.fuse_allreduce_rms=False"],
         "moe_backend": "marlin",
         "disable_custom_all_reduce": True,
         "distributed_timeout_seconds": 1200,
         "tool_call_parser": "kimi_k3",
-        "max_num_batched_tokens": 8192,
-        "max_model_len": "auto",
+        "max_num_batched_tokens": 4096,
+        "max_num_seqs": 10,
+        "max_model_len": 32768,
+        "attention_backend": "FLASHMLA",
+        "enable_prefix_caching": True,
     }
     assert llm["Qwen3_5ForConditionalGeneration"]["Qwen3.6-27B"]["card_tokens"] == [
         "l20",
@@ -2892,7 +2894,7 @@ def test_qwen35_moe_non_397b_distributed_still_uses_ray(monkeypatch):
 
 
 @pytest.mark.parametrize("nnodes", [1, 2, 4])
-def test_kimi_k3_nvidia_routes_to_mp_with_runtime_tp_dp(monkeypatch, nnodes):
+def test_kimi_k3_nvidia_routes_to_mp_with_runtime_global_tp(monkeypatch, nnodes):
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
     distributed_config = {
@@ -2926,8 +2928,8 @@ def test_kimi_k3_nvidia_routes_to_mp_with_runtime_tp_dp(monkeypatch, nnodes):
     })
     engine_config = {}
     config_loader._set_parallelism_params(engine_config, params)
-    assert engine_config["tensor_parallel_size"] == 8
-    assert engine_config["data_parallel_size"] == nnodes
+    assert engine_config["tensor_parallel_size"] == 8 * nnodes
+    assert "data_parallel_size" not in engine_config
 
 
 def test_kimi_k3_w4a8_ascend_auto_selects_vllm_ascend_without_broadening_k3(monkeypatch):
@@ -3125,9 +3127,12 @@ def test_kimi_k3_nvidia_defaults_are_h20_gated_and_parser_is_shared():
     assert merged_config["reasoning_parser"] == "kimi_k3"
     assert merged_config["served_model_name"] == "Kimi-K3"
     assert merged_config["enable_auto_tool_choice"] is True
-    assert merged_config["tensor_parallel_size"] == 8
-    assert merged_config["data_parallel_size"] == 4
-    assert merged_config["gpu_memory_utilization"] == 0.90
-    assert merged_config["enable_expert_parallel"] is True
-    assert merged_config["max_model_len"] == "auto"
-    assert "max_num_seqs" not in merged_config
+    assert merged_config["tensor_parallel_size"] == 32
+    assert "data_parallel_size" not in merged_config
+    assert merged_config["gpu_memory_utilization"] == 0.98
+    assert "enable_expert_parallel" not in merged_config
+    assert merged_config["max_model_len"] == 32768
+    assert merged_config["max_num_batched_tokens"] == 4096
+    assert merged_config["max_num_seqs"] == 10
+    assert merged_config["attention_backend"] == "FLASHMLA"
+    assert merged_config["enable_prefix_caching"] is True

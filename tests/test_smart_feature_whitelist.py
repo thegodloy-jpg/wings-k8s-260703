@@ -484,7 +484,7 @@ def test_kimi_k3_h20_uses_exact_simple_cpu_offload(card_token):
     assert row is not None
     assert row["backend"] == "simple_cpu"
     assert row["arch"] == "KimiK3ForConditionalGeneration"
-    assert row["lazy_offload"] == "false"
+    assert row["lazy_offload"] is False
     assert model_utils.resolve_feature_whitelist(
         "vllm", "Kimi-K3", "/models/Kimi-K3", card_token
     ) == frozenset({"offload"})

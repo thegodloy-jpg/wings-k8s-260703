@@ -532,7 +532,18 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     return parts
 
 
-def _build_mp_env_commands() -> List[str]:
+def _is_kimi_k3_h20_tuned_mp(params: Dict[str, Any]) -> bool:
+    """精确识别四机八卡 Kimi-K3 H20 MP 配方，避免运行时参数扩散到其它 MP 场景。"""
+    return (
+        str(params.get("model_name") or "").strip().lower() == "kimi-k3"
+        and str(params.get("_smart_card_token") or "").strip().lower()
+        in {"h20-96", "h20-141"}
+        and _safe_int(params.get("device_count")) == 8
+        and _safe_int(params.get("nnodes")) == 4
+    )
+
+
+def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
     """构造 Kimi-K3 NVIDIA 原生 MP 通信环境，并保留每个节点的本地网卡配置。"""
     net_if = os.getenv(
         "NETWORK_INTERFACE",
@@ -540,10 +551,20 @@ def _build_mp_env_commands() -> List[str]:
     )
     nccl_if = os.getenv("NCCL_SOCKET_IFNAME", net_if)
     gloo_if = os.getenv("GLOO_SOCKET_IFNAME", net_if)
-    return [
+    env_commands = [
         f"export NCCL_SOCKET_IFNAME={shlex.quote(nccl_if)}",
         f"export GLOO_SOCKET_IFNAME={shlex.quote(gloo_if)}",
     ]
+    if _is_kimi_k3_h20_tuned_mp(params):
+        # 仅该定制镜像配方要求 V2 runner、Rust frontend 和无限 memlock；其它 MP 场景保持原样。
+        env_commands.extend([
+            "export VLLM_ENGINE_READY_TIMEOUT_S=3600",
+            "export VLLM_USE_V2_MODEL_RUNNER=1",
+            "export VLLM_USE_RUST_FRONTEND=1",
+            "unset PYTORCH_CUDA_ALLOC_CONF",
+            "ulimit -l unlimited",
+        ])
+    return env_commands
 
 
 def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: str = "") -> List[str]:
@@ -585,13 +606,6 @@ def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: 
             "--tool-call-parser",
             "--reasoning-parser",
         ]
-        # 仅 Kimi-K3 H20 调优配方要求 worker 不携带 served-model-name；其它 MP 场景不改行为。
-        if (
-            str(params.get("model_name") or "").strip().lower() == "kimi-k3"
-            and str(params.get("_smart_card_token") or "").strip().lower()
-            in {"h20-96", "h20-141"}
-        ):
-            frontend_only_flags.append("--served-model-name")
         for flag in frontend_only_flags:
             mp_cmd = _strip_cli_flag(mp_cmd, flag)
         mp_cmd = re.sub(r"\s+--enable-auto-tool-choice\b", "", mp_cmd)
@@ -604,7 +618,7 @@ def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: 
         f" --master-addr {shlex.quote(ctx.head_addr)}"
         f" --master-port {master_port}"
     )
-    return [*_build_mp_env_commands(), f"exec {mp_cmd}{topology_args}"]
+    return [*_build_mp_env_commands(params), f"exec {mp_cmd}{topology_args}"]
 
 
 def _resolve_vllm_dist_params(params: Dict[str, Any]) -> tuple[str, str, str]:
