@@ -239,8 +239,8 @@ def _build_common_ascend_dp_env_commands(
     ]
 
 
-def _build_kimi_k3_910c_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
-    """构造 Kimi-K3-W4A8 四机 910C 标准通信环境。"""
+def _validate_kimi_k3_910c_dp_env_params(params: Dict[str, Any]) -> tuple[int, int]:
+    """校验 Kimi-K3 910C 环境构造依赖的固定拓扑并返回设备数、节点序号。"""
     vllm_adapter = _import_vllm_adapter()
     platform = vllm_adapter.ascend_platform_from_runtime(params)
     if platform != "a3":
@@ -267,6 +267,14 @@ def _build_kimi_k3_910c_dp_env_commands(params: Dict[str, Any], net_if: str) -> 
             "Kimi-K3-W4A8 Ascend 910C dp_deployment requires node_rank in 0..3; "
             f"got {params.get('node_rank')!r}"
         )
+    return device_count, node_rank
+
+
+def _build_kimi_k3_910c_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
+    """构造 Kimi-K3-W4A8 四机 910C 标准通信环境。"""
+    # 拓扑校验独立封装，环境构造只负责按已验证结果生成 export，避免职责膨胀。
+    device_count, node_rank = _validate_kimi_k3_910c_dp_env_params(params)
+    vllm_adapter = _import_vllm_adapter()
 
     hccl_socket_if = os.getenv("HCCL_SOCKET_IFNAME", net_if)
     env_commands = [

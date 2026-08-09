@@ -704,13 +704,15 @@ def is_kimi_k3_910c_dp_scope(
     """精确识别 Kimi-K3-W4A8 四节点 910C 原生 DP 配方。"""
     if not params or engine != "vllm_ascend":
         return False
-    if (
-        str(params.get("model_name") or "").strip().lower() != "kimi-k3-w4a8"
-        or "910c" not in str(params.get("_smart_card_token") or "").strip().lower()
-        or params.get("_kimi_k3_910c_dp") is not True
-        or params.get("distributed") is not True
-        or params.get("distributed_executor_backend") != "dp_deployment"
-    ):
+    # 将固定配方边界收敛为单一签名比较，避免控制语句继续堆叠布尔条件。
+    scope_signature = (
+        str(params.get("model_name") or "").strip().lower(),
+        "910c" in str(params.get("_smart_card_token") or "").strip().lower(),
+        params.get("_kimi_k3_910c_dp") is True,
+        params.get("distributed") is True,
+        params.get("distributed_executor_backend"),
+    )
+    if scope_signature != ("kimi-k3-w4a8", True, True, True, "dp_deployment"):
         return False
     if not all(
         _safe_int(_offload_runtime_value(params, key)) == expected

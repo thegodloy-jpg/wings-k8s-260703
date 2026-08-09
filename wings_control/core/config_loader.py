@@ -3267,6 +3267,47 @@ def _should_suppress_kimi_k3_simple_cpu_suffix(
     ) == (True, "kimi-k3", True, "mp", 8, 4, "simple_cpu")
 
 
+def _suppress_unsupported_spec_profiles(
+    context: _SmartFeatureEffectContext,
+    spec_eff: bool,
+) -> bool:
+    """按既有顺序收口不支持自动投机的精确 profile。"""
+    p = context.p
+    if (
+        context.engine == "vllm_ascend"
+        and is_kimi_k27_code_family(p, context.engine)
+        and spec_eff
+    ):
+        logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
+        spec_eff = False
+    if _should_suppress_kimi_k3_simple_cpu_suffix(context, spec_eff):
+        # 该调优配方只启用 SimpleCPU KV 卸载，不允许页面 spec 开关落入通用 suffix。
+        logger.info(
+            "[SmartFeature] Kimi-K3 H20 SimpleCPU topology does not use automatic "
+            "suffix speculative decode -> suppressed"
+        )
+        spec_eff = False
+    if spec_eff and is_kimi_k3_910c_dp_scope(p, context.engine):
+        # suffix 禁用是该 910C 配方本身的能力边界，不依赖 offload 是否成功启用。
+        logger.info(
+            "[SmartFeature] Kimi-K3-W4A8 910C DP topology does not support "
+            "suffix speculative decode -> suppressed"
+        )
+        spec_eff = False
+    if spec_eff and is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
+        p,
+        context.engine,
+    ):
+        # 该独立 profile 的能力边界是 FP8 sparse-only；页面投机请求不得再落入
+        # 全局 suffix 兜底，同时不能影响基础 V4-Flash/Pro5000 的 MTP 配方。
+        logger.info(
+            "[SmartFeature] DeepSeek-V4-Flash-0731 RTX PRO 5000 profile is "
+            "sparse-only; speculative decode -> suppressed"
+        )
+        spec_eff = False
+    return spec_eff
+
+
 def _apply_spec_feature_effect(
     context: _SmartFeatureEffectContext,
 ) -> Tuple[bool, bool, bool]:
@@ -3300,39 +3341,10 @@ def _apply_spec_feature_effect(
         os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "false"
         return spec_req, False, False
 
-    spec_eff = spec_req or "spec" in forced_feats
-    if (
-        context.engine == "vllm_ascend"
-        and is_kimi_k27_code_family(p, context.engine)
-        and spec_eff
-    ):
-        logger.info("[SmartFeature] Kimi K2.7 Code does not support auto speculative decode -> suppressed")
-        spec_eff = False
-    if _should_suppress_kimi_k3_simple_cpu_suffix(context, spec_eff):
-        # 该调优配方只启用 SimpleCPU KV 卸载，不允许页面 spec 开关落入通用 suffix。
-        logger.info(
-            "[SmartFeature] Kimi-K3 H20 SimpleCPU topology does not use automatic "
-            "suffix speculative decode -> suppressed"
-        )
-        spec_eff = False
-    if spec_eff and is_kimi_k3_910c_dp_scope(p, context.engine):
-        # suffix 禁用是该 910C 配方本身的能力边界，不依赖 offload 是否成功启用。
-        logger.info(
-            "[SmartFeature] Kimi-K3-W4A8 910C DP topology does not support "
-            "suffix speculative decode -> suppressed"
-        )
-        spec_eff = False
-    if spec_eff and is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
-        p,
-        context.engine,
-    ):
-        # 该独立 profile 的能力边界是 FP8 sparse-only；页面投机请求不得再落入
-        # 全局 suffix 兜底，同时不能影响基础 V4-Flash/Pro5000 的 MTP 配方。
-        logger.info(
-            "[SmartFeature] DeepSeek-V4-Flash-0731 RTX PRO 5000 profile is "
-            "sparse-only; speculative decode -> suppressed"
-        )
-        spec_eff = False
+    spec_eff = _suppress_unsupported_spec_profiles(
+        context,
+        spec_req or "spec" in forced_feats,
+    )
     p["enable_speculative_decode"] = spec_eff
     os.environ["ENABLE_SPECULATIVE_DECODE"] = os.environ["SD_ENABLE"] = "true" if spec_eff else "false"
     if spec_eff and spec_whitelisted:
