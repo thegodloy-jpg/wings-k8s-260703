@@ -3294,15 +3294,17 @@ def _suppress_unsupported_spec_profiles(
             "suffix speculative decode -> suppressed"
         )
         spec_eff = False
-    if spec_eff and is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
-        p,
-        context.engine,
+    if (
+        spec_eff
+        and "spec" not in context.feats
+        and "spec" not in context.forced_feats
+        and is_deepseek_v4_flash_0731_rtx_pro_5000_scope(p, context.engine)
     ):
-        # 该独立 profile 的能力边界是 FP8 sparse-only；页面投机请求不得再落入
-        # 全局 suffix 兜底，同时不能影响基础 V4-Flash/Pro5000 的 MTP 配方。
+        # 精确 profile 仅允许白名单声明的 DSpark 配方；若能力行缺失或未命中，
+        # 仍禁止页面投机请求落入通用 suffix，避免偏离 Pro5000-0731 固定配方。
         logger.info(
             "[SmartFeature] DeepSeek-V4-Flash-0731 RTX PRO 5000 profile is "
-            "sparse-only; speculative decode -> suppressed"
+            "missing its exact spec recipe; speculative decode -> suppressed"
         )
         spec_eff = False
     return spec_eff
@@ -3321,8 +3323,8 @@ def _apply_spec_feature_effect(
     Kimi K2.7 Code 是例外：当前 DAY0 规则明确不做自动投机，因此即便页面请求了 spec，
     这里也会在收口层关闭。Kimi-K3 四节点 H20 SimpleCPU 调优配方同样不使用自动
     suffix。Kimi-K3-W4A8 四节点 910C 配方也不支持 suffix；DeepSeek-V4-Flash-0731
-    + RTX PRO 5000 的独立 profile 只允许 FP8 sparse。四个场景都在进入 adapter 前
-    收口，保证命令与状态一致。
+    + RTX PRO 5000 只允许精确白名单声明的 DSpark，不允许回落通用 suffix。四个场景
+    都在进入 adapter 前收口，保证命令与状态一致。
     """
     p = context.p
     feats = context.feats

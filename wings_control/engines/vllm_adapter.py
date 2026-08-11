@@ -736,14 +736,14 @@ def is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
     params: Optional[Dict[str, Any]],
     engine: str,
 ) -> bool:
-    """精确识别只允许 FP8 sparse 的 0731 + RTX PRO 5000 72G 配方。"""
+    """精确识别 DeepSeek-V4-Flash-0731 + RTX PRO 5000 72G 配方。"""
     if not params or engine != "vllm":
         return False
     model_name = str(params.get("model_name") or "").strip().rstrip("/").lower()
     if model_name not in _DEEPSEEK_V4_FLASH_0731_EXACT_NAMES:
         return False
     # 复用现有 Pro5000-72 硬件口径，但先以精确模型名收口，避免基础 V4-Flash
-    # 以及 H20/Ascend 0731 配方被带入 sparse-only 能力边界。
+    # 以及 H20/Ascend 0731 配方被带入本独立能力边界。
     return is_deepseek_v4_flash_rtx_pro_5000(params, engine)
 
 
@@ -3050,7 +3050,11 @@ def _resolve_no_speculative_profile_label(
     if is_kimi_k3_910c_dp_scope(params, engine):
         return "Kimi-K3-W4A8-910C"
     if is_deepseek_v4_flash_0731_rtx_pro_5000_scope(params, engine):
-        return "DeepSeek-V4-Flash-0731-RTX-PRO-5000"
+        smart_feats = set(params.get("_smart_feats") or ())
+        # 页面开关和精确白名单必须同时有效；否则继续清除显式配置，
+        # 防止关闭 spec 或白名单异常时绕过收口直接启动其它投机方法。
+        if not params.get("enable_speculative_decode") or "spec" not in smart_feats:
+            return "DeepSeek-V4-Flash-0731-RTX-PRO-5000"
     return ""
 
 
@@ -3286,9 +3290,6 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     # MiniMax-M2.7-NVFP4 + RTX-PRO-5000 + vLLM(NVIDIA) TP/DP 动态策略
     # （TP=min(4,device_count) + DP=device_count/TP，与 DeepSeek-V4-Flash-NV 同构）
     _apply_minimax_m27_nvfp4_nv_engine_defaults(params, engine_config, explicit_keys)
-    # block_size 固定 256 必须在所有可能写入 block_size 的默认注入之后执行，
-    # 以确保最终值恒为 256（覆盖 json 默认与用户显式值）。
-    _force_deepseek_v4_flash_nv_block_size(params, engine_config)
     _apply_glm5_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_kimi_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_generic_deepseek_ascend_dp_defaults(params, engine_config, explicit_keys)
@@ -3347,8 +3348,8 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[vLLM] Mapping deprecated task=%s to --runner pooling", removed_task)
         engine_config.setdefault("runner", "pooling")
 
-    # 精确 sparse-only/no-spec 配方不支持 suffix；这里还要清理显式
-    # CONFIG_FORCE/engine_config 入口，保证状态和最终命令一致。
+    # 精确 profile 未有效开启 spec 时不支持显式配置或 suffix；这里清理
+    # CONFIG_FORCE/engine_config 绕过入口，保证状态和最终命令一致。
     _enforce_exact_profile_no_speculative_config(params, engine_config)
     _disable_speculative_decode_for_async_suffix_conflict(params, engine_config)
     _align_implicit_dp_to_final_tp(params, engine_config, explicit_keys)
@@ -3688,34 +3689,6 @@ def _apply_minimax_m27_nvfp4_nv_engine_defaults(
         engine_config["data_parallel_size"] = dp
         params["data_parallel_size"] = dp
         logger.info("[MiniMax-M2.7-NVFP4-NV] data_parallel_size = %d (%d / %d)", dp, device_count, tp)
-
-
-# V4-Flash KV 稀疏路径（IndexCache / FlashInfer MLA sparse backend）要求 block_size 恒为 256，
-# 与卡型无关。即使用户显式传入其它值也以 256 覆盖，
-# 避免 block_size 不匹配导致启动失败或性能劣化。
-_DEEPSEEK_V4_FLASH_NV_BLOCK_SIZE = 256
-
-
-def _force_deepseek_v4_flash_nv_block_size(
-    params: Dict[str, Any],
-    engine_config: Dict[str, Any],
-) -> None:
-    """DeepSeek-V4-Flash + vllm(NVIDIA) 固定 ``--block-size 256``。
-    本函数对所有 NVIDIA 卡型生效（``engine == "vllm"``），且强制覆盖用户
-    显式值——block_size 是 V4-Flash KV 稀疏路径的硬性约束，不可由 CLI 改写。
-    """
-    if params.get("engine") != "vllm":
-        return
-    if not _is_deepseek_v4_flash_params(params):
-        return
-    prev = engine_config.get("block_size")
-    if prev not in (None, _DEEPSEEK_V4_FLASH_NV_BLOCK_SIZE):
-        logger.info(
-            "[DeepSeek-V4-Flash-NV] 强制 block_size=%d（覆盖原值 %r）；"
-            "V4-Flash KV 稀疏路径要求固定 256。",
-            _DEEPSEEK_V4_FLASH_NV_BLOCK_SIZE, prev,
-        )
-    engine_config["block_size"] = _DEEPSEEK_V4_FLASH_NV_BLOCK_SIZE
 
 
 def resolve_offload_cpu_capacity_gb(

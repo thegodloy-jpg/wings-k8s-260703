@@ -73,9 +73,20 @@ def test_0731_rtxpro5000_selects_independent_exact_profile(model_name):
     assert _match_defaults(model_name, RTXPRO5000_HARDWARE) == {
         "use_vllm_serve": True,
         "max_model_len": 1048576,
+        "block_size": 256,
         "enable_expert_parallel": True,
         "tokenizer_mode": "deepseek_v4",
         "tool_call_parser": "deepseek_v4",
+        "gpu_memory_utilization": 0.8,
+        "enable_prefix_caching": True,
+        "compilation_config": {
+            "cudagraph_mode": "FULL_AND_PIECEWISE",
+            "custom_ops": ["all"],
+        },
+        "async_scheduling": True,
+        "attention_backend": "FLASHINFER_MLA_SPARSE_DSV4",
+        "enable_flashinfer_autotune": True,
+        "all2all_backend": "deepep_high_throughput",
     }
 
 
@@ -103,7 +114,7 @@ def test_0731_rtxpro5000_profile_does_not_replace_existing_nvidia_profiles():
     assert rtxpro5000_48["kv_cache_dtype"] == "fp8"
 
 
-def test_0731_rtxpro5000_whitelist_allows_only_fp8_sparse():
+def test_0731_rtxpro5000_whitelist_selects_dspark5_and_fp8_indexcache():
     allowed = model_utils.resolve_feature_whitelist(
         "vllm",
         MODEL_NAME,
@@ -117,11 +128,23 @@ def test_0731_rtxpro5000_whitelist_allows_only_fp8_sparse():
         "rtxpro5000-72",
         "sparse",
     )
+    spec_row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        MODEL_NAME,
+        MODEL_PATH,
+        "rtxpro5000-72",
+        "spec",
+    )
 
-    assert allowed == {"sparse"}
+    assert allowed == {"sparse", "spec"}
     assert sparse_row is not None
-    assert sparse_row["strategy"] == "fp8"
-    assert "topk" not in sparse_row
+    assert sparse_row["strategy"] == "indexcache"
+    assert sparse_row["kv_cache_dtype"] == "fp8"
+    assert sparse_row["topk"] == {"accuracy_first": 4}
+    assert spec_row is not None
+    assert spec_row["mtp_method"] == "dspark"
+    assert spec_row["mtp_num_speculative_tokens"] == 5
+    assert spec_row["draft_sample_method"] == "greedy"
 
     base_allowed = model_utils.resolve_feature_whitelist(
         "vllm",
@@ -143,7 +166,7 @@ def test_0731_rtxpro5000_whitelist_allows_only_fp8_sparse():
         ("vllm_ascend", "DeepSeek-V4-Flash-0731-w8a8", "910c", False),
     ],
 )
-def test_0731_rtxpro5000_no_spec_scope_is_exact(
+def test_0731_rtxpro5000_profile_scope_is_exact(
     engine,
     model_name,
     card_token,
@@ -190,14 +213,14 @@ def _build_rtxpro5000_params(enable_sparse):
     }
 
 
-def test_0731_rtxpro5000_final_command_contains_only_fp8_sparse(monkeypatch):
+def test_0731_rtxpro5000_final_command_contains_static_and_sparse_recipe(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Info)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
     monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
     params = _build_rtxpro5000_params(enable_sparse=True)
     config_loader.apply_effective_feature_enablement(params, RTXPRO5000_HARDWARE)
 
-    assert params["_allowed_smart_feats"] == ["sparse"]
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
     assert params["_smart_feats"] == ["sparse"]
 
     script = vllm_adapter.build_start_script(params)
@@ -210,12 +233,24 @@ def test_0731_rtxpro5000_final_command_contains_only_fp8_sparse(monkeypatch):
     assert "--data-parallel-size 1" in exec_line
     assert "--max-model-len 1048576" in exec_line
     assert "--enable-expert-parallel" in exec_line
-    assert "--hf-overrides" not in exec_line
+    assert "--gpu-memory-utilization 0.8" in exec_line
+    assert "--enable-prefix-caching" in exec_line
+    assert "--async-scheduling" in exec_line
+    assert "--attention-backend FLASHINFER_MLA_SPARSE_DSV4" in exec_line
+    assert "--enable-flashinfer-autotune" in exec_line
+    assert "--all2all-backend deepep_high_throughput" in exec_line
+    assert '"cudagraph_mode":"FULL_AND_PIECEWISE"' in exec_line
+    assert '"custom_ops":["all"]' in exec_line
+    assert "--hf-overrides" in exec_line
+    assert '"use_index_cache":true' in exec_line
+    assert '"index_topk_freq":4' in exec_line
     assert "--speculative-config" not in exec_line
     assert "--kv-offloading-backend" not in exec_line
     assert "--kv-offloading-size" not in exec_line
-    assert "--attention-backend" not in exec_line
-    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == "fp8"
+    assert (
+        vllm_adapter.resolve_sparse_variant(params, "vllm")
+        == "fp8_indexcache_use_index_cache_topk4"
+    )
 
     status = wings_entry._resolve_advanced_feature_status("vllm", params)
     assert status["features"]["sparse_kv"] is True
@@ -223,7 +258,22 @@ def test_0731_rtxpro5000_final_command_contains_only_fp8_sparse(monkeypatch):
     assert status["features"]["kv_offload"] is False
 
 
-def test_0731_rtxpro5000_page_spec_request_does_not_fall_back_to_suffix(
+def test_0731_rtxpro5000_block_size_uses_default_but_keeps_explicit_override(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Info)
+    params = _build_rtxpro5000_params(enable_sparse=True)
+
+    assert params["engine_config"]["block_size"] == 256
+
+    params["_explicit_cli_keys"] = ["block_size"]
+    params["engine_config"]["block_size"] = 128
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert "--block-size 128" in exec_line
+    assert "--block-size 256" not in exec_line
+
+
+def test_0731_rtxpro5000_page_spec_request_generates_dspark5(
     monkeypatch,
 ):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Info)
@@ -238,43 +288,39 @@ def test_0731_rtxpro5000_page_spec_request_does_not_fall_back_to_suffix(
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
 
-    assert params["_allowed_smart_feats"] == ["sparse"]
-    assert params["_smart_feats"] == ["sparse"]
-    assert params["enable_speculative_decode"] is False
-    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "false"
-    assert os.environ["SD_ENABLE"] == "false"
-    assert vllm_adapter.should_append_auto_speculative_config(params) is False
-    assert vllm_adapter.build_speculative_cmd(params, "vllm") == ""
-    assert "--speculative-config" not in exec_line
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
+    assert params["_smart_feats"] == ["sparse", "spec"]
+    assert params["enable_speculative_decode"] is True
+    assert os.environ["ENABLE_SPECULATIVE_DECODE"] == "true"
+    assert os.environ["SD_ENABLE"] == "true"
+    assert vllm_adapter.should_append_auto_speculative_config(params) is True
+    assert (
+        vllm_adapter.build_speculative_cmd(params, "vllm")
+        == " --speculative-config "
+        "'{\"method\":\"dspark\",\"num_speculative_tokens\":5,"
+        "\"draft_sample_method\":\"greedy\"}'"
+    )
+    assert exec_line.count("--speculative-config") == 1
+    assert '"method":"dspark"' in exec_line
+    assert '"num_speculative_tokens":5' in exec_line
+    assert '"draft_sample_method":"greedy"' in exec_line
+    assert '"method" : "suffix"' not in exec_line
     assert exec_line.count("--kv-cache-dtype fp8") == 1
+    assert '"use_index_cache":true' in exec_line
 
     status = wings_entry._resolve_advanced_feature_status("vllm", params)
-    assert status["features"]["speculative_decode"] is False
+    assert status["features"]["speculative_decode"] is True
     assert status["features"]["sparse_kv"] is True
 
 
-@pytest.mark.parametrize(
-    ("method", "as_json_string"),
-    [
-        ("suffix", False),
-        ("suffix", True),
-        ("mtp", False),
-    ],
-)
-def test_0731_rtxpro5000_removes_explicit_speculative_config(
-    monkeypatch,
-    method,
-    as_json_string,
-):
+def test_0731_rtxpro5000_spec_off_removes_explicit_speculative_config(monkeypatch):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Info)
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
     params = _build_rtxpro5000_params(enable_sparse=True)
-    explicit_config = {"method": method, "num_speculative_tokens": 5}
-    params["enable_speculative_decode"] = True
-    params["_smart_feats"] = ["sparse", "spec"]
-    params["engine_config"]["speculative_config"] = (
-        json.dumps(explicit_config) if as_json_string else explicit_config
-    )
+    params["engine_config"]["speculative_config"] = {
+        "method": "dspark",
+        "num_speculative_tokens": 5,
+    }
 
     prepared = vllm_adapter._prepare_engine_config(params)
     script = vllm_adapter.build_start_script(params)
@@ -298,7 +344,7 @@ def test_0731_rtxpro5000_sparse_off_does_not_leave_fp8(monkeypatch):
     params = _build_rtxpro5000_params(enable_sparse=False)
     config_loader.apply_effective_feature_enablement(params, RTXPRO5000_HARDWARE)
 
-    assert params["_allowed_smart_feats"] == ["sparse"]
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
     assert params["_smart_feats"] == []
 
     script = vllm_adapter.build_start_script(params)
