@@ -237,16 +237,15 @@
         },
         "DeepSeek-V4-Flash-0731-w8a8-Ascend910C": {
           "vllm_ascend": {
-            "max_model_len": 1048576,
+            "max_model_len": 136192,
             "max_num_batched_tokens": 10240,
             "gpu_memory_utilization": 0.9,
             "api_server_count": 1,
             "max_num_seqs": 64,
             "enable_expert_parallel": true,
             "quantization": "ascend",
-            "block_size": 128,
-            "async_scheduling": true,
-            "safetensors_load_strategy": "prefetch",
+            "block_size": 32,
+            "model_loader_extra_config": {"enable_multithread_load": true, "num_threads": 128},
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
             "additional_config": {
               "ascend_compilation_config": {
@@ -254,6 +253,8 @@
                 "enable_static_kernel": false
               },
               "enable_cpu_binding": true,
+              "enable_dsa_cp": true,
+              "enable_flashcomm1": true,
               "multistream_overlap_shared_expert": true
             },
             "tokenizer_mode": "deepseek_v4",

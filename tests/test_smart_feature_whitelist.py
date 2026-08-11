@@ -521,7 +521,7 @@ def test_kimi_k3_w4a8_910c_uses_exact_native_offload():
     ) == frozenset()
 
 
-def test_deepseek_v4_flash_0731_w8a8_spec_is_card_specific():
+def test_deepseek_v4_flash_0731_w8a8_smart_features_are_card_specific():
     model_name = "DeepSeek-V4-Flash-0731-w8a8"
     model_path = f"/var/ai-model/{model_name}/"
 
@@ -530,6 +530,9 @@ def test_deepseek_v4_flash_0731_w8a8_spec_is_card_specific():
     )
     row_910c = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend", model_name, model_path, "910c", "spec"
+    )
+    sparse_910c = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910c", "sparse"
     )
 
     assert row_910b is not None
@@ -542,12 +545,16 @@ def test_deepseek_v4_flash_0731_w8a8_spec_is_card_specific():
     assert row_910c["mtp_method"] == "dspark"
     assert row_910c["mtp_num_speculative_tokens"] == 7
     assert row_910c["enforce_eager"] is True
+    assert sparse_910c is not None
+    assert sparse_910c["strategy"] == "indexcache"
+    assert sparse_910c["use_index_cache"] is True
+    assert sparse_910c["topk"] == {"accuracy_first": 8}
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", model_name, model_path, "910b"
     ) == frozenset({"spec"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", model_name, model_path, "910c"
-    ) == frozenset({"spec"})
+    ) == frozenset({"spec", "sparse"})
 
 
 def test_deepseek_coder_v2_spec_row_uses_model_config_architecture():

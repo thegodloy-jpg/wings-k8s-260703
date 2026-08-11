@@ -114,11 +114,13 @@ def test_0731_w8a8_910b_accepts_exact_runtime_identity_fields(
     assert not any("VLLM_ASCEND_ENABLE_FLASHCOMM1" in command for command in env)
 
 
-def test_0731_w8a8_910c_keeps_generic_flashcomm_recipe(monkeypatch):
+def test_0731_w8a8_910c_uses_dedicated_env_without_device_count(monkeypatch):
     env = _render_model_env(monkeypatch, MODEL_NAME, "a3")
 
     assert "export OMP_PROC_BIND=false" in env
-    assert "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1" in env
+    assert "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1" not in env
+    assert "export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096" in env
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in env
 
 
 @pytest.mark.parametrize(

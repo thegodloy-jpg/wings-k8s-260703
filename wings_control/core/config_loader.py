@@ -3294,10 +3294,10 @@ def _suppress_unsupported_spec_profiles(
             "suffix speculative decode -> suppressed"
         )
         spec_eff = False
+    spec_whitelisted = _smart_feature_whitelisted(context, "spec")
     if (
         spec_eff
-        and "spec" not in context.feats
-        and "spec" not in context.forced_feats
+        and not spec_whitelisted
         and is_deepseek_v4_flash_0731_rtx_pro_5000_scope(p, context.engine)
     ):
         # 精确 profile 仅允许白名单声明的 DSpark 配方；若能力行缺失或未命中，

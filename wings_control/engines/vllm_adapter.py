@@ -2275,6 +2275,30 @@ def _is_deepseek_v4_flash_params(
     return False
 
 
+def _is_deepseek_v4_flash_0731_w8a8_exact_identity(
+    params: Dict[str, Any],
+    model_info: Optional[ModelIdentifier],
+    ascend_suffix: str,
+) -> bool:
+    """识别基础模型名或与当前昇腾卡型后缀一致的 0731-W8A8 身份。"""
+    engine_config = params.get("engine_config") or {}
+    identity_names = (
+        params.get("model_name"),
+        params.get("served_model_name"),
+        engine_config.get("served_model_name"),
+    )
+    base_name = "deepseek-v4-flash-0731-w8a8"
+    exact_names = {
+        base_name,
+        f"{base_name}-{ascend_suffix}",
+    }
+    identity_matches = any(
+        str(value or "").strip().rstrip("/").rsplit("/", 1)[-1].lower() in exact_names
+        for value in identity_names
+    )
+    return identity_matches and _deepseek_v4_arch_matches(params, model_info) is not False
+
+
 def _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(
     params: Dict[str, Any],
     model_info: Optional[ModelIdentifier] = None,
@@ -2285,30 +2309,28 @@ def _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(
     if get_pd_role_env() or _ascend_platform_from_runtime(params) != "a2":
         return False
 
-    # 该配方只归属于精确的 0731-W8A8 模型身份；权重目录不含 0731，不能用宽泛路径
-    # 判定，否则会把旧 V4-Flash-w8a8-mtp 也带入这套不含 FlashComm1 的环境。
-    engine_config = params.get("engine_config") or {}
-    identity_names = (
-        params.get("model_name"),
-        params.get("served_model_name"),
-        engine_config.get("served_model_name"),
-    )
-    exact_names = {
-        "deepseek-v4-flash-0731-w8a8",
-        "deepseek-v4-flash-0731-w8a8-ascend910b",
-    }
-    if not any(
-        str(value or "").strip().rstrip("/").rsplit("/", 1)[-1].lower()
-        in exact_names
-        for value in identity_names
-    ):
-        return False
-    if _deepseek_v4_arch_matches(params, model_info) is False:
-        return False
-
+    # 权重目录不含 0731，不能使用宽泛路径判断，否则旧 w8a8-mtp 会误入专用环境。
     # 精确模型名已经携带 W8A8 身份；昇腾权重的 config.json 可能把 quant_method
     # 写成 ascend/compressed-tensors 等后端名，不能再用该不稳定字段否决配方。
-    return True
+    return _is_deepseek_v4_flash_0731_w8a8_exact_identity(
+        params, model_info, "ascend910b"
+    )
+
+
+def _is_deepseek_v4_flash_0731_w8a8_910c_env_scope(
+    params: Dict[str, Any],
+    model_info: Optional[ModelIdentifier] = None,
+) -> bool:
+    """精确识别 0731-W8A8 的 910C 环境配方，不与卡数或部署拓扑绑定。"""
+    if params.get("engine") != "vllm_ascend":
+        return False
+    if _ascend_platform_from_runtime(params) != "a3":
+        return False
+
+    # 环境变量归属于模型+硬件；卡数、节点数和分布式状态只参与后续 TP/DP 推导。
+    return _is_deepseek_v4_flash_0731_w8a8_exact_identity(
+        params, model_info, "ascend910c"
+    )
 
 
 def _build_deepseek_v4_flash_0731_w8a8_910b_env() -> List[str]:
@@ -2320,6 +2342,23 @@ def _build_deepseek_v4_flash_0731_w8a8_910b_env() -> List[str]:
         "export HCCL_BUFFSIZE=1024",
         "export TASK_QUEUE_ENABLE=1",
         'export HCCL_OP_EXPANSION_MODE="AIV"',
+    ]
+
+
+def _build_deepseek_v4_flash_0731_w8a8_910c_env() -> List[str]:
+    """构造用户确认的 0731-W8A8 910C 环境变量。"""
+    # FlashComm1 在该精确配方中由 additional_config 承载，不能再继承通用环境变量；
+    # 其它 V4-Flash 场景仍由 _build_deepseek_v4_flash_env 保持原行为。
+    return [
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
+        "export HCCL_BUFFSIZE=1024",
+        "export TASK_QUEUE_ENABLE=1",
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+        "export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096",
+        "export VLLM_ENGINE_READY_TIMEOUT_S=3600",
     ]
 
 
@@ -2554,6 +2593,12 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
+    if _is_deepseek_v4_flash_0731_w8a8_910c_env_scope(params, model_info):
+        logger.info(
+            "[DeepSeek-V4-Flash-0731-W8A8] Set dedicated Ascend A3 "
+            "environment variables"
+        )
+        return _build_deepseek_v4_flash_0731_w8a8_910c_env()
     if _is_deepseek_v4_flash_0731_w8a8_910b_env_scope(params, model_info):
         logger.info(
             "[DeepSeek-V4-Flash-0731-W8A8] Set dedicated Ascend A2 environment variables"

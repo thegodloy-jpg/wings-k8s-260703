@@ -73,32 +73,50 @@ def test_0731_w8a8_910c_selects_exact_profile(monkeypatch, distributed):
         _FakeDeepSeekV4Info(),
     )
 
-    assert config["max_model_len"] == 1048576
     assert config["max_num_batched_tokens"] == 10240
     assert config["gpu_memory_utilization"] == 0.9
     assert config["api_server_count"] == 1
     assert config["max_num_seqs"] == 64
     assert config["enable_expert_parallel"] is True
     assert config["quantization"] == "ascend"
-    assert config["block_size"] == 128
-    assert config["async_scheduling"] is True
-    assert config["safetensors_load_strategy"] == "prefetch"
     if distributed:
+        assert config["max_model_len"] == 1048576
+        assert config["block_size"] == 128
+        assert config["async_scheduling"] is True
+        assert config["safetensors_load_strategy"] == "prefetch"
         assert _as_dict(config["model_loader_extra_config"]) == {
             "enable_multithread_load": "true",
             "num_threads": 128,
         }
+        expected_additional_config = {
+            "ascend_compilation_config": {
+                "enable_npugraph_ex": True,
+                "enable_static_kernel": False,
+            },
+            "enable_cpu_binding": True,
+            "multistream_overlap_shared_expert": True,
+        }
     else:
-        assert "model_loader_extra_config" not in config
+        assert config["max_model_len"] == 136192
+        assert config["block_size"] == 32
+        assert "async_scheduling" not in config
+        assert "safetensors_load_strategy" not in config
+        assert _as_dict(config["model_loader_extra_config"]) == {
+            "enable_multithread_load": True,
+            "num_threads": 128,
+        }
+        expected_additional_config = {
+            "ascend_compilation_config": {
+                "enable_npugraph_ex": True,
+                "enable_static_kernel": False,
+            },
+            "enable_cpu_binding": True,
+            "enable_dsa_cp": True,
+            "enable_flashcomm1": True,
+            "multistream_overlap_shared_expert": True,
+        }
     assert _as_dict(config["compilation_config"]) == {"cudagraph_mode": "FULL_DECODE_ONLY"}
-    assert _as_dict(config["additional_config"]) == {
-        "ascend_compilation_config": {
-            "enable_npugraph_ex": True,
-            "enable_static_kernel": False,
-        },
-        "enable_cpu_binding": True,
-        "multistream_overlap_shared_expert": True,
-    }
+    assert _as_dict(config["additional_config"]) == expected_additional_config
     assert config["tokenizer_mode"] == "deepseek_v4"
     assert config["tool_call_parser"] == "deepseek_v4"
     assert config["reasoning_parser"] == "deepseek_v4"
@@ -117,14 +135,73 @@ def test_0731_w8a8_910c_keeps_legacy_profile_and_features_isolated():
     assert legacy["trust_remote_code"] is True
     assert legacy["no_disable_hybrid_kv_cache_manager"] is True
     assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend", MODEL_NAME, MODEL_PATH, "910c"
+    ) == frozenset({"spec", "sparse"})
+    assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", MODEL_NAME, LEGACY_MODEL_PATH, "910c"
     ) == frozenset({"spec", "sparse", "offload"})
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"distributed": True},
+        {"device_count": 8},
+        {"nnodes": 2},
+    ],
+)
+@pytest.mark.parametrize("pd_role", [None, "P", "D"])
+def test_0731_w8a8_910c_env_scope_ignores_topology(monkeypatch, overrides, pd_role):
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
+    if pd_role:
+        monkeypatch.setenv("PD_ROLE", pd_role)
+    else:
+        monkeypatch.delenv("PD_ROLE", raising=False)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": MODEL_NAME,
+        "device_count": 16,
+        "nnodes": 1,
+        "distributed": False,
+        "_smart_card_token": "910c",
+    }
+    params.update(overrides)
+
+    assert vllm_adapter._is_deepseek_v4_flash_0731_w8a8_910c_env_scope(
+        params, _FakeDeepSeekV4Info()
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "platform"),
+    [
+        ({"model_name": "DeepSeek-V4-Flash-w8a8-mtp"}, "a3"),
+        ({"engine": "vllm"}, "a3"),
+        ({}, "a2"),
+    ],
+)
+def test_0731_w8a8_910c_env_scope_keeps_model_hardware_boundary(
+    monkeypatch, overrides, platform
+):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", platform)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": MODEL_NAME,
+        "_smart_card_token": "910c" if platform == "a3" else "910b",
+    }
+    params.update(overrides)
+
+    assert not vllm_adapter._is_deepseek_v4_flash_0731_w8a8_910c_env_scope(
+        params, _FakeDeepSeekV4Info()
+    )
+
+
+@pytest.mark.parametrize(("device_count", "expected_dp"), [(8, 2), (16, 4)])
 @pytest.mark.parametrize("spec_enabled", [True, False])
-@pytest.mark.parametrize("model_path", [MODEL_PATH, LEGACY_MODEL_PATH])
+@pytest.mark.parametrize("sparse_enabled", [True, False])
 def test_0731_w8a8_910c_final_command_matches_recipe(
-    monkeypatch, spec_enabled, model_path
+    monkeypatch, spec_enabled, sparse_enabled, device_count, expected_dp
 ):
     monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a3")
     monkeypatch.setenv("SERVED_MODEL_NAME", "dsv4")
@@ -143,10 +220,10 @@ def test_0731_w8a8_910c_final_command_matches_recipe(
 
     argv = [
         "--model-name", MODEL_NAME,
-        "--model-path", model_path,
+        "--model-path", MODEL_PATH,
         "--model-type", "llm",
         "--engine", "vllm_ascend",
-        "--device-count", "16",
+        "--device-count", str(device_count),
         "--port", "8900",
         "--enable-auto-tool-choice",
         "--enable-auto-think-choice",
@@ -154,21 +231,27 @@ def test_0731_w8a8_910c_final_command_matches_recipe(
     ]
     if spec_enabled:
         argv.append("--enable-speculative-decode")
+    if sparse_enabled:
+        argv.append("--enable-sparse")
     params = config_loader.load_and_merge_configs(
-        {"device": "ascend", "count": 16, "details": [{"name": "Ascend910C"}]},
+        {
+            "device": "ascend",
+            "count": device_count,
+            "details": [{"name": "Ascend910C"}],
+        },
         parse_launch_args(argv),
     )
 
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
 
-    expected_allowed = (
-        {"spec"}
-        if model_path == MODEL_PATH
-        else {"spec", "sparse", "offload"}
-    )
-    assert set(params["_allowed_smart_feats"]) == expected_allowed
-    assert set(params["_smart_feats"]) == ({"spec"} if spec_enabled else set())
+    expected_effective = set()
+    if spec_enabled:
+        expected_effective.add("spec")
+    if sparse_enabled:
+        expected_effective.add("sparse")
+    assert set(params["_allowed_smart_feats"]) == {"spec", "sparse"}
+    assert set(params["_smart_feats"]) == expected_effective
 
     for export in (
         "export OMP_PROC_BIND=false",
@@ -176,42 +259,53 @@ def test_0731_w8a8_910c_final_command_matches_recipe(
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
         'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
         "export HCCL_BUFFSIZE=1024",
-        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
         "export TASK_QUEUE_ENABLE=1",
         'export HCCL_OP_EXPANSION_MODE="AIV"',
+        "export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096",
+        "export VLLM_ENGINE_READY_TIMEOUT_S=3600",
     ):
         assert script.count(export) == 1
+    assert "export VLLM_ASCEND_ENABLE_FLASHCOMM1=" not in script
 
-    assert exec_line.startswith(f"exec vllm serve {model_path} ")
+    assert exec_line.startswith(f"exec vllm serve {MODEL_PATH} ")
     for flag in (
-        "--max-model-len 1048576",
+        "--max-model-len 136192",
         "--max-num-batched-tokens 10240",
         "--served-model-name dsv4",
         "--gpu-memory-utilization 0.9",
         "--api-server-count 1",
         "--max-num-seqs 64",
-        "--tensor-parallel-size 4 --data-parallel-size 4",
+        f"--tensor-parallel-size 4 --data-parallel-size {expected_dp}",
         "--enable-expert-parallel",
         "--tokenizer-mode deepseek_v4",
         "--tool-call-parser deepseek_v4",
         "--enable-auto-tool-choice",
         "--reasoning-parser deepseek_v4",
-        "--safetensors-load-strategy prefetch",
+        "--model-loader-extra-config '" + '{"enable_multithread_load":true,"num_threads":128}' + "'",
         "--quantization ascend",
         "--port 8900",
-        "--block-size 128",
-        "--async-scheduling",
+        "--block-size 32",
     ):
         assert flag in exec_line
-    assert "--model-loader-extra-config" not in exec_line
+    assert "--async-scheduling" not in exec_line
+    assert "--safetensors-load-strategy" not in exec_line
     assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
     assert '"enable_npugraph_ex":true' in exec_line
+    assert '"enable_dsa_cp":true' in exec_line
+    assert '"enable_flashcomm1":true' in exec_line
     assert '"multistream_overlap_shared_expert":true' in exec_line
     assert "--trust-remote-code" not in exec_line
     assert "--no-disable-hybrid-kv-cache-manager" not in exec_line
     assert "--kv-cache-dtype" not in exec_line
-    assert "--hf-overrides" not in exec_line
     assert "--kv-offloading-backend" not in exec_line
+
+    if sparse_enabled:
+        assert (
+            "'" + '{"use_index_cache":true,"index_topk_freq":8}' + "'"
+            in exec_line
+        )
+    else:
+        assert "--hf-overrides" not in exec_line
 
     if spec_enabled:
         # 0731-W8A8 在 910C 上使用用户确认的 DSpark7 配方，且只能生成一次。
