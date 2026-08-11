@@ -423,14 +423,16 @@ def test_deepseek_v4_flash_h20_vllm_speculative_config_matches_day0_recipe(monke
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+@pytest.mark.parametrize("offload_size", [80, 200])
 def test_deepseek_v4_flash_0731_h20_final_command_contains_complete_recipe(
     monkeypatch,
     card_token,
+    offload_size,
 ):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
-    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "200")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", str(offload_size))
     model_path = "/var/ai-model/LocalStorage/DeepSeek-V4-Flash-0731"
     params = {
         "engine": "vllm",
@@ -465,23 +467,23 @@ def test_deepseek_v4_flash_0731_h20_final_command_contains_complete_recipe(
         params,
         {"device": "nvidia", "count": 8, "details": [{"name": card_name}]},
     )
-    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
-    assert params["_smart_feats"] == ["sparse", "spec"]
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
     assert params["_smart_feature_gate_trace"]["features"]["kv_offload"] == {
         "requested": True,
-        "whitelist": False,
-        "gate": False,
-        "reason": "whitelist_miss",
+        "whitelist": True,
+        "gate": True,
+        "reason": "enabled",
     }
-    assert os.environ["ENABLE_KV_OFFLOAD"] == "false"
-    assert os.environ["LMCACHE_OFFLOAD"] == "false"
+    assert os.environ["ENABLE_KV_OFFLOAD"] == "true"
+    assert os.environ["LMCACHE_OFFLOAD"] == "true"
 
     assert vllm_adapter.resolve_speculative_strategy(params, "vllm") == "dspark"
     assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
         "method": "dspark",
-        "num_speculative_tokens": 7,
+        "num_speculative_tokens": 2,
         "moe_backend": None,
-        "draft_sample_method": "greedy",
+        "draft_sample_method": "probabilistic",
     }
 
     script = vllm_adapter.build_start_script(params)
@@ -492,27 +494,60 @@ def test_deepseek_v4_flash_0731_h20_final_command_contains_complete_recipe(
     assert exec_line.count("--hf-overrides") == 1
     assert "'{}'" not in exec_line
     assert "'" + '{"use_index_cache":true,"index_topk_freq":4}' + "'" in exec_line
-    assert "'" + '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy"}' + "'" in exec_line
-    assert "--max-model-len 200000" in exec_line
-    assert "--disable-custom-all-reduce" in exec_line
-    assert "--kv-offloading-backend" not in exec_line
-    assert "--kv-offloading-size" not in exec_line
+    expected_spec_config = (
+        "'"
+        + '{"method":"dspark","num_speculative_tokens":2,'
+        '"draft_sample_method":"probabilistic"}'
+        + "'"
+    )
+    assert expected_spec_config in exec_line
+    for expected_arg in (
+        "--trust-remote-code",
+        "--block-size 256",
+        "--enable-expert-parallel",
+        "--tensor-parallel-size 8",
+        "--tokenizer-mode deepseek_v4",
+        "--tool-call-parser deepseek_v4",
+        "--enable-auto-tool-choice",
+        "--reasoning-parser deepseek_v4",
+        "--max-model-len 200000",
+        "--disable-custom-all-reduce",
+        "--served-model-name DeepSeek-V4-Flash-0731",
+        "--port 18000",
+    ):
+        assert expected_arg in exec_line
+    assert "--kv-offloading-backend native" in exec_line
+    assert f"--kv-offloading-size {offload_size}" in exec_line
+    assert wings_entry._should_install_nvidia_native_offload_packages(
+        "vllm", params
+    ) is True
+    feature_status = wings_entry._resolve_advanced_feature_status("vllm", params)
+    assert feature_status["features"]["kv_offload"] is True
+    assert feature_status["variants"]["kv_offload"] == "native_kv_offloading_backend"
+    assert feature_status["others"]["kv_mem_offload_size"] == offload_size
+    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == (
+        "fp8_indexcache_use_index_cache_topk4"
+    )
+    params["enable_sparse"] = False
+    params["_smart_feats"] = ["offload", "spec"]
+    sparse_off_script = vllm_adapter.build_start_script(params)
+    assert "--kv-cache-dtype" not in sparse_off_script
+    assert "--hf-overrides" not in sparse_off_script
+    assert f"--kv-offloading-size {offload_size}" in sparse_off_script
+    assert "kv_cache_dtype" not in params["engine_config"]
+
+    # 页面关闭内存卸载后，命令、状态和安装判定必须使用同一最终解析结果。
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "false")
+    mem_offload_disabled_script = vllm_adapter.build_start_script(params)
+    assert "--kv-offloading-backend" not in mem_offload_disabled_script
+    assert "--kv-offloading-size" not in mem_offload_disabled_script
     assert wings_entry._should_install_nvidia_native_offload_packages(
         "vllm", params
     ) is False
     feature_status = wings_entry._resolve_advanced_feature_status("vllm", params)
     assert feature_status["features"]["kv_offload"] is False
-    assert feature_status["variants"]["kv_offload"] is None
+    assert feature_status["variants"]["kv_offload"] == "disabled"
     assert feature_status["others"]["kv_mem_offload_size"] is None
-    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == (
-        "fp8_indexcache_use_index_cache_topk4"
-    )
-    params["enable_sparse"] = False
-    params["_smart_feats"] = ["spec"]
-    sparse_off_script = vllm_adapter.build_start_script(params)
-    assert "--kv-cache-dtype" not in sparse_off_script
-    assert "--hf-overrides" not in sparse_off_script
-    assert "kv_cache_dtype" not in params["engine_config"]
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])

@@ -450,17 +450,19 @@ def test_default_smart_feature_whitelist_file_is_loaded():
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
-def test_deepseek_v4_flash_0731_h20_excludes_only_offload(card_token):
-    """0731 保留 DSpark/稀疏，但不得继承通用 V4-Flash 的 native offload。"""
+def test_deepseek_v4_flash_0731_h20_uses_exact_native_offload(card_token):
+    """0731 仅通过精确 H20 规则启用 native offload，避免继承通用模型行。"""
     model_name = "deepseek-ai/DeepSeek-V4-Flash-0731"
     model_path = "/models/deepseek-ai/DeepSeek-V4-Flash-0731"
 
     assert model_utils.resolve_feature_whitelist(
         "vllm", model_name, model_path, card_token
-    ) == frozenset({"spec", "sparse"})
-    assert model_utils.resolve_feature_whitelist_row(
+    ) == frozenset({"spec", "sparse", "offload"})
+    offload_row = model_utils.resolve_feature_whitelist_row(
         "vllm", model_name, model_path, card_token, "offload"
-    ) is None
+    )
+    assert offload_row is not None
+    assert offload_row["backend"] == "native"
     assert model_utils.feature_allowed(
         "vllm",
         "deepseek-ai/DeepSeek-V4-Flash",
