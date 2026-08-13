@@ -1,7 +1,7 @@
 # PD 分离兼容性与 Mooncake 方案清单
 
 > 核对日期：2026-08-13
-> 核对对象：FusionOne AI 23.6.1 ARM/X86 模型兼容性表、`wings_control/utils/model_utils.py`、`wings_control/config/defaults/pd_config.json`、当前 Wings PD 配置生成逻辑、NVIDIA Dynamo Recipe、vLLM 与 vLLM-Ascend 官方文档。
+> 核对对象：FusionOne AI 23.6.1 ARM/X86 模型兼容性表、`wings_control/utils/model_utils.py`、`wings_control/config/defaults/pd_config.json`、当前 Wings PD 配置生成逻辑、vLLM Recipes、vLLM 与 vLLM-Ascend 官方文档。
 > 记录原则：本文只归档来源、版本、模型、权重、硬件、P/D 拓扑、Connector、Proxy、组网、本地差异和验证状态，不输出统一的“能用/不能用”答案。
 
 ## 1. 口径清单
@@ -77,7 +77,7 @@ Embedding/Rerank 模型没有生成式推理中的独立 Prefill 和逐 token De
 |---|---:|---|---|
 | `_LLM_MODELS` | 18 个 architecture、79 个具体模型名 | Wings 可识别的模型名和 architecture | 不表示 PD 已适配或已验收 |
 | FusionOne AI 23.6.1 ARM 表 | 45 个文本生成数据行、35 个去重模型 | 指定模型、精度、卡型和 ARM 镜像的普通推理记录 | 不表示 vLLM-Ascend PD 状态 |
-| FusionOne AI 23.6.1 X86 表 | 38 个文本生成数据行、36 个去重模型 | 指定模型、精度、卡型和 X86 镜像的普通推理记录 | 不表示 NIXL/Mooncake PD 状态 |
+| FusionOne AI 23.6.1 X86 表 | 38 个文本生成数据行、36 个去重模型；其中 35 个由 vLLM 启动；另有 12 个 vLLM 视觉/多模态生成模型 | 47 个 X86 vLLM 生成模型的普通推理记录 | 不表示 NIXL/Mooncake PD 状态 |
 | `pd_config.json` | `default` + 5 个精确 architecture profile | Ascend external-lb large-EP 配方 | 不等于 79 个模型均有精确配方 |
 
 产品表路径：
@@ -85,13 +85,13 @@ Embedding/Rerank 模型没有生成式推理中的独立 Prefill 和逐 token De
 - [ARM 兼容性表](../../target/FusionOne%20AI%20模型兼容性-23.6.1%20-ARM-0730.xlsx)
 - [X86 兼容性表](../../target/FusionOne%20AI%20模型兼容性-23.6.1%20-X86-0730.xlsx)
 
-ARM 表以 `wings-vllm-ascend:v0.21.0rc1*` 为主，另有特殊镜像和 MindIE 条目；X86 表以 `wings-vllm:v0.23.0-cu130*` 为主，另有特殊镜像和 xtrtllm 条目。MindIE/xtrtllm 行不继承 vLLM/vLLM-Ascend PD 记录。
+ARM 表以 `wings-vllm-ascend:v0.21.0rc1*` 为主，另有特殊镜像和非 vLLM 条目；X86 表以 `wings-vllm:v0.23.0-cu130*` 为主，也有不属于 vLLM 的条目。非 vLLM 行不进入本文的 vLLM Recipe 分母。
 
 ### 3.2 Wings PD 路径
 
 | 平台/条件 | 当前 Connector 或 profile 选择 | 未满足时的行为 |
 |---|---|---|
-| NVIDIA/vLLM PD | `NixlConnector` | 由 vLLM/NIXL 运行时校验 |
+| vLLM/NVIDIA PD | `NixlConnector` | 由 vLLM/NIXL 运行时校验 |
 | Ascend，当前角色 `DP=1` | `PD_CONNECTOR_TYPE`，默认 `MooncakeConnectorV1`；生成 P/D 全局 TP/DP 配置 | 保留 standalone PD，不读取 large-EP 模型 recipe |
 | Ascend，当前角色 `DP>1` | 必须按模型 architecture 精确命中 `pd_config.json` | 抛出 `PD large-EP has no registered profile` |
 | profile 有 A2/A3 分支 | 必须从 `hardware_info.json` 识别平台 | 无法识别时 fail-fast |
@@ -110,7 +110,7 @@ ARM 表以 `wings-vllm-ascend:v0.21.0rc1*` 为主，另有特殊镜像和 MindIE
 
 5 个 architecture profile 机械命中 29 个模型名，另外 50 个模型名没有 large-EP 精确 profile。机械命中数量只表示查表结果，不表示模型级方案等价。
 
-## 4. vLLM / NVIDIA PD 能力清单
+## 4. vLLM PD 能力清单
 
 ### 4.1 当前 Wings 使用的 NIXL 路径
 
@@ -134,166 +134,118 @@ NIXL 运行记录还需包含：
 - Hybrid/Mamba 的 `VLLM_SSM_CONV_STATE_LAYOUT`；
 - 多轮双向 KV 所需的有状态 Proxy 和上一轮 `kv_transfer_params`。
 
-### 4.2 NVIDIA 官方方案是否基于 Mooncake
+### 4.2 vLLM 官方 `pd_cluster` 基线
 
-结论是：**vLLM 上游同时提供 `NixlConnector` 和 `MooncakeConnector`，但 NVIDIA Dynamo 当前公开的 vLLM 模型级 Recipe 主线使用 `NixlConnector`，不是 `MooncakeConnector`。** Dynamo 由 Frontend/Router 编排 P、D worker，通过 NIXL 将 KV 从 P 端 GPU VRAM 直接传到 D 端 GPU VRAM；跨机传输通常使用 UCX + InfiniBand/RoCE，GB 系列还可使用 MNNVL。vLLM 上游仍将通用 Disaggregated Prefilling 标记为 experimental，Dynamo Recipe 则通过固定模型、镜像、硬件和拓扑给出可复现边界。
+本文只审计 [vLLM Recipes](https://recipes.vllm.ai/) 的模型目录。固定审计版本为 [`vllm-project/recipes@9368396`](https://github.com/vllm-project/recipes/tree/93683962d28f2ed140c08030e2b9be0a50f646a0)，其中 **41 个模型族 YAML 声明兼容 `pd_cluster`**。这是配置库存，不是 41 个经过性能验收的产品组合。
 
-NVIDIA 的 Qwen3-32B Recipe 中出现的 **Mooncake conversation trace** 只是压测数据集来源。该 Recipe 的 `deploy.yaml` 明确配置：
+共享 [`strategies/pd_cluster.yaml`](https://github.com/vllm-project/recipes/blob/93683962d28f2ed140c08030e2b9be0a50f646a0/strategies/pd_cluster.yaml) 的默认项如下：
 
-```json
-{"kv_connector":"NixlConnector","kv_role":"kv_both"}
-```
-
-因此，不能根据压测数据名称把 NVIDIA 的 PD 实现归类为 Mooncake。
-
-上述结论严格限定于 Dynamo 的 **vLLM** Recipe。跨 backend 后不存在“NVIDIA 一律 NIXL”的结论：SGLang 的已检入方案多数显式使用 NIXL，但 DeepSeek-R1 manifest 没有固定 `--disaggregation-transfer-backend`，Nemotron-3-Super 官方 README 还记录 Mooncake 为可选 transfer backend；TensorRT-LLM 则通过 `cache_transceiver_config` 使用 `UCX` 或 `DEFAULT`。因此必须读具体 manifest，不能由平台名称推导 Connector。
-
-### 4.3 NVIDIA Dynamo 官方模型级 PD Recipe（按 Backend 分层）
-
-审计基线固定为 2026-08-13 的 [`ai-dynamo/dynamo@22e80d2`](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes)。按 `recipes` 路径包含 `disagg`/`disaggregated` 的显式部署清单统计：
-
-| Backend | PD `deploy*.yaml` 数 | 说明 |
-|---|---:|---|
-| vLLM | 28 | 另有 Qwen3-32B 的 5 个云厂商 overlay；当前 Wings X86 精确模型统计使用此 backend |
-| SGLang | 11 | 包含 4 个 GLM manifest；GLM-5/5.2 不能因不在 vLLM 表中而被记为“官方无方案” |
-| TensorRT-LLM | 12 | 包含 DeepSeek-V3.2、Kimi-K2.5、Qwen3-235B/32B 等；不等价于 Wings vLLM 支持 |
-
-以上是 manifest 库存，不是去重模型数或产品支持数；同一模型的硬件、网络和云厂商变体分别计数。
-
-#### 4.3.1 vLLM：当前兼容模型及必要对照项
-
-下表按 Ascend 场景的同一粒度记录当前精确模型、容易误继承的同族权重，以及已单独要求核查的 Kimi-K3，包含“精确权重、官方配置、成熟度/证据、物理资源、P/D 拓扑、Connector 和 Router”。其他 backend 不混入 vLLM 的 4/36 分母。
-
-模型名链接到实际权重页；Recipe 链接直接落到对应 vLLM Disagg 目录或部署清单。P/D 数量表示 worker 副本数，`TP/DP/EP` 表示单个 worker 的并行配置。Recipe 单元格中的 `Production-ready`、`Experimental`、`Functional` 和 Feature 分类沿用官方标记；“有 deploy”与“有 perf/benchmark”分别记录，不能把能部署自动等同于已完成性能验证。
-
-| 模型/示例权重 | 官方 Recipe / 配置 | 官方硬件与物理形态 | P 全局拓扑 | D 全局拓扑 | KV Connector / 数据面 | Router | 关键边界 |
-|---|---|---|---|---|---|---|---|
-| [`Qwen/Qwen3-32B`](https://huggingface.co/Qwen/Qwen3-32B) | [Disagg KV Router](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b/vllm/disagg-kv-router)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3-32b/vllm/disagg-kv-router/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3-32b/vllm/disagg-kv-router/perf.yaml)）；已压测 Feature Recipe | 16×H200，2 节点 | 6P，每个 TP2 | 2D，每个 TP2 | `NixlConnector`；NIXL + RDMA | KV-aware | `max_model_len=131072`；Mooncake 仅为 conversation trace 数据集名 |
-| [`Qwen/Qwen3-32B`](https://huggingface.co/Qwen/Qwen3-32B) | [Cloud Provider Overlays](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b/vllm/cloud-providers)；Functional、未压测 | 8 GPU，1P1D；AKS IB、AWS EFA、GKE RoCE、Nebius IB、Nscale IB | 1P，TP4 | 1D，TP4 | `NixlConnector`；UCX 或 EFA/libfabric | 官方清单未显式启用 KV Router | 只能作为功能基线，不能替代性能验收；具体 GPU、RDMA 资源、镜像和环境变量以 provider overlay 为准 |
-| [`Qwen/Qwen3-32B-FP8`](https://huggingface.co/Qwen/Qwen3-32B-FP8) | [vLLM Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b-fp8/vllm/disagg)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3-32b-fp8/vllm/disagg/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3-32b-fp8/vllm/disagg/perf.yaml)）；Production-ready | 8×A100，单节点；文档也要求 H100/H200/A100 集群 | 2P，每个 TP2 | 1D，TP4 | `NixlConnector`；NIXL + UCX/RDMA | 官方清单未显式启用 KV Router | 全部 worker 同节点；FP8 KV；A100 40GB 配置限制 `max_model_len=8192` |
-| [`RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic`](https://huggingface.co/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic) | [单节点 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/llama-3-70b/vllm/disagg-single-node)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/llama-3-70b/vllm/disagg-single-node/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/main/recipes/llama-3-70b/vllm/disagg-single-node/perf.yaml)）；Production-ready | 8×H100/H200，单节点 | 2P，每个 TP2 | 1D，TP4 | `NixlConnector`；单节点 NIXL | 官方清单未显式启用 KV Router | Prefix Cache 关闭；block size 128；不是当前兼容表中的 Llama-3-8B |
-| [`RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic`](https://huggingface.co/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic) | [多节点 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/llama-3-70b/vllm/disagg-multi-node)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/llama-3-70b/vllm/disagg-multi-node/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/main/recipes/llama-3-70b/vllm/disagg-multi-node/perf.yaml)）；Production-ready | 16×H100/H200，2 节点 | 1P，TP8 | 1D，TP8 | `NixlConnector`；NIXL + 跨节点高速网络 | 官方清单未显式启用 KV Router | 每个 worker 独占 8 GPU；不能从 70B FP8 推导 8B BF16 已验证 |
-| [`Qwen/Qwen3.5-122B-A10B-FP8`](https://huggingface.co/Qwen/Qwen3.5-122B-A10B-FP8) | [H200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3.5-122b/fp8/vllm/disagg-h200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3.5-122b/fp8/vllm/disagg-h200-agentic/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3.5-122b/fp8/perf/perf.yaml)）；Production-ready | 3×H200 | 1P，TP1 | 2D，每个 TP1 | `NixlConnector`；NIXL + IB/RDMA | KV-aware | FP8 KV；`VLLM_SSM_CONV_STATE_LAYOUT=DS`；PD 明确不启用 MTP；D 关闭 Async Scheduling |
-| [`nvidia/Qwen3.5-122B-A10B-NVFP4`](https://huggingface.co/nvidia/Qwen3.5-122B-A10B-NVFP4) | [B200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3.5-122b/nvfp4/vllm/disagg-b200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3.5-122b/nvfp4/vllm/disagg-b200-agentic/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/main/recipes/qwen3.5-122b/nvfp4/perf/perf.yaml)）；Production-ready | 3×B200 | 1P，TP1 | 2D，每个 TP1 | `NixlConnector`；NIXL + IB/RDMA | KV-aware | NVFP4 权重、FP8 KV；同样要求 DS conv state、无 MTP、D 关闭 Async Scheduling |
-| [`deepseek-ai/DeepSeek-R1`](https://huggingface.co/deepseek-ai/DeepSeek-R1) | [vLLM Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-r1/vllm/disagg)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/deepseek-r1/vllm/disagg/deploy_hopper_16gpu.yaml)）；Production-ready、部署完整、无 perf | 32×H100/H200，4 节点 | 1P，跨 2 节点×8 GPU，DP16+EP16+TP1 | 1D，跨 2 节点×8 GPU，DP16+EP16+TP1 | `NixlConnector`；NIXL + RDMA | 官方清单未显式启用 KV Router | DeepEP/NVSHMEM 的跨节点 DEP 另要求 IBGDA；IBGDA 不是 P→D KV Connector；该资源规模不能套当前 8 卡单机产品记录 |
-| [`nvidia/DeepSeek-V4-Flash-NVFP4`](https://huggingface.co/nvidia/DeepSeek-V4-Flash-NVFP4) | [B200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-flash/vllm/disagg-b200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/deepseek-v4/deepseek-v4-flash/vllm/disagg-b200-agentic/deploy.yaml)）；Production-ready | 12×B200 | 2P，每个 TP4 | 1D，TP4 | `NixlConnector`；NIXL + UCX/GDR | KV-aware | FP8 KV、block 256、1M context；P/D 均无 MTP |
-| [`deepseek-ai/DeepSeek-V4-Flash`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash) | [H200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-flash/vllm/disagg-h200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/deepseek-v4/deepseek-v4-flash/vllm/disagg-h200-agentic/deploy.yaml)）；Production-ready | 28×H200 | 4P，每个 DP4+TP1+EP | 3D，每个 DP4+TP1+EP | `NixlConnector`；NIXL + UCX/GDR | KV-aware | 公共 FP8 权重、FP8 KV、1M context；P 无 MTP，D 使用 MTP-1 |
-| [`nvidia/DeepSeek-V4-Pro-NVFP4`](https://huggingface.co/nvidia/DeepSeek-V4-Pro-NVFP4) | [B200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg-b200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg-b200-agentic/deploy.yaml)）；Production-ready | 16×B200 | 1P，TP8+EP | 1D，TP8+EP | `NixlConnector`；NIXL + UCX/GDR | KV-aware | 1M context；P 无 MTP，D 使用 MTP-2；官方推荐 B200 使用该 Disagg 方案 |
-| [`deepseek-ai/DeepSeek-V4-Pro`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | [H200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg-h200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg-h200-agentic/deploy.yaml)）；Production-ready、best-effort lane | 32×H200 | 1P，TP8+EP | 3D，每个 TP8+EP | `NixlConnector`；NIXL + UCX/GDR | KV-aware | 公共 FP8 权重；`max_model_len=86016`；官方性能结果中 H200 聚合部署优于该 1P3D 方案 |
-| [`deepseek-ai/DeepSeek-V4-Pro`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | [GB200 Experimental Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg/gb200)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg/gb200/deploy.yaml)）；Experimental、部署完整、无 perf | 16×GB200，4 个 NVL4 节点 | 1P，跨 2 节点，每节点 4 GPU，DP8+TP1+EP | 1D，跨 2 节点，每节点 4 GPU，DP8+TP1+EP | `NixlConnector`；KV bulk 走 MNNVL/`cuda_ipc`，UCX TCP 仅作 active-message 控制面 | 官方清单未显式启用 KV Router | `kv_role=kv_both`；DRA `ComputeDomain`；自定义镜像；`max_model_len=9280`；实验方案不能按 Production-ready 对外承诺 |
-| [`moonshotai/Kimi-K3`](https://huggingface.co/moonshotai/Kimi-K3) | [GB300 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/kimi-k3/vllm/disagg-gb300-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/kimi-k3/vllm/disagg-gb300-agentic/deploy.yaml)）；Production-ready、部署完整、无 perf | 24×GB300，6 节点 | 1P，TP8，跨 2 节点 | 2D，每个 TP8，跨 2 节点 | `NixlConnector`；NIXL over MNNVL | KV-aware | MXFP4 expert + BF16 dense + FP8 KV；DRA `ComputeDomain`；DS conv state |
-| [`moonshotai/Kimi-K3`](https://huggingface.co/moonshotai/Kimi-K3) | [GB200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/kimi-k3/vllm/disagg-gb200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/main/recipes/kimi-k3/vllm/disagg-gb200-agentic/deploy.yaml)）；Production-ready、部署完整、无 perf | 32×GB200，8 节点 | 1P，TP16，跨 4 节点 | 1D，TP16，跨 4 节点 | `NixlConnector`；NIXL over UCX/RDMA | KV-aware | DRA `ComputeDomain`；MNNVL/NVLS 用于并行通信，KV 走 RDMA；`UCX_TLS=^cuda_ipc`；DS conv state |
-
-“官方清单未显式启用 KV Router”只表示对应 manifest 没有设置 `--router-mode kv`，不表示该模型不能使用 KV-aware Router，也不影响固定 1P1D/普通 Frontend 路由下的基础 PD 数据传输。
-
-#### 4.3.2 不纳入当前兼容模型分母的官方 vLLM PD 清单
-
-下列 **13 个 deploy manifest** 属于 Dynamo 官方 vLLM PD 库存，但其模型既不在当前 Wings X86 36 个去重文本模型中，也未被选作当前同族/Kimi 对照项，因此不进入 4/36 的分母。它们用于说明官方全量边界，不能反向证明当前产品已经兼容。
-
-| 官方模型族 | deploy manifest 数 | 官方 P/D 与硬件组合 | Connector / 组网重点 | 未纳入当前兼容分母的原因 |
-|---|---:|---|---|---|
-| [`GPT-OSS-120B`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/gpt-oss-120b/vllm) | 2 | B200：2P6D、各 TP1；H200：4P4D、各 TP1；同节点 NVLink | `NixlConnector`；KV-aware Router；EAGLE3 | 当前 Wings 兼容表没有该模型 ID |
-| [`Nemotron-3-Ultra`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/nemotron-3-ultra/vllm) | 1 | B200：1P1D、各 TP4 | `NixlConnector`；IB/RDMA；KV-aware Router | 当前 Wings 兼容表没有该模型 ID |
-| [`Nemotron-3.5-Lightning`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/nemotron-3.5-lightning/vllm) | 9 | H100/H200 的 MTP、DFlash、DSpark；B200 的 DSpark；GB200 的 DFlash、DSpark；各变体均为 1P1D | H100 EFA/libfabric；H200 UCX IB/RDMA；B200/GB200 依具体 manifest | 当前 Wings 兼容表没有该模型 ID；该族已进入仓库 tree，但未列入根 `recipes/README.md` 汇总表 |
-| [`Qwen3-VL-32B-Instruct-FP8`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-vl-32b-fp8/vllm/hetero_hardware_disagg) | 1 | 1 个 Intel XPU Encode + 1 个 NVIDIA GPU Decode | NIXL/RDMA 传 embedding；Kubernetes DRA resource claim | 当前兼容表没有该多模态权重；异构 Encode/Decode 也不是文本模型 KV-only PD 的等价拓扑 |
-
-另有 Llama-3.3-70B 的 1 个 GAIE 部署 manifest；它是同一模型、同一 1P1D TP4 资源形态的 GAIE 集成变体，不作为新的模型/拓扑 Recipe 重复计入上表。由此可核对：当前兼容相关 14 个 + 兼容表外 13 个 + GAIE 1 个 = 固定审计版本中的 28 个 vLLM PD deploy manifest。
-
-#### 4.3.3 GLM：官方 SGLang PD 细粒度 Recipe
-
-GLM 在 NVIDIA Dynamo 中不是 vLLM Recipe，而是 SGLang Recipe。以下 4 个 manifest 均使用 SGLang 的 `--disaggregation-transfer-backend nixl`；它与 vLLM 的 `NixlConnector` 属于同一 NIXL 数据传输方向，但配置入口、worker 生命周期、bootstrap 和 Router 接口不同，不能互换启动参数。
-
-| 模型/权重 | 官方 Recipe / 证据 | 官方硬件与物理形态 | P 全局拓扑 | D 全局拓扑 | NIXL 数据面 / 组网 | Router / 缓存 | 对当前 Wings X86 表的结论 |
-|---|---|---|---|---|---|---|---|
-| [`nvidia/GLM-5-NVFP4`](https://huggingface.co/nvidia/GLM-5-NVFP4) | [GB200 UCX Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg)（[deploy](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg/perf.yaml)）；`validated`、recommended | 20×GB200，5 个 4-GPU 节点，处于 NVL36/NVL72 domain | 1P×4 GPU；TP4/DP1/EP1 | 1D rank group 跨 4 节点×4 GPU；TP16/DP16/EP16 | NIXL + UCX；`cuda_copy,cuda_ipc,tcp`；MNNVL；DRA `ComputeDomain` 5 节点；共享 RWX PVC | manifest 未设置 `DYN_ROUTER_MODE=kv`；EAGLE；FP8 KV | 与 `ZhipuAI/GLM-5-FP8` 仅同模型族；namespace、量化、backend、GPU 和拓扑均不同 |
-| [`nvidia/GLM-5-NVFP4`](https://huggingface.co/nvidia/GLM-5-NVFP4) | [GB200 AWS EFA Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg/efa)（[deploy](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg/efa/deploy.yaml)，[perf](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg/efa/perf.yaml)）；`validated`、非 recommended | 20×GB200；5×`p6e-gb200.36xlarge`；每节点 4 GPU+4 EFA NIC | 同上 | 同上 | NIXL `LIBFABRIC` + EFA RDMA；每 Pod 的 EFA 请求数与 GPU 数相同；privileged；DRA `ComputeDomain` | manifest 未设置 KV-aware Router；必须自建含 patched libfabric 的镜像，否则 UCX 可能回退 TCP | 同上；它是网络变体，不是第二个可泛化模型方案 |
-| [`nvidia/GLM-5.2-NVFP4`](https://huggingface.co/nvidia/GLM-5.2-NVFP4) | [B200 agentic Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/sglang/disagg-b200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/sglang/disagg-b200-agentic/deploy.yaml)，[benchmark](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/perf/perf.yaml)）；`validated`、非 recommended | manifest 实际 20×B200：3 个 4-GPU P Pod + 1 个 8-GPU D Pod | 3P；每个 TP4/DP4/EP4、启用 DP attention | 1D×8 GPU；TP8/DP8；未显式设置 `ep-size` | NIXL + UCX `cuda_ipc,cuda_copy,rc`；动态选择 GPU-local IB；每 Pod `rdma/shared_ib:1` | KV-aware Router；P 发布 KV events；P 开 200 GiB HiCache；EAGLE；500K context | 当前 X86 表没有 GLM-5.2；不能给 GLM-5/5.1 继承 |
-| [`zai-org/GLM-5.2-FP8`](https://huggingface.co/zai-org/GLM-5.2-FP8) | [H200 agentic Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/sglang/disagg-h200-agentic)（[deploy](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/sglang/disagg-h200-agentic/deploy.yaml)，[benchmark](https://github.com/ai-dynamo/dynamo/blob/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/perf/perf.yaml)）；`validated`、非 recommended | 16×H200；1 个 8-GPU P Pod + 1 个 8-GPU D Pod | 1P×8 GPU；TP8/DP1/EP8 | 1D×8 GPU；TP8/DP8/EP1 | NIXL + UCX `cuda_ipc,cuda_copy,rc`；动态选择 GPU-local IB；每 Pod `rdma/ib:8` | KV-aware Router；P 发布 KV events；EAGLE；250K context | 当前 X86 表没有 GLM-5.2；它也不是 GLM-5.1 Recipe |
-
-GLM-5.2 的官方元数据存在一处需显式保留的差异：catalog YAML 把 B200 disagg 的 `hardware.count` 写成 12，但根 Recipe 表写 20×B200，实际 manifest 是 `3P×4 + 1D×8 = 20`，且 benchmark 摘要也写明 3P1D。本文以可执行 manifest 的 20 卡拓扑为准，不把 catalog 的 12 当成实际集群总卡数。
-
-#### 4.3.4 其余 SGLang PD manifest
-
-以下 7 个 manifest 与上一节 GLM 的 4 个共同构成 SGLang 11 个显式 PD manifest。DeepSeek-R1 manifest 未设置 `--disaggregation-transfer-backend`，所以本文不把其运行时默认值擅自写成 NIXL 或 Mooncake。
-
-| 模型/权重 | manifest 数与官方 Recipe | 官方硬件与 P/D 拓扑 | 数据面 / Router | 对当前兼容表的结论 |
-|---|---:|---|---|---|
-| [`deepseek-ai/DeepSeek-R1`](https://huggingface.co/deepseek-ai/DeepSeek-R1) | 1：[16×H200](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/deepseek-r1/sglang/disagg-8gpu) | 1P×8 GPU，TP8/EP8；1D×8 GPU，TP8/DP8/EP8 | manifest 未显式设置 transfer backend 或 KV Router；P load-balance 与 D prefill balance 均为 round-robin | 模型 ID 精确；当前产品是 8×NH02、vLLM 单机记录，不能直接复用 |
-| [`deepseek-ai/DeepSeek-R1`](https://huggingface.co/deepseek-ai/DeepSeek-R1) | 1：[32×H200](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/deepseek-r1/sglang/disagg-16gpu) | 1P 跨 2 节点×8 GPU，TP16/EP16；1D 同形态，TP16/DP16/EP16 | 同上；多节点还要求高带宽网络 | 同上；这是第二个 SGLang 拓扑，不是新增模型 ID |
-| [`deepseek-ai/DeepSeek-V4-Pro`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | 1：[B200 Day-0 Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/deepseek-v4/deepseek-v4-pro/sglang/disagg-b200) | 16×B200；1P×8 GPU TP8 + 1D×8 GPU TP8 | SGLang NIXL + UCX/IB；每 Pod `rdma/ib:8`；manifest 未显式启用 KV Router；EAGLE 因 OOM/长上下文问题关闭 | 模型 ID 精确；Day-0 Experimental；当前 FP4、8×NH02 vLLM 产品组合不匹配 |
-| [`deepseek-ai/DeepSeek-V4-Pro`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | 1：[GB200 Day-0 Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/deepseek-v4/deepseek-v4-pro/sglang/disagg-gb200) | 16×GB200；1P 与 1D 各跨 2 节点×4 GPU，TP8 | SGLang NIXL；MNNVL/RDMA；DRA `ComputeDomain` 4 节点；manifest 未显式启用 KV Router；EAGLE 关闭 | 同上；依赖两 tray/worker 和 DRA，不能套单机拓扑 |
-| [`nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8`](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8) | 1：[SGLang Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/nemotron-3-super-fp8/sglang/disagg) | 4×H100/H200；1P×2 GPU TP2 + 1D×2 GPU TP2 | 检入 manifest 使用 NIXL + approximate KV Router（无 KV events）；官方 README 同时允许 Mooncake 替代 backend | 不在当前 X86 36 模型中；它证明“NVIDIA 绝不使用 Mooncake”是错误概括 |
-| [`Qwen/Qwen3.8-2.4T-A95B`](https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B) | 2：[GB300](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/qwen3.8-2.4t-a95b/sglang/disagg-gb300-chat) / [GB200](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/qwen3.8-2.4t-a95b/sglang/disagg-gb200-chat)；Experimental | GB300：32 卡、1P1D，每 worker 16 GPU/4 节点；GB200：48 卡、2P1D，每 worker 16 GPU/4 节点 | SGLang NIXL over MNNVL；KV-aware Router；P 侧 radix/prefix cache | 不在当前 X86 36 模型中 |
-
-#### 4.3.5 TensorRT-LLM PD manifest
-
-TensorRT-LLM 不使用 vLLM `NixlConnector` 或 SGLang transfer 参数，而是通过 `cache_transceiver_config` 选择 `UCX`/`DEFAULT`。以下 7 个模型族行闭合全部 12 个 manifest；Qwen3-235B 的 6 个文件包含 Hopper 方案以及 Blackwell base/通用/AWS/GCP/Nscale 生成与云厂商变体，不代表 6 种不同 P/D 拓扑。
-
-| 模型/权重 | manifest 数与官方 Recipe | 官方硬件与 P/D 拓扑 | Cache transceiver / Router | 对当前兼容表的结论 |
-|---|---:|---|---|---|
-| [`deepseek-ai/DeepSeek-R1`](https://huggingface.co/deepseek-ai/DeepSeek-R1) | 1：[GB200 WideEP](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/deepseek-r1/trtllm/disagg/wide_ep/gb200) | 36×GB200、9 节点；1P×4 GPU、EP4；1D 跨 8 节点×4 GPU、EP32 | `DEFAULT` transceiver；manifest 未显式启用 KV Router；DRA `ComputeDomain` 9 节点 | 模型 ID 精确；当前 8×NH02 vLLM 产品组合不匹配 |
-| [`nvidia/DeepSeek-V3.2-NVFP4`](https://huggingface.co/nvidia/DeepSeek-V3.2-NVFP4) | 1：[GB200 KV Router](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/deepseek-v32-fp4/trtllm/disagg-kv-router)；validated/recommended | 32×GB200、8 节点；2P+2D，每 worker 跨 2 节点×4 GPU、TP8/EP8 | `UCX` transceiver + MNNVL；KV-aware Router；P block reuse 开、D 关闭 | 与当前 `deepseek-ai/DeepSeek-V3.2` 仅同模型族；namespace、量化、backend、硬件均不同 |
-| [`Qwen/Qwen3-235B-A22B-FP8`](https://huggingface.co/Qwen/Qwen3-235B-A22B-FP8) | 6：[Hopper + Blackwell/provider variants](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/qwen3-235b-a22b-fp8/trtllm/disagg)；validated | 16×H100/H200 或 B100/B200；6P×2 GPU TP2 + 1D×4 GPU TP4/EP4 | `DEFAULT` transceiver；KV-aware Router；Blackwell 分 AWS EFA、GCP RoCE、Nscale IB 和 generic | 当前是 `Qwen/Qwen3-235B-A22B` BF16；精度、backend 和 16 卡拓扑不匹配 |
-| [`Qwen/Qwen3-32B-FP8`](https://huggingface.co/Qwen/Qwen3-32B-FP8) | 1：[TRT-LLM Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/qwen3-32b-fp8/trtllm/disagg)；validated | 8×H100/H200/A100；4P×1 GPU TP1 + 2D×2 GPU TP2 | `DEFAULT` transceiver；round-robin Router | 当前是 `Qwen/Qwen3-32B` BF16；同族 FP8 不能算精确模型 ID |
-| [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) | 1：[TRT-LLM Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/gpt-oss-120b/trtllm/disagg)；validated | 5×GB200/B200 | TRT-LLM transceiver；独立于同模型的 vLLM 2P6D/4P4D 方案 | 不在当前 X86 36 模型中 |
-| [`nvidia/Kimi-K2.5-NVFP4`](https://huggingface.co/nvidia/Kimi-K2.5-NVFP4) | 1：[GB200 Eagle KV Router](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/kimi-k2.5/trtllm/disagg-eagle-kv-router)；validated/recommended | 24×GB200；3P×4 GPU DEP4 + 3D×4 GPU TEP4 | `UCX` transceiver；KV-aware Router；Eagle3；P 端 100 GiB host KV offload | 不在当前 X86 36 模型中；当前文档中的 Ascend Kimi-K2.5 也不是该 NVFP4/TRT-LLM 组合 |
-| [`nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8`](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8) | 1：[TRT-LLM Disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/nemotron-3-super-fp8/trtllm/disagg) | 4×H100/H200；1P×2 GPU TP2 + 1D×2 GPU TP2 | `UCX` transceiver；round-robin Router；Hybrid Mamba state 不使用 NIXL/Mooncake | 不在当前 X86 36 模型中 |
-
-清单闭环为：vLLM `14 + 13 + 1 GAIE = 28`，SGLang `4 GLM + 7 = 11`，TensorRT-LLM `9 个当前相关 manifest + 3 个当前表外 manifest = 12`，另有 5 个 Qwen3-32B vLLM 云厂商 overlay。这里的“相关”包括精确模型和同模型族不同量化权重，不等于产品已支持。
-
-### 4.4 NVIDIA Recipe 与当前 X86 兼容表的逐模型结论
-
-当前 X86 表有 38 个文本生成部署行、36 个去重模型。按“模型 ID → 权重/精度 → 产品卡型与数量 → P/D 拓扑”逐层比对：
-
-| 当前产品模型或模型组 | NVIDIA Dynamo 官方 PD Recipe | 匹配等级 | 不能直接宣称支持的具体差异 |
-|---|---|---|---|
-| `Qwen/Qwen3-32B` | 有，16×H200 6P2D TP2；另有 8 GPU 1P1D Functional Overlay | 模型 ID 精确；产品组合不精确 | 产品记录为 BF16、4×NL02、单机；官方 PD 的 GPU 数、P/D 拓扑和网络均不同 |
-| `deepseek-ai/DeepSeek-R1` | vLLM：32×H100/H200、P/D 各 16 GPU；SGLang：16×H200 TP8 或 32×H200 TP16；TRT-LLM：36×GB200 WideEP | 模型 ID 精确；所有产品组合均不精确 | 产品记录为 FP8、8×NH02、单机；backend、资源规模、组网和 transceiver 均不等价 |
-| `deepseek-ai/DeepSeek-V4-Flash` | 有，28×H200、4P3D、每 worker DP4+TP1+EP | 模型 ID 精确；产品组合不精确 | 产品记录为 FP4、8×NH02、单机；官方公共权重为 FP8，资源和拓扑不同 |
-| `deepseek-ai/DeepSeek-V4-Pro` | vLLM：H200 32 卡 1P3D、GB200 16 卡 1P1D；SGLang Day-0：B200/GB200 均为 16 卡 1P1D TP8 | 模型 ID 精确；产品组合不精确 | 产品记录为 FP4、8×NH02、vLLM 单机；SGLang 方案也不能替代 vLLM 适配，且官方 H200 更推荐聚合方案 |
-| `nv-community/DeepSeek-V4-Flash-NVFP4` | 有同模型族 `nvidia/DeepSeek-V4-Flash-NVFP4`，12×B200、2P1D、TP4 | 近似权重，不是精确 ID/产品组合 | namespace、4×NRP0500 与 12×B200 均不同；需先证明权重等价，再重做拓扑和性能验证 |
-| DeepSeek-Coder、R1-0528、R1 Distill、V3/V3.1/V3.2/Exp/0324 | V3.2 有 `nvidia/DeepSeek-V3.2-NVFP4` TensorRT-LLM 32×GB200 2P2D；其余未找到相同模型 ID Recipe | 同族方案或无精确 Recipe | 不能把 R1、V4 或 V3.2 NVFP4/TRT-LLM Recipe 横向继承到公共 vLLM 权重 |
-| `Qwen/Qwen3-235B-A22B` | 有 FP8 TensorRT-LLM 方案：16 GPU、6P1D，Hopper 与 Blackwell/provider 共 6 个 manifest | 同模型族；无精确权重 Recipe | 当前产品是 BF16、vLLM；backend、精度、硬件和拓扑均不同 |
-| `nv-community/Qwen3.5-397B-A17B-NVFP4` | NVIDIA vLLM Recipe 为 122B-A10B FP8/NVFP4，不是 397B | 无精确 Recipe | 不能按同架构复用 122B 的 1P2D TP1、DS state 和无 MTP 结论 |
-| `ZhipuAI/GLM-5-FP8` | 有同模型族 `nvidia/GLM-5-NVFP4` SGLang Recipe：20×GB200，P TP4、D TP16；UCX/MNNVL 和 EFA/LIBFABRIC 两种网络变体 | 同模型族；无精确权重/产品组合 | namespace、FP8/NVFP4、vLLM/SGLang、8×NH02/20×GB200 均不同；不能只替换模型路径 |
-| `ZhipuAI/GLM-4.7-FP8`、`ZhipuAI/GLM-5.1-FP8`、`ZhipuAI/GLM-4-9B-0414` | 未找到相同模型 ID 的 NVIDIA Dynamo PD Recipe；GLM-5.2 的两套 SGLang Recipe 也不是这些模型 | 无精确 Recipe | 不能在 GLM-4.7/5/5.1 之间按架构继承权重、EAGLE、TP/DP/EP 和缓存参数 |
-| Kimi-K2.6 | NVIDIA 当前 vLLM Recipe 为聚合部署；Kimi-K3 才有 vLLM Disagg | 无精确 PD Recipe | K2.6 与 K3 的模型结构、TP 和 Hybrid state 方案不同 |
-| MiniMax-M2.5/M2.7/M3 | 未找到 NVIDIA Dynamo vLLM Disagg Recipe | 无精确 Recipe | 仅有普通推理兼容性或其他平台方案，不构成 NVIDIA vLLM PD 证据 |
-| `LLM-Research/Meta-Llama-3-8B`、R1-Distill-Llama-8B/70B | NVIDIA Recipe 是 Llama-3.3-70B-Instruct-FP8-dynamic | 无精确权重 Recipe | 模型版本、参数量和精度不同；不能由 Dense 架构或 70B Recipe 推导 |
-| Qwen2.5-32B、QwQ-32B、Qwen3-8B/14B/30B/Next/AgentWorld | 未找到相同模型 ID 的 NVIDIA Dynamo vLLM Disagg Recipe | 无精确 Recipe | 上游 Connector 通用示例或同族 Recipe 只能作为预研入口 |
-
-量化后，36 个 X86 去重文本生成模型中：**4 个命中相同模型 ID 的 NVIDIA vLLM PD Recipe，32 个没有相同模型 ID；0 个与产品表中的“模型+精度+卡型/卡数+P/D 拓扑”完整一致。** GLM 新增的是 SGLang 同模型族证据：精确模型 ID 命中仍为 0，因此不改变 vLLM 的 4/36。这里的 0 表示没有可直接照抄的完整 Recipe，不表示 36 个模型都被社区明确禁止。
-
-### 4.5 NVIDIA PD 数据面与共同组网要求
-
-| 层面 | 官方 Recipe 共同要求 | 缺失后的典型结果 |
+| 角色/组件 | 参数 | 物理含义 |
 |---|---|---|
-| Connector / transceiver | vLLM 使用 `NixlConnector`；SGLang 通过 `--disaggregation-transfer-backend` 选择 NIXL，部分模型可选 Mooncake；TensorRT-LLM 使用 `cache_transceiver_config.backend=UCX/DEFAULT` | 参数被错误 backend 拒绝，或启动后不能传完整 KV/Hybrid state |
-| 版本 | Recipe 使用其固定 Dynamo/engine/transfer 镜像；当前 vLLM 已将 NIXL 的 `kv_role=kv_both` 标记为 deprecated，而部分 Dynamo Recipe 仍使用该值 | 把新旧参数直接混用会出现启动参数、握手或生命周期行为差异 |
-| 数据面 | vLLM/SGLang 的多数检入方案为 NIXL over UCX/MNNVL/LIBFABRIC；TRT-LLM 方案可直接选择 UCX；Nemotron Hybrid state 还存在 backend 专项边界 | 插件缺失、只走 TCP、Hybrid state 未传输或性能不足 |
-| 跨机网络 | InfiniBand、RoCE 或等价高速网络；Kubernetes 安装 RDMA device plugin | KV 传输成为 TTFT/吞吐瓶颈，或 worker 无法获得 RDMA 设备 |
-| Pod 资源 | 根据 TP 申请 `rdma/ib`；容器增加 `IPC_LOCK`，部分 Recipe 还需要 `SYS_RESOURCE` | 内存注册失败、UCX/NIXL 初始化失败 |
-| UCX | 配置 `UCX_TLS`、`UCX_NET_DEVICES`、`UCX_RNDV_SCHEME=get_zcopy`；不能只配 NCCL 网卡变量 | 选错 NIC、回退 host staging/TCP，或带宽明显不足 |
-| 控制面 | Dynamo Frontend/PrefillRouter、服务发现；Kubernetes 生产方案依赖 ETCD/NATS | P/D worker 无法发现、路由或传递 `kv_transfer_params` |
-| Side channel | 跨机地址可路由；同一主机的 worker side-channel 端口唯一 | 地址不可达或端口冲突 |
-| GB200/GB300 | MNNVL 场景需要 VMM KV 注册、`UCX_CUDA_IPC_ENABLE_MNNVL=y`，多节点 Recipe 还依赖 DRA `ComputeDomain` | 无法使用跨节点 NVLink，回退 RDMA/TCP 或调度失败 |
-| Hybrid/Mamba/GDN | Recipe 明确要求时设置 `VLLM_SSM_CONV_STATE_LAYOUT=DS`；Qwen3.5-122B PD 禁用 MTP，D 关闭 Async Scheduling | `3-read Mamba conv transfer requires DS conv state layout`、EngineCore 崩溃或静默错误答案 |
+| Prefill | HTTP 8001；`NixlConnector`；`kv_producer`；`fail`；`--enforce-eager` | 计算并发送 KV |
+| Decode | HTTP 8002；`NixlConnector`；`kv_consumer`；`fail`；`FULL_DECODE_ONLY` | 接收 KV 并逐 token 解码 |
+| NIXL side channel | P 5557 + `$PREFILL_NODE_1`；D 5558 + `$DECODE_NODE_1` | worker 间交换传输元数据；host 必须跨节点可路由 |
+| 通信环境 | `UCX_NET_DEVICES=all`、`NCCL_CUMEM_ENABLE=1`、`NCCL_MNNVL_ENABLE=1`、`NCCL_NVLS_ENABLE=1` | 仍需按实际 IB/RoCE/NVLink/MNNVL 选择 NIC 和传输能力 |
+| Router | `vllm-router --vllm-pd-disaggregation`；`round_robin` | 请求控制面，不搬运 KV 张量 |
+| 策略门槛 | `min_gpus: 8`、`multi_node: true` | 只表示策略候选门槛；具体模型可要求 16/32 卡或更多 |
 
-### 4.6 上游 vLLM Mooncake 路径
+### 4.3 vLLM 官方 PD Recipe 与当前兼容表
 
-上游 vLLM 另有通用 `MooncakeConnector` 使用指南，官方示例为 Qwen2.5-7B-Instruct 的一个 P 实例和一个 D 实例，通过 Mooncake transfer engine 和 Proxy 传输 KV。该示例证明 Connector/API 和部署骨架存在，不是 Wings NVIDIA 路径的默认 Connector，也不是 79 个模型的逐模型生产配方。
+#### 4.3.1 当前产品精确命中的 10 个模型
+
+| 当前产品模型 ID | 官方页面/variant | vLLM 版本下限 | 页面默认硬件与 P/D | 模型专项参数 | 当前差异 |
+|---|---|---:|---|---|---|
+| `deepseek-ai/DeepSeek-R1` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-R1?strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | NIXL producer/consumer；round-robin | 产品为 8×NH02 单机普通推理，缺少独立 P/D 池与组网 |
+| `deepseek-ai/DeepSeek-R1-0528` | [`r1_0528`](https://recipes.vllm.ai/deepseek-ai/DeepSeek-R1?variant=r1_0528&strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | 与 R1 共用模型族 PD 骨架 | 模型 ID 精确；产品组合不精确 |
+| `deepseek-ai/DeepSeek-V3` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3?strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | NIXL；round-robin | 产品组合不精确 |
+| `deepseek-ai/DeepSeek-V3.1` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3.1?strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | NIXL；round-robin | 产品组合不精确 |
+| `deepseek-ai/DeepSeek-V3.2` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3.2?strategy=pd_cluster) | 0.18.0 | H200；1P×TP8 + 1D×TP8 | Sparse MLA；NIXL | 产品组合不精确 |
+| `deepseek-ai/DeepSeek-V4-Flash` | [`fp8`](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash?variant=fp8&strategy=pd_cluster) | 0.20.0 | H200；1P×DEP8 + 1D×DEP8 | Hybrid KV；P/D `--no-disable-hybrid-kv-cache-manager` | 页面默认 variant 已变为 0731/0.25.0；当前权重不能无条件继承默认项 |
+| `deepseek-ai/DeepSeek-V4-Pro` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Pro?strategy=pd_cluster) | 0.20.0 | H200：P、D 各 2 节点/DEP16，共 32 GPU；GB300：P、D 各 1 个 NVL4 节点/DEP4，共 8 GPU | Hybrid KV；NCCL symmetric memory | 产品为 8×NH02 单机，资源和拓扑不精确 |
+| `Qwen/Qwen3.5-122B-A10B` | [default](https://recipes.vllm.ai/Qwen/Qwen3.5-122B-A10B?strategy=pd_cluster) | 0.17.0 | H200；P/D 各一个 TP4 池 | P、D 均设置 `VLLM_SSM_CONV_STATE_LAYOUT=DS` | 模型精确；Hybrid state、组网和真机未闭环 |
+| `Qwen/Qwen3-VL-235B-A22B-Instruct-FP8` | [`fp8`](https://recipes.vllm.ai/Qwen/Qwen3-VL-235B-A22B-Instruct?variant=fp8&strategy=pd_cluster) | 0.11.0 | H200；P/D 各一个 TP4 池 | FP8 variant 的 TP 上限为 4 | 模型精确；完整多模态 PD 请求链未验收 |
+| `moonshotai/Kimi-K2.6` | [default](https://recipes.vllm.ai/moonshotai/Kimi-K2.6?strategy=pd_cluster) | **0.25.0** | H200；1P×DEP8 + 1D×DEP8 | D 端 `flashinfer_nvlink_one_sided`；block size 64 | 产品镜像为 v0.23.0，首先存在版本缺口 |
+
+所有行的 P→D KV 均使用共享 `NixlConnector` 配置，Router 均为 `round_robin`。这 10 个模型只是模型 ID 精确命中，**没有一行同时匹配当前产品的版本、精度、卡型/卡数、P/D 拓扑、网络和验收状态**。
+
+#### 4.3.2 8 个 namespace/variant 近似项
+
+| 当前产品模型 | 对应 vLLM Recipe | 差异 | 登记状态 |
+|---|---|---|---|
+| `nv-community/MiniMax-M2.5-NVFP4` | [`nvidia/MiniMax-M2.5-NVFP4`](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.5?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `nv-community/MiniMax-M2.7-NVFP4` | [`nvidia/MiniMax-M2.7-NVFP4`](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.7?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `MiniMax/MiniMax-M3-MXFP8` | [`MiniMaxAI/MiniMax-M3-MXFP8`](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3?variant=mxfp8&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `nv-community/Qwen3.5-397B-A17B-NVFP4` | [`nvidia/Qwen3.5-397B-A17B-NVFP4`](https://recipes.vllm.ai/Qwen/Qwen3.5-397B-A17B?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `ZhipuAI/GLM-4.7-FP8` | [`zai-org/GLM-4.7-FP8`](https://recipes.vllm.ai/zai-org/GLM-4.7?strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `ZhipuAI/GLM-5-FP8` | [`zai-org/GLM-5-FP8`](https://recipes.vllm.ai/zai-org/GLM-5?strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `ZhipuAI/GLM-5.1-FP8` | [`zai-org/GLM-5.1-FP8`](https://recipes.vllm.ai/zai-org/GLM-5.1?strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+| `nv-community/DeepSeek-V4-Flash-NVFP4` | [`nvidia/DeepSeek-V4-Flash-NVFP4`](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
+
+namespace 不同并非字符串问题：权重仓库内容、量化配置、revision 和 tokenizer 都可能不同。必须比对模型哈希与量化元数据，不能通过替换路径直接升为“精确支持”。
+
+#### 4.3.3 GLM-5.2 细粒度 Recipe
+
+vLLM 已提供 [GLM-5.2 `pd_cluster`](https://recipes.vllm.ai/zai-org/GLM-5.2?strategy=pd_cluster)，对应源码为 [`models/zai-org/GLM-5.2.yaml`](https://github.com/vllm-project/recipes/blob/93683962d28f2ed140c08030e2b9be0a50f646a0/models/zai-org/GLM-5.2.yaml)。
+
+| 字段 | 官方生成值 |
+|---|---|
+| 权重 | `zai-org/GLM-5.2-FP8`；约 743B 总参数/39B 激活参数；最低 VRAM 893 GiB |
+| 镜像/版本 | `vllm/vllm-openai:v0.23.0`；最低 vLLM 0.23.0 |
+| 物理资源 | 页面默认 H200；1 个 8-GPU P 节点 + 1 个 8-GPU D 节点，共 16×H200 |
+| Prefill 命令差异 | 端口 8001；TP8；`NixlConnector` producer；`fail`；`--enforce-eager`；side channel 5557 |
+| Decode 命令差异 | 端口 8002；TP8；`NixlConnector` consumer；`fail`；`FULL_DECODE_ONLY`；side channel 5558 |
+| 两侧共同参数 | `--kv-cache-dtype fp8 --tool-call-parser glm47 --enable-auto-tool-choice --reasoning-parser glm45` |
+| Router | `vllm-router --vllm-pd-disaggregation --policy round_robin`；P 8001，D 8002 |
+| Recipe 定制 | `strategy_overrides: {}`；使用共享 PD 骨架，没有 GLM-5.2 专属 P/D 比例和性能验收数据 |
+
+GLM-5.2 不在当前 X86 47 个 vLLM 生成模型中，因此这条官方方案必须列出，但不进入 10/47 分子。它对 Wings 的直接要求是：新增精确模型/权重映射，提供 16×H200 与 NIXL/UCX/IB 物料，接入 Router，并补齐连续请求、并发、长上下文和长稳验证。
+
+### 4.4 当前 47 个 X86 vLLM 生成模型闭环
+
+| 类别 | 数量 | 模型 |
+|---|---:|---|
+| 精确 ID 命中 | 10 | 第 4.3.1 节逐项列出的 7 个 DeepSeek、Qwen3.5-122B、Qwen3-VL-235B-FP8、Kimi-K2.6 |
+| namespace/variant 近似 | 8 | 第 4.3.2 节逐项列出的 MiniMax 3 个、GLM 3 个、Qwen3.5-397B 和 V4-Flash-NVFP4 |
+| 未找到精确或同 basename 项：DeepSeek | 9 | `DeepSeek-Coder-V2-Instruct`；R1-Distill-Llama-70B/8B；R1-Distill-Qwen-1.5B/7B/14B/32B；`DeepSeek-V3-0324`；`DeepSeek-V3.2-Exp` |
+| 未找到精确或同 basename 项：Qwen | 18 | `QwQ-32B`；`Qwen2.5-32B-Instruct`；Qwen2.5-VL-7B/72B；Qwen3-8B/14B/30B/32B/235B；Qwen3-AgentWorld-35B；Qwen3-Next-80B；Qwen3-VL-8B/30B/32B；Qwen3.5-27B/35B；Qwen3.6-27B/35B |
+| 未找到精确或同 basename 项：GLM/Llama | 2 | `ZhipuAI/GLM-4-9B-0414`；`LLM-Research/Meta-Llama-3-8B` |
+
+数量闭环为 **10 + 8 + 9 + 18 + 2 = 47**。其中 35 个文本生成模型是 **7 个精确、28 个不精确**；12 个视觉/多模态生成模型是 **3 个精确、9 个不精确**。不精确不等于上游明确禁止，只表示不能直接把官方 Recipe 当成当前产品配置。
+
+### 4.5 vLLM PD 数据面和组网要求
+
+| 层次 | vLLM Recipe 中的组件 | 必须验证的内容 | 典型失败 |
+|---|---|---|---|
+| P/D KV 协议 | `NixlConnector` producer/consumer | P/D vLLM/NIXL 版本、模型哈希、KV dtype、head/layer、Attention backend 和 spec decode 对齐 | 握手失败、KV spec 不一致、请求挂起 |
+| KV 数据面 | NIXL GDR，经 UCX/RDMA/IB/RoCE；部分硬件可用 MNNVL | GPU-NIC 拓扑、NIC 名、GDR 能力、RDMA device、容器权限和插件/so | 退化到 TCP、设备不可见、传输失败 |
+| MoE EP 数据面 | IBGDA、DeepEP、NVSHMEM 等 | DEP/EP 池内部 token dispatch/combine 组网 | EP 性能或初始化失败；不等于 P→D KV 失败 |
+| 请求控制面 | `vllm-router`，默认 `round_robin` | P/D endpoint 可发现、8001/8002 可达、PD metadata 被保留 | 请求只到一侧或丢失 transfer 参数 |
+| Side channel | 5557/5558；每节点可路由 host | 每个 worker 唯一端口，不能把容器回环地址当跨机地址 | address in use、连接超时、只在本机可达 |
+| 容器/共享内存 | 官方生成命令使用 `--privileged --ipc=host` | IPC、memlock、GPU/RDMA 设备挂载和安全策略 | 注册内存失败或性能异常 |
+| 模型专项 | V4 Hybrid KV、Qwen3.5 DS layout、Kimi D 端 one-sided backend、GLM parser | 必须与模型 variant 和 vLLM 版本同时生效 | 能启动但请求期崩溃或状态不完整 |
+
+`NixlConnector`、NIXL GDR、IBGDA 和 Router 不是四个可选“PD 方案”：Connector 是 KV 协议，GDR/UCX/RDMA 是其数据承载，IBGDA 服务 MoE EP 池内部通信，Router 是请求控制面。
+
+### 4.6 vLLM Recipe 中的 Mooncake 位置
+
+vLLM Recipes 的 [Mooncake 分布式 KV Store](https://github.com/vllm-project/recipes/blob/93683962d28f2ed140c08030e2b9be0a50f646a0/kv_store/kv_store_distributed_mooncake.yaml) 和 [集中式 KV Store](https://github.com/vllm-project/recipes/blob/93683962d28f2ed140c08030e2b9be0a50f646a0/kv_store/kv_store_centralized_mooncake.yaml) 是缓存存储/Offload 策略，不是 `pd_cluster` 的默认 P→D Connector。
+
+当 PD 与 Mooncake Store 同时使用时，官方做法是：
+
+1. 用 `MultiConnector` 组合两个子 Connector；
+2. `NixlConnector` 在 P/D 间继续承担 `kv_producer`/`kv_consumer`；
+3. `MooncakeStoreConnector` 负责共享缓存读取和写入；
+4. 另外配置 Mooncake master、metadata、存储介质、容量和淘汰策略。
+
+因此不存在一条对所有 vLLM Recipe 通用的 “MooncakeConnector 替换策略”。推荐基线是：**普通 `pd_cluster` 先使用 NIXL；只有明确需要共享 KV Store/Offload 时才叠加 Mooncake，并把 MultiConnector 顺序、故障策略和存储服务作为独立组合验证。**
 
 官方来源：
 
-- [NIXL Compatibility Matrix](https://docs.vllm.ai/en/latest/features/nixl_connector_compatibility/)
-- [NIXL Usage Guide](https://docs.vllm.ai/en/latest/features/nixl_connector_usage/)
-- [MooncakeConnector Usage Guide](https://docs.vllm.ai/en/stable/features/mooncake_connector_usage/)
-- [NVIDIA Dynamo Disaggregated Serving Design](https://docs.nvidia.com/dynamo/latest/design-docs/disaggregated-serving)
-- [NVIDIA Dynamo Disaggregated Serving Guide](https://docs.nvidia.com/dynamo/latest/user-guides/disaggregated-serving)
-- [NVIDIA Dynamo Production-Ready Recipes](https://github.com/ai-dynamo/dynamo/blob/main/recipes/README.md)
-
-具体模型权重、vLLM Disagg Recipe、`deploy.yaml` 和 `perf.yaml` 已在 4.3 表中逐行链接，不再在本节重复列举模型族根目录。
-
+- [vLLM Recipes 模型目录](https://github.com/vllm-project/recipes/tree/93683962d28f2ed140c08030e2b9be0a50f646a0/models)
+- [vLLM Recipes `pd_cluster`](https://github.com/vllm-project/recipes/blob/93683962d28f2ed140c08030e2b9be0a50f646a0/strategies/pd_cluster.yaml)
+- [vLLM NixlConnector Compatibility Matrix](https://docs.vllm.ai/en/latest/features/nixl_connector_compatibility/)
+- [vLLM NixlConnector Usage Guide](https://docs.vllm.ai/en/latest/features/nixl_connector_usage/)
+- [GLM-5.2 vLLM Recipe](https://recipes.vllm.ai/zai-org/GLM-5.2?strategy=pd_cluster)
 ## 5. vLLM-Ascend 官方模型级组合
 
 本节只记录官方页面中同时出现精确模型/权重、硬件或资源规模、P/D 拓扑和 Connector 的组合。模型页只有普通单机/多机命令但没有 PD 章节时，不登记为模型级 PD 配方。
@@ -337,46 +289,46 @@ TensorRT-LLM 不使用 vLLM `NixlConnector` 或 SGLang transfer 参数，而是�
 
 ## 6. 79 个 Wings LLM 模型覆盖清单
 
-“vLLM/NIXL”列优先登记 NVIDIA Dynamo 精确模型 Recipe；没有精确 Recipe 时才登记架构级能力。“Ascend 模型级配方”只登记当前找到的精确教程或同模型族教程；“本地 large-EP”只登记 profile 查表结果。
+“vLLM/NIXL”列只登记 vLLM Recipes 的 `pd_cluster` 精确模型/variant；没有精确 Recipe 时才登记架构级能力。“Ascend 模型级配方”只登记当前找到的精确教程或同模型族教程；“本地 large-EP”只登记 profile 查表结果。
 
 ### 6.1 DeepSeek
 
 | Architecture | Wings 模型名 | vLLM/NIXL | Ascend 模型级配方 | 本地 large-EP | 差异/缺项 |
 |---|---|---|---|---|---|
 | `DeepseekV2ForCausalLM` | DeepSeek-Coder-V2-Instruct；DeepSeek-Coder-V2-Instruct-w8a8 | MLA 架构级 | 未找到精确配方 | 无 | 精确模型 recipe、profile、物料和真机记录缺失 |
-| `DeepseekV3ForCausalLM` | DeepSeek-R1；DeepSeek-R1-0528；DeepSeek-V3；DeepSeek-V3-0324；DeepSeek-V3.1；以及对应 5 个 w8a8 名称 | NVIDIA 对 `deepseek-ai/DeepSeek-R1` 有 32×Hopper、P/D 各 16 GPU 的 vLLM NIXL Recipe；其余仅架构级 | R1 有通用多节点示例；V3.1 有模型页配方；其余精确权重未逐一登记 | 无 | R1 的 NVIDIA Recipe 与当前 8 卡单机产品组合不等价；V3/V3.1/0528 仍需独立核对 |
-| `DeepseekV32ForCausalLM` | DeepSeek-V3.2；DeepSeek-V3.2-w8a8；DeepSeek-V3.2-Exp；DeepSeek-V3.2-Exp-W8A8 | Sparse MLA 架构级 | V3.2-w8a8 有模型配方；Exp 未找到独立配方 | 有，Layerwise | 当前官方 V3.2 命令为 V1；Exp 不能自动继承 |
-| `DeepseekV4ForCausalLM` | DeepSeek-V4；DeepSeek-V4-w8a8；DeepSeek-V4-Flash；DeepSeek-V4-Flash-w8a8-mtp；DeepSeek-V4-Pro；DeepSeek-V4-Pro-w4a8-mtp | NVIDIA 对 Flash/Pro 的公共 FP8 和 NVFP4 权重均有 NIXL Recipe；基础 V4 仍是架构级 | Flash/Pro 精确量化权重有配方；基础 V4 未找到同等配方 | 有一个 Flash 来源的架构 profile | NVIDIA/Ascend 均要求按 Flash/Pro、权重和硬件拆分；不能用一个架构 profile 覆盖 |
+| `DeepseekV3ForCausalLM` | DeepSeek-R1；DeepSeek-R1-0528；DeepSeek-V3；DeepSeek-V3-0324；DeepSeek-V3.1；以及对应 5 个 w8a8 名称 | vLLM Recipes 精确覆盖 R1、R1-0528、V3、V3.1；V3-0324 未精确命中 | R1 有通用多节点示例；V3.1 有模型页配方；其余精确权重未逐一登记 | 无 | 四个 vLLM Recipe 均是 H200 1P×TP8 + 1D×TP8；与当前产品普通推理组合不等价 |
+| `DeepseekV32ForCausalLM` | DeepSeek-V3.2；DeepSeek-V3.2-w8a8；DeepSeek-V3.2-Exp；DeepSeek-V3.2-Exp-W8A8 | vLLM Recipes 精确覆盖 `deepseek-ai/DeepSeek-V3.2`；Exp 未精确命中 | V3.2-w8a8 有模型配方；Exp 未找到独立配方 | 有，Layerwise | vLLM Recipe 为 H200 1P×TP8 + 1D×TP8；Ascend 当前命令为 V1；Exp 不能自动继承 |
+| `DeepseekV4ForCausalLM` | DeepSeek-V4；DeepSeek-V4-w8a8；DeepSeek-V4-Flash；DeepSeek-V4-Flash-w8a8-mtp；DeepSeek-V4-Pro；DeepSeek-V4-Pro-w4a8-mtp | vLLM Recipes 精确覆盖 Flash/Pro 公共权重，并提供 NVFP4 variant；基础 V4 未命中 | Flash/Pro 精确量化权重有配方；基础 V4 未找到同等配方 | 有一个 Flash 来源的架构 profile | 两个平台都要求按 Flash/Pro、权重和硬件拆分；不能用一个架构 profile 覆盖 |
 
 ### 6.2 Kimi
 
 | Architecture | Wings 模型名 | vLLM/NIXL | Ascend 模型级配方 | 本地 large-EP | 差异/缺项 |
 |---|---|---|---|---|---|
-| `KimiK25ForConditionalGeneration` | Kimi-K2.5；Kimi-K2.5-w4a8；Kimi-K2.6-w4a8；Kimi-K2.7；Kimi-K2.7-w4a8；Kimi-K2.7-Code | 完整多模态在 NIXL 矩阵中未验证 | K2.5-w4a8、K2.6-w4a8 有；K2.7/Code 未找到 | 无 | K2.5/K2.6 profile 缺失；K2.7/Code 模型级配方缺失 |
-| `KimiK3ForConditionalGeneration` | Kimi-K3 | NVIDIA 有 GB300 1P2D TP8 和 GB200 1P1D TP16 的 vLLM NIXL Recipe | 未找到 | 无 | NVIDIA Recipe 依赖 MNNVL/DRA ComputeDomain、RDMA 和 DS conv state；当前产品未登记同等组合 |
+| `KimiK25ForConditionalGeneration` | Kimi-K2.5；Kimi-K2.5-w4a8；Kimi-K2.6-w4a8；Kimi-K2.7；Kimi-K2.7-w4a8；Kimi-K2.7-Code | vLLM Recipes 有 K2.5、K2.6 和 K2.7-Code `pd_cluster`；通用 K2.7 名称未精确命中 | K2.5-w4a8、K2.6-w4a8 有；K2.7/Code 未找到 | 无 | K2.6 产品镜像 0.23.0 低于 Recipe 0.25.0；其余还需精确权重映射 |
+| `KimiK3ForConditionalGeneration` | Kimi-K3 | vLLM Recipes 有 `moonshotai/Kimi-K3` 的 `pd_cluster` | 未找到 | 无 | 需按 Recipe 页实际 variant、版本、硬件、NIXL 和 Router 独立登记；当前产品未登记同等组合 |
 
 ### 6.3 GLM
 
 | Architecture | Wings 模型名 | vLLM/NIXL | Ascend 模型级配方 | 本地 large-EP | 差异/缺项 |
 |---|---|---|---|---|---|
 | `Glm4ForCausalLM` | GLM-4-9B-0414 | Dense 架构级 | 未找到精确配方 | 无 | 精确 recipe 和 profile 缺失 |
-| `Glm4MoeForCausalLM` | GLM-4.7；GLM-4.7-FP8；GLM4.7；GLM-4.7-w8a8 | MoE 架构级 | `Eco-Tech/GLM-4.7-W8A8-floatmtp` 有当前 main 配方 | 无 | 官方精确权重名与 Wings 名称需映射；profile 缺失 |
-| `GlmMoeDsaForCausalLM` | GLM-5；GLM-5-FP8；GLM-5-w4a8；GLM-5.1；GLM5.1；GLM-5.1-w8a8；GLM-5.1-FP8 | MLA/MoE 架构级 | GLM-5/5.1 有，主要为 w8a8 | 有 GLM-5/5.1 profile | FP8/w4a8 与 w8a8 分项记录 |
-| `GlmMoeDsaForCausalLM` | GLM-5.2；GLM-5.2-w8a8 | MLA/MoE 架构级 | GLM-5.2 w4a8c8 有 A3/A2 两套 | 会命中 GLM-5/5.1 profile | 精度、拓扑和 A2 MultiConnector 均不等价 |
+| `Glm4MoeForCausalLM` | GLM-4.7；GLM-4.7-FP8；GLM4.7；GLM-4.7-w8a8 | vLLM Recipes 有 `zai-org/GLM-4.7-FP8`；产品为 `ZhipuAI/*` 时仅 namespace 近似 | `Eco-Tech/GLM-4.7-W8A8-floatmtp` 有当前 main 配方 | 无 | 必须核对 namespace、权重哈希、量化和版本，不能只替换模型路径 |
+| `GlmMoeDsaForCausalLM` | GLM-5；GLM-5-FP8；GLM-5-w4a8；GLM-5.1；GLM5.1；GLM-5.1-w8a8；GLM-5.1-FP8 | vLLM Recipes 有 `zai-org/GLM-5-FP8` 和 `zai-org/GLM-5.1-FP8`；产品 `ZhipuAI/*` 仅 namespace 近似 | GLM-5/5.1 有，主要为 w8a8 | 有 GLM-5/5.1 profile | FP8/w4a8/w8a8、namespace 和平台必须分项记录 |
+| `GlmMoeDsaForCausalLM` | GLM-5.2；GLM-5.2-w8a8 | vLLM Recipes 有 `zai-org/GLM-5.2-FP8`：16×H200、1P×TP8 + 1D×TP8、NIXL | GLM-5.2 w4a8c8 有 A3/A2 两套 | 会命中 GLM-5/5.1 profile | vLLM 的 FP8/H200/NIXL 与 Ascend 的 w4a8c8/Mooncake 方案必须独立登记 |
 
 ### 6.4 Qwen
 
 | Architecture | Wings 模型名 | vLLM/NIXL | Ascend 模型级配方 | 本地 large-EP | 差异/缺项 |
 |---|---|---|---|---|---|
 | `Qwen2ForCausalLM` | DeepSeek-R1-Distill-Qwen-1.5B/7B/14B/32B；Qwen2.5-32B-Instruct；QwQ-32B | Dense 架构级 | 未找到这些精确模型配方 | 无 | 精确 recipe 和 profile 缺失 |
-| `Qwen3ForCausalLM` | Qwen3-32B | NVIDIA 有 16×H200 6P2D TP2 压测 Recipe，以及 8 GPU 1P1D Functional Overlay，均使用 NIXL | 未找到精确配方 | 无 | 模型 ID 命中，但当前 4×NL02 单机产品组合与官方资源/拓扑不等价 |
+| `Qwen3ForCausalLM` | Qwen3-32B | 当前 vLLM Recipes 模型页未声明兼容 `pd_cluster` | 未找到精确配方 | 无 | 不能再记为 vLLM Recipe 精确命中；只保留架构级候选 |
 | `Qwen3MoeForCausalLM` | Qwen3-30B-A3B | MoE 架构级 | 当前模型页未找到 PD 章节 | 有用户自定义 Layerwise | 内部配方；非官方模型级配方 |
-| `Qwen3MoeForCausalLM` | Qwen3-235B-A22B | MoE 架构级 | w8a8-rot 有 V1 配方 | 会命中 Qwen3-30 Layerwise | 权重、Connector 和拓扑不等价 |
+| `Qwen3MoeForCausalLM` | Qwen3-235B-A22B | vLLM Recipes 有 `Qwen3-235B-A22B-Instruct-2507`，但不是当前精确模型 ID | w8a8-rot 有 V1 配方 | 会命中 Qwen3-30 Layerwise | variant、权重、Connector 和拓扑不等价 |
 | `Qwen3NextForCausalLM` | Qwen3-Next-80B-A3B-Instruct | Hybrid SSM/Mamba 架构级、受 Hybrid 限制 | 当前模型页未找到 PD 章节 | 无 | 模型级 recipe 和 profile 缺失 |
 | `Qwen3_5ForConditionalGeneration` | Qwen3.5-27B；Qwen3.5-27B-w8a8；Qwen3.6-27B；Qwen3.6-27B-w8a8 | Hybrid SSM/Mamba；当前 P TP = D TP | w8a8 有 2 台 A3 配方 | 无 | profile、镜像物料和真机记录缺失 |
-| `Qwen3_5MoeForConditionalGeneration` | Qwen3.5-397B-A17B-NVFP4 | Hybrid/MoE，NVIDIA 权重 | Ascend w8a8 配方不适用 | 会命中 Ascend Layerwise | 平台/精度隔离缺失 |
+| `Qwen3_5MoeForConditionalGeneration` | Qwen3.5-397B-A17B-NVFP4 | vLLM Recipes 有 `nvidia/*` NVFP4 variant；当前产品为 `nv-community/*`，仅 namespace 近似 | Ascend w8a8 配方不适用 | 会命中 Ascend Layerwise | 平台、namespace 和精度隔离缺失 |
 | `Qwen3_5MoeForConditionalGeneration` | Qwen3.5-397B-A17B-w8a8；Qwen3.5-397B-A17B | Hybrid/MoE 架构级 | w8a8 有 V1 配方 | 有，Layerwise | Connector 漂移；BF16 与 w8a8 分项记录 |
-| `Qwen3_5MoeForConditionalGeneration` | Qwen3.5-35B-A3B；Qwen3.5-122B-A10B | NVIDIA 对 122B-A10B 的 FP8/H200 和 NVFP4/B200 各有 1P2D TP1 NIXL Recipe；35B 仍仅架构级 | 未找到精确配方 | 会命中 397B profile | 122B BF16 产品权重与官方量化权重不等价；397B profile 也不能作为精确配方 |
+| `Qwen3_5MoeForConditionalGeneration` | Qwen3.5-35B-A3B；Qwen3.5-122B-A10B | vLLM Recipes 精确覆盖 122B-A10B，并要求 P/D 均使用 DS conv-state layout；35B 未精确命中 | 未找到精确配方 | 会命中 397B profile | 122B 模型 ID 精确，但产品拓扑/组网未匹配；397B profile 不能作为精确配方 |
 | `Qwen3_5MoeForConditionalGeneration` | Qwen3.6-35B-A3B；Qwen3.6-35B-A3B-w8a8 | Hybrid/MoE 架构级 | 当前模型页只有普通部署，未找到 PD 章节 | 会命中 397B profile | 模型级 recipe 缺失；已有请求期 Hybrid KV 故障记录 |
 | `Qwen3_5MoeForConditionalGeneration` | Qwen-AgentWorld-35B-A3B | Hybrid/MoE 架构级 | 未找到精确配方 | 会命中 397B profile | 精确 recipe 缺失，架构 profile 超覆盖 |
 
@@ -384,10 +336,10 @@ TensorRT-LLM 不使用 vLLM `NixlConnector` 或 SGLang transfer 参数，而是�
 
 | Architecture | Wings 模型名 | vLLM/NIXL | Ascend 模型级配方 | 本地 large-EP | 差异/缺项 |
 |---|---|---|---|---|---|
-| `MiniMaxM2ForCausalLM` | MiniMax-M2.5；MiniMax-M2.5-NVFP4；MiniMax-M2.5-w8a8 | MoE 架构级；NVFP4 为 NVIDIA 路径 | 未找到 M2.5 精确配方 | 无 | 平台分流、精确 recipe 和 profile 缺失 |
-| `MiniMaxM2ForCausalLM` | MiniMax-M2.7；MiniMax-M2.7-w8a8；MiniMax-M2.7-w8a8-QuaRot | MoE 架构级 | w8a8-QuaRot 有配方 | 无 | profile、镜像物料和真机记录缺失 |
-| `MiniMaxM3SparseForConditionalGeneration` | MiniMax-M3；MiniMax-M3-MXFP8 | 多模态边界未验证 | 有普通部署资料，未找到具体 PD 启动章节 | 无 | 精确 PD recipe 和 profile 缺失 |
-| `LlamaForCausalLM` | LLaMA3-8B；LLaMA3.1-70B；LLaMA3.1-70B-Instruct；Meta-Llama-3.1-70B-Instruct；DeepSeek-R1-Distill-Llama-8B/70B | NVIDIA 有 `RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic` 的单节点 2P1D 和多节点 1P1D NIXL Recipe，但不是这些精确权重 | 未找到这些精确权重的 vLLM-Ascend 配方 | 无 | 不能跨模型版本、参数量和精度继承 NVIDIA 70B Recipe；Ascend 精确 recipe 也缺失 |
+| `MiniMaxM2ForCausalLM` | MiniMax-M2.5；MiniMax-M2.5-NVFP4；MiniMax-M2.5-w8a8 | vLLM Recipes 有 MiniMax-M2.5 及 `nvidia/*` NVFP4 variant；当前 `nv-community/*` 仅 namespace 近似 | 未找到 M2.5 精确配方 | 无 | 平台分流、权重映射和 profile 缺失 |
+| `MiniMaxM2ForCausalLM` | MiniMax-M2.7；MiniMax-M2.7-w8a8；MiniMax-M2.7-w8a8-QuaRot | vLLM Recipes 有 MiniMax-M2.7 及 NVFP4 variant；当前产品 namespace/权重需逐项映射 | w8a8-QuaRot 有配方 | 无 | profile、镜像物料和真机记录缺失 |
+| `MiniMaxM3SparseForConditionalGeneration` | MiniMax-M3；MiniMax-M3-MXFP8 | vLLM Recipes 有 MiniMax-M3 `pd_cluster`，但产品 `MiniMax/*` 与 Recipe `MiniMaxAI/*` namespace 不同 | 有普通部署资料，未找到具体 PD 启动章节 | 无 | 权重等价性、profile 和真机记录缺失 |
+| `LlamaForCausalLM` | LLaMA3-8B；LLaMA3.1-70B；LLaMA3.1-70B-Instruct；Meta-Llama-3.1-70B-Instruct；DeepSeek-R1-Distill-Llama-8B/70B | 当前 vLLM Recipes 中未找到这些精确模型 ID 的 `pd_cluster` | 未找到这些精确权重的 vLLM-Ascend 配方 | 无 | 不能跨模型版本、参数量和精度继承其他 Recipe |
 
 ## 7. 本地 profile 与官方配方差异清单
 
