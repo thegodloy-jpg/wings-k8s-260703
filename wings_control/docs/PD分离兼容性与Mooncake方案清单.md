@@ -149,69 +149,78 @@ NIXL 运行记录还需包含：
 | Router | `vllm-router --vllm-pd-disaggregation`；`round_robin` | 请求控制面，不搬运 KV 张量 |
 | 策略门槛 | `min_gpus: 8`、`multi_node: true` | 只表示策略候选门槛；具体模型可要求 16/32 卡或更多 |
 
-### 4.3 vLLM 官方 PD Recipe 与当前兼容表
+### 4.3 vLLM 官方 PD 全量模型与 variant
 
-#### 4.3.1 当前产品精确命中的 10 个模型
+统计只读取官方模型 YAML 的 `compatible_strategies: pd_cluster`，不与当前项目模型名取交集。固定提交共有 **41 个模型族、99 个 variant 记录**；剔除 6 个只支持 AMD 的 variant 后，NVIDIA 侧为 **93 个 variant 记录、92 个唯一权重 ID**。表中“共享”表示没有模型级 `strategy_overrides.pd_cluster`，仍会根据所选硬件和权重显存自动生成共置或多节点 P/D 池。
 
-| 当前产品模型 ID | 官方页面/variant | vLLM 版本下限 | 页面默认硬件与 P/D | 模型专项参数 | 当前差异 |
-|---|---|---:|---|---|---|
-| `deepseek-ai/DeepSeek-R1` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-R1?strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | NIXL producer/consumer；round-robin | 产品为 8×NH02 单机普通推理，缺少独立 P/D 池与组网 |
-| `deepseek-ai/DeepSeek-R1-0528` | [`r1_0528`](https://recipes.vllm.ai/deepseek-ai/DeepSeek-R1?variant=r1_0528&strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | 与 R1 共用模型族 PD 骨架 | 模型 ID 精确；产品组合不精确 |
-| `deepseek-ai/DeepSeek-V3` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3?strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | NIXL；round-robin | 产品组合不精确 |
-| `deepseek-ai/DeepSeek-V3.1` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3.1?strategy=pd_cluster) | 0.12.0 | H200；1P×TP8 + 1D×TP8 | NIXL；round-robin | 产品组合不精确 |
-| `deepseek-ai/DeepSeek-V3.2` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3.2?strategy=pd_cluster) | 0.18.0 | H200；1P×TP8 + 1D×TP8 | Sparse MLA；NIXL | 产品组合不精确 |
-| `deepseek-ai/DeepSeek-V4-Flash` | [`fp8`](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash?variant=fp8&strategy=pd_cluster) | 0.20.0 | H200；1P×DEP8 + 1D×DEP8 | Hybrid KV；P/D `--no-disable-hybrid-kv-cache-manager` | 页面默认 variant 已变为 0731/0.25.0；当前权重不能无条件继承默认项 |
-| `deepseek-ai/DeepSeek-V4-Pro` | [default](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Pro?strategy=pd_cluster) | 0.20.0 | H200：P、D 各 2 节点/DEP16，共 32 GPU；GB300：P、D 各 1 个 NVL4 节点/DEP4，共 8 GPU | Hybrid KV；NCCL symmetric memory | 产品为 8×NH02 单机，资源和拓扑不精确 |
-| `Qwen/Qwen3.5-122B-A10B` | [default](https://recipes.vllm.ai/Qwen/Qwen3.5-122B-A10B?strategy=pd_cluster) | 0.17.0 | H200；P/D 各一个 TP4 池 | P、D 均设置 `VLLM_SSM_CONV_STATE_LAYOUT=DS` | 模型精确；Hybrid state、组网和真机未闭环 |
-| `Qwen/Qwen3-VL-235B-A22B-Instruct-FP8` | [`fp8`](https://recipes.vllm.ai/Qwen/Qwen3-VL-235B-A22B-Instruct?variant=fp8&strategy=pd_cluster) | 0.11.0 | H200；P/D 各一个 TP4 池 | FP8 variant 的 TP 上限为 4 | 模型精确；完整多模态 PD 请求链未验收 |
-| `moonshotai/Kimi-K2.6` | [default](https://recipes.vllm.ai/moonshotai/Kimi-K2.6?strategy=pd_cluster) | **0.25.0** | H200；1P×DEP8 + 1D×DEP8 | D 端 `flashinfer_nvlink_one_sided`；block size 64 | 产品镜像为 v0.23.0，首先存在版本缺口 |
+| 厂商/官方模型族 | 最低 vLLM | NVIDIA 可选 variant → 精确权重 ID | PD 方案差异 |
+|---|---:|---|---|
+| [DeepSeek-R1](https://recipes.vllm.ai/deepseek-ai/DeepSeek-R1?strategy=pd_cluster) | 0.12.0 | default → `deepseek-ai/DeepSeek-R1`<br>r1_0528 → `deepseek-ai/DeepSeek-R1-0528`<br>nvfp4 → `nvidia/DeepSeek-R1-0528-NVFP4-v2` | 共享 |
+| [DeepSeek-V3](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3?strategy=pd_cluster) | 0.12.0 | default → `deepseek-ai/DeepSeek-V3`<br>fp4 → `nvidia/DeepSeek-V3-FP4` | 共享 |
+| [DeepSeek-V3.1](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3.1?strategy=pd_cluster) | 0.12.0 | default → `deepseek-ai/DeepSeek-V3.1`<br>nvfp4 → `nvidia/DeepSeek-V3.1-NVFP4` | 共享 |
+| [DeepSeek-V3.2](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V3.2?strategy=pd_cluster) | 0.18.0 | default → `deepseek-ai/DeepSeek-V3.2`<br>nvfp4 → `nvidia/DeepSeek-V3.2-NVFP4` | 共享 |
+| [DeepSeek-V4-Flash](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash?strategy=pd_cluster) | 0.20.0；0731 variant 0.25.0 | default → `deepseek-ai/DeepSeek-V4-Flash-0731`<br>fp8 → `deepseek-ai/DeepSeek-V4-Flash`<br>nvfp4 → `nvidia/DeepSeek-V4-Flash-NVFP4`<br>dspark → `deepseek-ai/DeepSeek-V4-Flash-DSpark` | P/D 均 DEP；Hybrid KV、sleep mode、角色级 batch、NCCL symmetric-memory |
+| [DeepSeek-V4-Pro](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Pro?strategy=pd_cluster) | 0.20.0 | default → `deepseek-ai/DeepSeek-V4-Pro`<br>nvfp4 → `nvidia/DeepSeek-V4-Pro-NVFP4`<br>dspark → `deepseek-ai/DeepSeek-V4-Pro-DSpark` | P/D 均 DEP；Hybrid KV；GB300 每侧 1 个 NVL4 节点，其他硬件按显存扩展 |
+| [Ring-1T-FP8](https://recipes.vllm.ai/inclusionAI/Ring-1T-FP8?strategy=pd_cluster) | 0.11.0 | default → `inclusionAI/Ring-1T-FP8` | 共享 |
+| [Ring-2.6-1T](https://recipes.vllm.ai/inclusionAI/Ring-2.6-1T?strategy=pd_cluster) | 0.20.2 | default → `inclusionAI/Ring-2.6-1T` | 共享 |
+| [Macaron-V1-Coding-Venti](https://recipes.vllm.ai/mindlab-research/Macaron-V1-Coding-Venti?strategy=pd_cluster) | 0.25.0 | default/fp8 → `mindlab-research/Macaron-V1-Coding-Venti` | 共享；两个 variant label 指向同一权重 ID |
+| [MiniMax-M2](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2?strategy=pd_cluster) | 0.11.0 | default → `MiniMaxAI/MiniMax-M2`<br>nvfp4 → `RedHatAI/MiniMax-M2-NVFP4` | 共享 |
+| [MiniMax-M2.1](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.1?strategy=pd_cluster) | 0.11.0 | default → `MiniMaxAI/MiniMax-M2.1` | 共享 |
+| [MiniMax-M2.5](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.5?strategy=pd_cluster) | 0.20.2 | default → `MiniMaxAI/MiniMax-M2.5`<br>nvfp4 → `nvidia/MiniMax-M2.5-NVFP4` | 共享 |
+| [MiniMax-M2.7](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.7?strategy=pd_cluster) | 0.20.0 | default → `MiniMaxAI/MiniMax-M2.7`<br>nvfp4 → `nvidia/MiniMax-M2.7-NVFP4` | 共享 |
+| [MiniMax-M3](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3?strategy=pd_cluster) | 0.24.0 | default → `MiniMaxAI/MiniMax-M3`<br>mxfp8 → `MiniMaxAI/MiniMax-M3-MXFP8`<br>nvfp4 → `nvidia/MiniMax-M3-NVFP4` | 共享拓扑；Blackwell 增加模型专项 Attention/indexer FP8 参数 |
+| [Mistral-Large-3-675B](https://recipes.vllm.ai/mistralai/Mistral-Large-3-675B-Instruct-2512?strategy=pd_cluster) | 0.11.0 | default → `mistralai/Mistral-Large-3-675B-Instruct-2512`<br>nvfp4 → `mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4`<br>fp8 → `mistralai/Mistral-Large-3-675B-Instruct-2512-FP8` | 共享 |
+| [Mistral-Small-4-119B](https://recipes.vllm.ai/mistralai/Mistral-Small-4-119B-2603?strategy=pd_cluster) | 0.20.0 | default → `mistralai/Mistral-Small-4-119B-2603`<br>nvfp4 → `mistralai/Mistral-Small-4-119B-2603-NVFP4` | 共享 |
+| [Kimi-K2-Instruct](https://recipes.vllm.ai/moonshotai/Kimi-K2-Instruct?strategy=pd_cluster) | 0.12.0 | default → `moonshotai/Kimi-K2-Instruct` | 共享 |
+| [Kimi-K2-Thinking](https://recipes.vllm.ai/moonshotai/Kimi-K2-Thinking?strategy=pd_cluster) | 0.12.0 | default → `moonshotai/Kimi-K2-Thinking`<br>nvfp4 → `nvidia/Kimi-K2-Thinking-NVFP4` | 共享 |
+| [Kimi-K2.5](https://recipes.vllm.ai/moonshotai/Kimi-K2.5?strategy=pd_cluster) | 0.19.1 | default → `moonshotai/Kimi-K2.5`<br>nvfp4 → `nvidia/Kimi-K2.5-NVFP4` | P/D 均 DEP；block size 64；D 使用 `flashinfer_nvlink_one_sided` |
+| [Kimi-K2.6](https://recipes.vllm.ai/moonshotai/Kimi-K2.6?strategy=pd_cluster) | 0.25.0 | default → `moonshotai/Kimi-K2.6`<br>nvfp4 → `nvidia/Kimi-K2.6-NVFP4` | 与 K2.5 相同的 DEP/64/one-sided 模式 |
+| [Kimi-K2.7-Code](https://recipes.vllm.ai/moonshotai/Kimi-K2.7-Code?strategy=pd_cluster) | 0.19.1 | default → `moonshotai/Kimi-K2.7-Code` | 共享 |
+| [Kimi-K3](https://recipes.vllm.ai/moonshotai/Kimi-K3?strategy=pd_cluster) | 0.27.1 | default → `moonshotai/Kimi-K3`<br>nvfp4 → `RedHatAI/Kimi-K3-NVFP4` | P 为 TEP，D 为 DEP；DS conv-state；D 关闭 Prefix Cache并限制 batch |
+| [Qwen3-235B-A22B-Instruct-2507](https://recipes.vllm.ai/Qwen/Qwen3-235B-A22B-Instruct-2507?strategy=pd_cluster) | 0.10.0 | default → `Qwen/Qwen3-235B-A22B-Instruct-2507`<br>fp8 → `Qwen/Qwen3-235B-A22B-FP8`<br>nvfp4 → `nvidia/Qwen3-235B-A22B-Instruct-2507-NVFP4` | 共享 |
+| [Qwen3-Coder-480B](https://recipes.vllm.ai/Qwen/Qwen3-Coder-480B-A35B-Instruct?strategy=pd_cluster) | 0.10.0 | default → `Qwen/Qwen3-Coder-480B-A35B-Instruct`<br>fp8 → `Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8`<br>nvfp4 → `nvidia/Qwen3-Coder-480B-A35B-Instruct-NVFP4` | 共享 |
+| [Qwen3-VL-235B](https://recipes.vllm.ai/Qwen/Qwen3-VL-235B-A22B-Instruct?strategy=pd_cluster) | 0.11.0 | default → `Qwen/Qwen3-VL-235B-A22B-Instruct`<br>fp8 → `Qwen/Qwen3-VL-235B-A22B-Instruct-FP8`<br>nvfp4 → `nvidia/Qwen3-VL-235B-A22B-Instruct-NVFP4` | 共享 |
+| [Qwen3.5-122B](https://recipes.vllm.ai/Qwen/Qwen3.5-122B-A10B?strategy=pd_cluster) | 0.17.0 | default → `Qwen/Qwen3.5-122B-A10B`<br>fp8 → `Qwen/Qwen3.5-122B-A10B-FP8`<br>gptq_int4 → `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` | P/D 均设置 `VLLM_SSM_CONV_STATE_LAYOUT=DS` |
+| [Qwen3.5-397B](https://recipes.vllm.ai/Qwen/Qwen3.5-397B-A17B?strategy=pd_cluster) | 0.17.0 | default → `Qwen/Qwen3.5-397B-A17B`<br>nvfp4 → `nvidia/Qwen3.5-397B-A17B-NVFP4`<br>gptq_int4 → `Qwen/Qwen3.5-397B-A17B-GPTQ-Int4` | P/D 均设置 DS conv-state |
+| [Qwen3.8-2.4T](https://recipes.vllm.ai/Qwen/Qwen3.8-2.4T-A95B?strategy=pd_cluster) | nightly | default → `Qwen/Qwen3.8-2.4T-A95B`<br>fp8 → `Qwen/Qwen3.8-2.4T-A95B-FP8`<br>nvfp4 → `Inferact/Qwen3.8-2.4T-A95B-NVFP4` | 共享；超大显存，默认 H200 组合不生成策略 JSON |
+| [Step-3.5-Flash](https://recipes.vllm.ai/stepfun-ai/Step-3.5-Flash?strategy=pd_cluster) | 0.11.0 | default → `stepfun-ai/Step-3.5-Flash`<br>fp8 → `stepfun-ai/Step-3.5-Flash-FP8`<br>int4 → `stepfun-ai/Step-3.5-Flash-INT4`<br>int8 → `stepfun-ai/Step-3.5-Flash-INT8` | 共享 |
+| [Step-3.7-Flash](https://recipes.vllm.ai/stepfun-ai/Step-3.7-Flash?strategy=pd_cluster) | 0.23.0 | default → `stepfun-ai/Step-3.7-Flash`<br>fp8 → `stepfun-ai/Step-3.7-Flash-FP8`<br>nvfp4 → `stepfun-ai/Step-3.7-Flash-NVFP4` | 共享 |
+| [Inkling](https://recipes.vllm.ai/thinkingmachines/Inkling?strategy=pd_cluster) | 0.26.0 | default → `thinkingmachines/Inkling-NVFP4`<br>bf16 → `thinkingmachines/Inkling` | P/D 仅 DEP；Hopper PD 明确禁用，使用 Blackwell |
+| [Inkling-Small](https://recipes.vllm.ai/thinkingmachines/Inkling-Small?strategy=pd_cluster) | 0.26.0 | default → `thinkingmachines/Inkling-Small-NVFP4`<br>bf16 → `thinkingmachines/Inkling-Small` | P/D 仅 DEP |
+| [MiMo-V2-Flash](https://recipes.vllm.ai/XiaomiMiMo/MiMo-V2-Flash?strategy=pd_cluster) | 0.11.0 | default → `XiaomiMiMo/MiMo-V2-Flash` | 共享 |
+| [MiMo-V2.5](https://recipes.vllm.ai/XiaomiMiMo/MiMo-V2.5?strategy=pd_cluster) | 0.21.0 | default → `XiaomiMiMo/MiMo-V2.5` | 共享 |
+| [MiMo-V2.5-Pro](https://recipes.vllm.ai/XiaomiMiMo/MiMo-V2.5-Pro?strategy=pd_cluster) | 0.21.0 | default → `XiaomiMiMo/MiMo-V2.5-Pro` | 共享 |
+| [GLM-4.5](https://recipes.vllm.ai/zai-org/GLM-4.5?strategy=pd_cluster) | 0.11.0 | default → `zai-org/GLM-4.5`<br>fp8 → `zai-org/GLM-4.5-FP8` | 共享 |
+| [GLM-4.6](https://recipes.vllm.ai/zai-org/GLM-4.6?strategy=pd_cluster) | 0.11.0 | default → `zai-org/GLM-4.6`<br>fp8 → `zai-org/GLM-4.6-FP8` | 共享 |
+| [GLM-4.7](https://recipes.vllm.ai/zai-org/GLM-4.7?strategy=pd_cluster) | 0.11.0 | default → `zai-org/GLM-4.7`<br>fp8 → `zai-org/GLM-4.7-FP8`<br>nvfp4 → `nvidia/GLM-4.7-NVFP4` | 共享 |
+| [GLM-5](https://recipes.vllm.ai/zai-org/GLM-5?strategy=pd_cluster) | 0.16.0 | default → `zai-org/GLM-5`<br>fp8 → `zai-org/GLM-5-FP8`<br>nvfp4 → `nvidia/GLM-5-NVFP4` | 共享 |
+| [GLM-5.1](https://recipes.vllm.ai/zai-org/GLM-5.1?strategy=pd_cluster) | 0.19.1 | default → `zai-org/GLM-5.1`<br>fp8 → `zai-org/GLM-5.1-FP8`<br>nvfp4 → `nvidia/GLM-5.1-NVFP4` | 共享 |
+| [GLM-5.2](https://recipes.vllm.ai/zai-org/GLM-5.2?strategy=pd_cluster) | 0.23.0 | default → `zai-org/GLM-5.2-FP8`<br>nvfp4 → `nvidia/GLM-5.2-NVFP4`<br>bf16 → `zai-org/GLM-5.2` | 共享；默认 FP8/H200 为 P 1节点 TP8 + D 1节点 TP8 |
 
-所有行的 P→D KV 均使用共享 `NixlConnector` 配置，Router 均为 `round_robin`。这 10 个模型只是模型 ID 精确命中，**没有一行同时匹配当前产品的版本、精度、卡型/卡数、P/D 拓扑、网络和验收状态**。
+### 4.4 NVIDIA 默认拓扑分类和生成边界
 
-#### 4.3.2 8 个 namespace/variant 近似项
+以下只描述网站默认 NVIDIA 硬件/默认 variant 的生成结果；切换 variant 或硬件后，节点数会按显存重新计算，不能把本表当成模型的唯一合法拓扑。JSON 中 `nodes=0` 表示 P/D 共置在一个 8-GPU 节点并各使用 4 GPU，并非零节点。
 
-| 当前产品模型 | 对应 vLLM Recipe | 差异 | 登记状态 |
-|---|---|---|---|
-| `nv-community/MiniMax-M2.5-NVFP4` | [`nvidia/MiniMax-M2.5-NVFP4`](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.5?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `nv-community/MiniMax-M2.7-NVFP4` | [`nvidia/MiniMax-M2.7-NVFP4`](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M2.7?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `MiniMax/MiniMax-M3-MXFP8` | [`MiniMaxAI/MiniMax-M3-MXFP8`](https://recipes.vllm.ai/MiniMaxAI/MiniMax-M3?variant=mxfp8&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `nv-community/Qwen3.5-397B-A17B-NVFP4` | [`nvidia/Qwen3.5-397B-A17B-NVFP4`](https://recipes.vllm.ai/Qwen/Qwen3.5-397B-A17B?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `ZhipuAI/GLM-4.7-FP8` | [`zai-org/GLM-4.7-FP8`](https://recipes.vllm.ai/zai-org/GLM-4.7?strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `ZhipuAI/GLM-5-FP8` | [`zai-org/GLM-5-FP8`](https://recipes.vllm.ai/zai-org/GLM-5?strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `ZhipuAI/GLM-5.1-FP8` | [`zai-org/GLM-5.1-FP8`](https://recipes.vllm.ai/zai-org/GLM-5.1?strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-| `nv-community/DeepSeek-V4-Flash-NVFP4` | [`nvidia/DeepSeek-V4-Flash-NVFP4`](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash?variant=nvfp4&strategy=pd_cluster) | namespace 不同 | 近似，不计精确 |
-
-namespace 不同并非字符串问题：权重仓库内容、量化配置、revision 和 tokenizer 都可能不同。必须比对模型哈希与量化元数据，不能通过替换路径直接升为“精确支持”。
-
-#### 4.3.3 GLM-5.2 细粒度 Recipe
-
-vLLM 已提供 [GLM-5.2 `pd_cluster`](https://recipes.vllm.ai/zai-org/GLM-5.2?strategy=pd_cluster)，对应源码为 [`models/zai-org/GLM-5.2.yaml`](https://github.com/vllm-project/recipes/blob/93683962d28f2ed140c08030e2b9be0a50f646a0/models/zai-org/GLM-5.2.yaml)。
-
-| 字段 | 官方生成值 |
-|---|---|
-| 权重 | `zai-org/GLM-5.2-FP8`；约 743B 总参数/39B 激活参数；最低 VRAM 893 GiB |
-| 镜像/版本 | `vllm/vllm-openai:v0.23.0`；最低 vLLM 0.23.0 |
-| 物理资源 | 页面默认 H200；1 个 8-GPU P 节点 + 1 个 8-GPU D 节点，共 16×H200 |
-| Prefill 命令差异 | 端口 8001；TP8；`NixlConnector` producer；`fail`；`--enforce-eager`；side channel 5557 |
-| Decode 命令差异 | 端口 8002；TP8；`NixlConnector` consumer；`fail`；`FULL_DECODE_ONLY`；side channel 5558 |
-| 两侧共同参数 | `--kv-cache-dtype fp8 --tool-call-parser glm47 --enable-auto-tool-choice --reasoning-parser glm45` |
-| Router | `vllm-router --vllm-pd-disaggregation --policy round_robin`；P 8001，D 8002 |
-| Recipe 定制 | `strategy_overrides: {}`；使用共享 PD 骨架，没有 GLM-5.2 专属 P/D 比例和性能验收数据 |
-
-GLM-5.2 不在当前 X86 47 个 vLLM 生成模型中，因此这条官方方案必须列出，但不进入 10/47 分子。它对 Wings 的直接要求是：新增精确模型/权重映射，提供 16×H200 与 NIXL/UCX/IB 物料，接入 Router，并补齐连续请求、并发、长上下文和长稳验证。
-
-### 4.4 当前 47 个 X86 vLLM 生成模型闭环
-
-| 类别 | 数量 | 模型 |
+| 默认拓扑 | 模型族数量 | 模型族 |
 |---|---:|---|
-| 精确 ID 命中 | 10 | 第 4.3.1 节逐项列出的 7 个 DeepSeek、Qwen3.5-122B、Qwen3-VL-235B-FP8、Kimi-K2.6 |
-| namespace/variant 近似 | 8 | 第 4.3.2 节逐项列出的 MiniMax 3 个、GLM 3 个、Qwen3.5-397B 和 V4-Flash-NVFP4 |
-| 未找到精确或同 basename 项：DeepSeek | 9 | `DeepSeek-Coder-V2-Instruct`；R1-Distill-Llama-70B/8B；R1-Distill-Qwen-1.5B/7B/14B/32B；`DeepSeek-V3-0324`；`DeepSeek-V3.2-Exp` |
-| 未找到精确或同 basename 项：Qwen | 18 | `QwQ-32B`；`Qwen2.5-32B-Instruct`；Qwen2.5-VL-7B/72B；Qwen3-8B/14B/30B/32B/235B；Qwen3-AgentWorld-35B；Qwen3-Next-80B；Qwen3-VL-8B/30B/32B；Qwen3.5-27B/35B；Qwen3.6-27B/35B |
-| 未找到精确或同 basename 项：GLM/Llama | 2 | `ZhipuAI/GLM-4-9B-0414`；`LLM-Research/Meta-Llama-3-8B` |
+| H200 单节点共置：P TP4 + D TP4 | 12 | MiniMax-M2/M2.1/M2.5/M2.7；Mistral-Small-4；Qwen3-235B-2507；Qwen3-VL-235B；Qwen3.5-122B；Step-3.5/3.7；MiMo-V2-Flash/V2.5 |
+| H200 独立两池：P 1节点 TP8 + D 1节点 TP8 | 13 | DeepSeek-R1/V3/V3.1/V3.2；MiniMax-M3；Mistral-Large-3；Kimi-K2-Thinking/K2.7-Code；Qwen3.5-397B；GLM-4.5/4.6/4.7/5.2 |
+| H200 独立多节点：P 2节点 TP16 + D 2节点 TP16 | 8 | Ring-1T；Ring-2.6；Macaron-V1；Kimi-K2-Instruct；Qwen3-Coder-480B；MiMo-V2.5-Pro；GLM-5/5.1 |
+| H200 DEP：P 1节点 DEP8 + D 1节点 DEP8 | 3 | DeepSeek-V4-Pro；Kimi-K2.5；Kimi-K2.6 |
+| H200 异构池 | 1 | Kimi-K3：P 2节点 TEP16；D 2节点 DEP16 |
+| H200 共置 DEP | 2 | DeepSeek-V4-Flash、Inkling-Small；见下方生成一致性问题 |
+| 默认策略 JSON 未生成 | 2 | Qwen3.8-2.4T；Inkling |
 
-数量闭环为 **10 + 8 + 9 + 18 + 2 = 47**。其中 35 个文本生成模型是 **7 个精确、28 个不精确**；12 个视觉/多模态生成模型是 **3 个精确、9 个不精确**。不精确不等于上游明确禁止，只表示不能直接把官方 Recipe 当成当前产品配置。
+默认端点审计为 **39/41 返回 `pd_cluster.json`，2/41 未生成**：
 
+- Qwen3.8-2.4T 的 BF16 最低 VRAM 为 5871 GiB，按 H200 自动计算会超过每个角色最多 4 节点的 API 生成上限；源码仍声明 `pd_cluster`。按官方显存和自动扩容规则推算，B300 上 BF16/FP8/NVFP4 分别需要每侧 3/2/1 个 8-GPU 节点，但这是基于源码算法的推算，不是当前公开 JSON。
+- Inkling 源码把 Hopper 的 `pd_cluster` 标为 `unsupported`，默认 H200 端点因此不生成；其 NVIDIA PD 入口限定在 Blackwell，P/D 仅允许 DEP。
+- DeepSeek-V4-Flash 和 Inkling-Small 的当前 H200 JSON 都出现同一生成矛盾：`CUDA_VISIBLE_DEVICES` 给每个角色 4 GPU，但命令生成 `data-parallel-size-local=8`。因此这两条应登记为“官方源码有方案、默认生成命令需上游修正或改成独立节点”，不能直接当作可执行的 4+4 共置 Recipe。
+
+所以“官方已有 PD 方案”应分成两层：
+
+1. **源码方案存在：41 个模型族**；
+2. **默认 NVIDIA JSON 可直接取得：39 个模型族，其中 2 个共置 DEP 命令仍有明显一致性问题**。
 ### 4.5 vLLM PD 数据面和组网要求
 
 | 层次 | vLLM Recipe 中的组件 | 必须验证的内容 | 典型失败 |
