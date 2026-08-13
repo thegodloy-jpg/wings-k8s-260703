@@ -53,19 +53,22 @@ NIXL 还要求 P/D 的 vLLM/NIXL 版本、模型架构、dtype、KV heads/head s
 
 ### 3.2 NVIDIA Dynamo：与当前兼容模型相关的细粒度 Recipe
 
-| 官方模型/权重 | 官方硬件 | P 方案 | D 方案 | Connector/网络 | 对当前兼容表的结论 |
-|---|---|---|---|---|---|
-| `Qwen/Qwen3-32B` | 16×H200 | 6P，每个 TP2 | 2D，每个 TP2 | `NixlConnector`、KV-aware Router、RDMA | 模型 ID 精确；当前产品为 4×NL02 单机，资源和拓扑不匹配 |
-| `Qwen/Qwen3-32B-FP8` | 8×A100，单节点 | 2P，每个 TP2 | 1D，TP4 | `NixlConnector` + UCX | 当前兼容表是 Qwen3-32B BF16，不是该 FP8 权重 |
-| `RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic` | 8×H100/H200 单节点；或 16×H100/H200 两节点 | 单节点 2P×TP2；多节点 1P×TP8 | 单节点 1D×TP4；多节点 1D×TP8 | `NixlConnector` | 当前兼容表是 Llama-3-8B/Distill 权重，不是该 70B FP8 权重 |
-| `Qwen/Qwen3.5-122B-A10B-FP8` | 3×H200 | 1P，TP1 | 2D，每个 TP1 | `NixlConnector` + IB/RDMA | 需要 DS conv state；无 MTP；D 关闭 Async Scheduling；当前产品 BF16 不精确匹配 |
-| `nvidia/Qwen3.5-122B-A10B-NVFP4` | 3×B200 | 1P，TP1 | 2D，每个 TP1 | `NixlConnector` + IB/RDMA | 同上；不能扩展成 397B-NVFP4 Recipe |
-| `deepseek-ai/DeepSeek-R1` | 32×H100/H200，4 节点 | 16 GPU，DEP16 | 16 GPU，DEP16 | `NixlConnector` + IBGDA | 模型 ID 精确；当前 8×NH02 单机记录不能直接复用 |
-| `nvidia/DeepSeek-V4-Flash-NVFP4` | 12×B200 | 2P，每个 TP4 | 1D，TP4 | NIXL GDR | 与 `nv-community/...` 仅同模型族；namespace、硬件和卡数均需重新验证 |
-| `deepseek-ai/DeepSeek-V4-Flash` | 28×H200 | 4P，每个 DP4+TP1+EP | 3D，每个 DP4+TP1+EP | NIXL GDR | 模型 ID 精确；当前 FP4、8×NH02 单机组合不精确 |
-| `nvidia/DeepSeek-V4-Pro-NVFP4` | 16×B200 | 1P，TP8+EP | 1D，TP8+EP | NIXL GDR | 当前产品不是该 NVIDIA 权重 |
-| `deepseek-ai/DeepSeek-V4-Pro` | 32×H200 | 1P，TP8+EP | 3D，每个 TP8+EP | NIXL GDR | 模型 ID 精确；当前 FP4、8×NH02 单机组合不精确；官方 H200 更推荐聚合方案 |
-| `moonshotai/Kimi-K3` | 24×GB300 或 32×GB200 | GB300 1P×TP8；GB200 1P×TP16 | GB300 2D×TP8；GB200 1D×TP16 | NIXL over MNNVL/RDMA；DRA ComputeDomain | 有精确模型 Recipe，但不在当前 X86 文本生成 36 模型中，也没有同等产品组合 |
+NVIDIA 场景与 Ascend 场景使用相同口径：模型名链接到实际权重页，Recipe 链接到对应的 vLLM Disagg 配置；Connector、KV 数据面、Router 和 EP 通信要求分开描述。
+
+| 模型/示例权重 | 官方 Recipe / 配置 | 官方硬件与物理形态 | P 全局拓扑 | D 全局拓扑 | Connector / 网络 / Router | 对当前兼容表的结论 |
+|---|---|---|---|---|---|---|
+| [`Qwen/Qwen3-32B`](https://huggingface.co/Qwen/Qwen3-32B) | [Disagg KV Router](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b/vllm/disagg-kv-router) | 16×H200，2 节点 | 6P，每个 TP2 | 2D，每个 TP2 | `NixlConnector`；NIXL + RDMA；KV-aware Router | 模型 ID 精确；当前产品为 4×NL02 单机，资源和拓扑不匹配 |
+| [`Qwen/Qwen3-32B`](https://huggingface.co/Qwen/Qwen3-32B) | [Cloud Provider Overlays](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b/vllm/cloud-providers) | 8 GPU，1P1D；AKS IB、AWS EFA、GKE RoCE、Nebius IB、Nscale IB | 1P，TP4 | 1D，TP4 | `NixlConnector`；UCX 或 EFA/libfabric；未显式启用 KV Router | 功能基线未压测；具体 GPU 和网络资源取决于 provider overlay，不能替代当前产品组合验收 |
+| [`Qwen/Qwen3-32B-FP8`](https://huggingface.co/Qwen/Qwen3-32B-FP8) | [vLLM Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b-fp8/vllm/disagg) | 8×A100，单节点 | 2P，每个 TP2 | 1D，TP4 | `NixlConnector`；NIXL + UCX/RDMA；未显式启用 KV Router | 当前兼容表是 Qwen3-32B BF16，不是该 FP8 权重 |
+| [`RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic`](https://huggingface.co/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic) | [单节点](https://github.com/ai-dynamo/dynamo/tree/main/recipes/llama-3-70b/vllm/disagg-single-node) / [多节点](https://github.com/ai-dynamo/dynamo/tree/main/recipes/llama-3-70b/vllm/disagg-multi-node) | 8×H100/H200 单节点；或 16×H100/H200 两节点 | 单节点 2P×TP2；多节点 1P×TP8 | 单节点 1D×TP4；多节点 1D×TP8 | `NixlConnector`；单节点 NIXL 或跨节点高速网络；未显式启用 KV Router | 当前兼容表是 Llama-3-8B/Distill 权重，不是该 70B FP8 权重 |
+| [`Qwen/Qwen3.5-122B-A10B-FP8`](https://huggingface.co/Qwen/Qwen3.5-122B-A10B-FP8) | [H200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3.5-122b/fp8/vllm/disagg-h200-agentic) | 3×H200 | 1P，TP1 | 2D，每个 TP1 | `NixlConnector`；NIXL + IB/RDMA；KV-aware Router | 需要 DS conv state；无 MTP；D 关闭 Async Scheduling；当前产品 BF16 不精确匹配 |
+| [`nvidia/Qwen3.5-122B-A10B-NVFP4`](https://huggingface.co/nvidia/Qwen3.5-122B-A10B-NVFP4) | [B200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3.5-122b/nvfp4/vllm/disagg-b200-agentic) | 3×B200 | 1P，TP1 | 2D，每个 TP1 | `NixlConnector`；NIXL + IB/RDMA；KV-aware Router | 同上；不能扩展成 397B-NVFP4 Recipe |
+| [`deepseek-ai/DeepSeek-R1`](https://huggingface.co/deepseek-ai/DeepSeek-R1) | [vLLM Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-r1/vllm/disagg) | 32×H100/H200，4 节点 | 1P，跨 2 节点×8 GPU，DP16+EP16+TP1 | 1D，跨 2 节点×8 GPU，DP16+EP16+TP1 | P→D 使用 `NixlConnector` + NIXL/RDMA；DEP 的 DeepEP/NVSHMEM 另要求 IBGDA；未显式启用 KV Router | 模型 ID 精确；IBGDA 不是 KV Connector；当前 8×NH02 单机记录不能直接复用 |
+| [`nvidia/DeepSeek-V4-Flash-NVFP4`](https://huggingface.co/nvidia/DeepSeek-V4-Flash-NVFP4) | [B200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-flash/vllm/disagg-b200-agentic) | 12×B200 | 2P，每个 TP4 | 1D，TP4 | `NixlConnector`；NIXL + UCX/GDR；KV-aware Router | 与 `nv-community/...` 仅同模型族；namespace、硬件和卡数均需重新验证 |
+| [`deepseek-ai/DeepSeek-V4-Flash`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash) | [H200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-flash/vllm/disagg-h200-agentic) | 28×H200 | 4P，每个 DP4+TP1+EP | 3D，每个 DP4+TP1+EP | `NixlConnector`；NIXL + UCX/GDR；KV-aware Router | 模型 ID 精确；当前 FP4、8×NH02 单机组合不精确 |
+| [`nvidia/DeepSeek-V4-Pro-NVFP4`](https://huggingface.co/nvidia/DeepSeek-V4-Pro-NVFP4) | [B200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg-b200-agentic) | 16×B200 | 1P，TP8+EP | 1D，TP8+EP | `NixlConnector`；NIXL + UCX/GDR；KV-aware Router | 当前产品不是该 NVIDIA 权重 |
+| [`deepseek-ai/DeepSeek-V4-Pro`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | [H200 Disagg](https://github.com/ai-dynamo/dynamo/tree/main/recipes/deepseek-v4/deepseek-v4-pro/vllm/disagg-h200-agentic) | 32×H200 | 1P，TP8+EP | 3D，每个 TP8+EP | `NixlConnector`；NIXL + UCX/GDR；KV-aware Router | 模型 ID 精确；当前 FP4、8×NH02 单机组合不精确；官方 H200 更推荐聚合方案 |
+| [`moonshotai/Kimi-K3`](https://huggingface.co/moonshotai/Kimi-K3) | [GB300](https://github.com/ai-dynamo/dynamo/tree/main/recipes/kimi-k3/vllm/disagg-gb300-agentic) / [GB200](https://github.com/ai-dynamo/dynamo/tree/main/recipes/kimi-k3/vllm/disagg-gb200-agentic) Disagg | 24×GB300 或 32×GB200 | GB300 1P×TP8；GB200 1P×TP16 | GB300 2D×TP8；GB200 1D×TP16 | `NixlConnector`；NIXL over MNNVL/RDMA；KV-aware Router；DRA `ComputeDomain` | 有精确模型 Recipe，但不在当前 X86 文本生成 36 模型中，也没有同等产品组合 |
 
 当前 X86 表有 36 个去重文本生成模型：**4 个命中相同模型 ID 的 NVIDIA vLLM PD Recipe**，即 Qwen3-32B、DeepSeek-R1、DeepSeek-V4-Flash、DeepSeek-V4-Pro；**32 个没有相同模型 ID；0 个与产品记录的“模型+精度+卡型/卡数+P/D 拓扑”完整一致。** 这里的 0 表示不能直接复制官方 Recipe，不表示社区明确禁止。
 
