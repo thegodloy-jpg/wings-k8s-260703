@@ -1,6 +1,6 @@
 # PD 分离不可用场景归因分析
 
-> 核对日期：2026-08-11
+> 核对日期：2026-08-13
 > 本文只回答一个问题：为什么现在有较多 PD 分离场景不能用，究竟是社区限制，还是我们的物料、适配和验证没有完成。
 
 ## 1. 结论
@@ -51,9 +51,21 @@ vLLM 当前的 [NixlConnector Compatibility Matrix](https://docs.vllm.ai/en/late
 
 NIXL 还要求 P/D 的 vLLM/NIXL 版本、模型架构、dtype、KV heads/head size/layers、Attention backend、KV cache dtype 和推测解码方法兼容。跨机时需要可路由的 side-channel host，每个 worker 需要唯一端口，UCX/LIBFABRIC 等传输后端也必须进入物料。详见 [NixlConnector Usage Guide](https://docs.vllm.ai/en/latest/features/nixl_connector_usage/)。
 
-### 3.2 NVIDIA Dynamo vLLM PD：当前 Wings 兼容模型子集
+### 3.2 NVIDIA Dynamo：官方 PD 必须按 Backend 拆分
 
-本节不是 NVIDIA Dynamo 全仓库 Recipe 清单，而是回答“当前 Wings 兼容模型是否有可直接参考的 NVIDIA vLLM PD 方案”。审计基线固定为 2026-08-13 的 [`ai-dynamo/dynamo@22e80d2`](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes)：只纳入 vLLM backend，优先列当前兼容表中的精确模型 ID，再列会被误认为可复用的同族权重；TensorRT-LLM、SGLang 和兼容表之外的模型不进入“4/36”支持率分母。
+审计基线固定为 2026-08-13 的 [`ai-dynamo/dynamo@22e80d2`](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes)。按路径包含 `disagg`/`disaggregated` 的显式部署清单统计，官方仓库不是只有 vLLM：
+
+| Backend | PD `deploy*.yaml` 数 | 与当前兼容模型有关的典型方案 | 本文处理方式 |
+|---|---:|---|---|
+| vLLM | 28；另有 Qwen3-32B 的 5 个云厂商 overlay | Qwen3-32B、DeepSeek-R1、DeepSeek-V4-Flash/Pro | 按当前 X86 36 模型做精确 ID 和产品组合比对 |
+| SGLang | 11 | DeepSeek-R1、DeepSeek-V4-Pro、GLM-5/5.2 | GLM 单独列出；不能混入 vLLM 4/36 分母 |
+| TensorRT-LLM | 12 | DeepSeek-V3.2、Kimi-K2.5、Qwen3-235B/32B 等 | 记录为其他 backend 官方方案，不能当成 Wings vLLM 已支持 |
+
+这些数字是固定提交下的 manifest 库存，不是模型支持率；同一模型可能有多个硬件、网络或云厂商变体。
+
+#### 3.2.1 vLLM PD：当前 Wings 兼容模型子集
+
+本小节回答“当前 Wings 兼容模型是否有可直接参考的 NVIDIA vLLM PD 方案”。只纳入 vLLM backend，优先列当前兼容表中的精确模型 ID，再列会被误认为可复用的同族权重；其他 backend 不进入“4/36”支持率分母。
 
 在该固定版本中，按 `recipes` 路径包含 `disagg`/`disaggregated` 统计，共有 **28 个 vLLM PD `deploy.yaml`**，另有 Qwen3-32B 的 **5 个云厂商 overlay**。下表覆盖逐项比对所需的当前精确模型、容易误继承的同族权重，以及已单独要求核查的 Kimi-K3，共 **14 个 deploy manifest + 5 个 overlay**；Llama 的 GAIE 只是同一模型/拓扑的集成变体，不另算模型方案。模型名链接到实际权重页，Recipe 链接到对应配置；Connector、KV 数据面、Router 和 EP 通信要求分开描述。
 
@@ -77,9 +89,21 @@ NIXL 还要求 P/D 的 vLLM/NIXL 版本、模型架构、dtype、KV heads/head s
 
 仓库内另有 **13 个**既不属于当前 X86 36 模型、也未被选作当前同族/Kimi 对照项的 vLLM PD manifest，因而不纳入上述 4/36 分母：[`GPT-OSS-120B`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/gpt-oss-120b/vllm) 2 个、[`Nemotron-3-Ultra`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/nemotron-3-ultra/vllm) 1 个、[`Nemotron-3.5-Lightning`](https://github.com/ai-dynamo/dynamo/tree/main/recipes/nemotron-3.5-lightning/vllm) 9 个、[`Qwen3-VL-32B-Instruct-FP8` 异构 PD](https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-vl-32b-fp8/vllm/hetero_hardware_disagg) 1 个。其硬件、P/D 组合和排除理由见明细文档；不能把“本节未展开”解释成 Dynamo 官方没有方案。
 
+#### 3.2.2 GLM：官方有 SGLang PD，不是 vLLM PD
+
+上一版没有展开 GLM，是因为 3.2 的分母被限定为 vLLM；但从“NVIDIA 官方方案是否存在”的总口径看，这会造成缺漏。Dynamo 当前提供 **4 个 GLM SGLang PD manifest**：
+
+| 官方模型/权重 | 官方 Recipe | 硬件与 P/D 拓扑 | KV 传输 / Router | 对当前兼容表的结论 |
+|---|---|---|---|---|
+| [`nvidia/GLM-5-NVFP4`](https://huggingface.co/nvidia/GLM-5-NVFP4) | [GB200 UCX](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg) / [AWS EFA](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5-nvfp4/sglang/disagg/efa)；2 个 validated manifest，均有 perf | 20×GB200、5 节点；1P×4 GPU，TP4；1D 跨 4 节点×4 GPU，TP16/DP16/EP16 | SGLang `nixl`；UCX/MNNVL 或 NIXL LIBFABRIC/EFA；manifest 未显式启用 KV-aware Router | 与 X86 的 `ZhipuAI/GLM-5-FP8` 只是同模型族；namespace、NVFP4/FP8、SGLang/vLLM、GB200/NH02 均不同 |
+| [`nvidia/GLM-5.2-NVFP4`](https://huggingface.co/nvidia/GLM-5.2-NVFP4) | [B200 agentic disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/sglang/disagg-b200-agentic)；validated，有 benchmark | manifest 实际为 20×B200：3P，每个 4 GPU、TP4/DP4/EP4；1D×8 GPU、TP8/DP8 | SGLang `nixl` + UCX/IB；KV-aware Router；P 开 200 GiB HiCache | 当前 X86 36 模型没有 GLM-5.2；不能给 GLM-5/5.1 继承 |
+| [`zai-org/GLM-5.2-FP8`](https://huggingface.co/zai-org/GLM-5.2-FP8) | [H200 agentic disagg](https://github.com/ai-dynamo/dynamo/tree/22e80d275e85ef537ebed044ea7c62389be7c281/recipes/glm-5.2/sglang/disagg-h200-agentic)；validated，有 benchmark | 16×H200；1P×8 GPU、TP8/DP1/EP8；1D×8 GPU、TP8/DP8/EP1 | SGLang `nixl` + UCX/IB；KV-aware Router | 当前 X86 36 模型没有 GLM-5.2；它也不是 GLM-5.1 Recipe |
+
+因此，GLM 的正确结论不是“社区没有 NVIDIA PD”，而是：**社区已经给出 GLM-5/5.2 的 SGLang+NIXL 方案；当前 Wings NVIDIA 产品记录是 vLLM，且 GLM-5 的权重/精度/卡型不一致，GLM-4.7、GLM-5.1 又没有精确官方 Recipe。** 当前阻塞首先是 backend 与产品组合不匹配；若决定引入 SGLang，还需新增运行时、镜像、Parser、NIXL bootstrap、Router 和组网适配，之后才进入同等硬件验证。
+
 NVIDIA 生产跨机 PD 还要求 RDMA/IB/RoCE、RDMA device plugin、Pod 的 `rdma/ib` 和 `IPC_LOCK`、正确的 UCX NIC/transport、Dynamo Frontend/Router 与 ETCD/NATS。GB200/GB300 的 MNNVL 方案还依赖 VMM KV 注册和 DRA `ComputeDomain`。这些均属于 Recipe 的组成部分，不是换一个 Connector 名称即可省略。
 
-逐模型权重、两套 Llama 拓扑、Qwen3.5 Hybrid 约束、产品清单映射和官方逐条链接见 [PD 分离兼容性与 Mooncake 方案清单](./PD分离兼容性与Mooncake方案清单.md#43-nvidia-dynamo-官方-vllm-模型级-pd-recipe)。
+逐模型权重、两套 Llama 拓扑、Qwen3.5 Hybrid 约束、GLM SGLang 方案、产品清单映射和官方逐条链接见 [PD 分离兼容性与 Mooncake 方案清单](./PD分离兼容性与Mooncake方案清单.md#43-nvidia-dynamo-官方模型级-pd-recipe按-backend-分层)。
 
 ### 3.3 vLLM-Ascend：已经有模型级官方方案
 
@@ -267,7 +291,8 @@ Mooncake 解决的是 KV 跨实例传输基础能力，但 Connector 还定义�
 1. 普通推理兼容性有 83 个部署行，但它们不是 83 个 PD 支持场景。
 2. Wings 代码中有 79 个模型名，只有 29 个被 PD profile 机械命中，50 个无 large-EP profile；29 个命中项也不能当作已支持。
 3. vLLM/NIXL 在 7 个架构类别中，5 类基础支持、1 类未验证、1 类明确不支持。
-4. NVIDIA Dynamo 的 vLLM 模型级 Recipe 使用 NIXL，不是 Mooncake；X86 36 个去重文本生成模型中 4 个命中相同模型 ID，32 个没有相同模型 ID，0 个完整匹配产品组合。
-5. vLLM-Ascend 当前已找到 14 个具体模型/硬件 PD 方案组；其中 Wings 只有 2 组基础方向对齐，6 组需要修订或拆分，6 组无精确 profile。
-6. 在这 14 个“社区已有方案”的 Ascend 场景中，12 个（85.7%）的直接阻塞点在 Wings 适配/配方对齐，而不是社区没有 PD 方案。
-7. Connector 不应自由互换：普通 Ascend 场景以 V1 为主，DeepSeek-R1 可选成套 Layerwise，DeepSeek-V4 使用 Hybrid，GLM-5.2 A2 使用 V1+AscendStore MultiConnector，NVIDIA 使用 NIXL。可以统一选择规则，不能统一 Connector 实现。
+4. NVIDIA Dynamo 官方 PD 不能只看 vLLM：固定审计提交中有 28 个 vLLM、11 个 SGLang、12 个 TensorRT-LLM 显式 PD manifest，另有 5 个 vLLM 云厂商 overlay；GLM 单独占 4 个 SGLang manifest。
+5. NVIDIA Dynamo 的模型级 Recipe 使用 NIXL，不是 Mooncake；限定到当前 Wings vLLM 口径，X86 36 个去重文本生成模型中 4 个命中相同模型 ID，32 个没有相同模型 ID，0 个完整匹配产品组合。GLM 官方 SGLang 方案不改变这组 vLLM 统计。
+6. vLLM-Ascend 当前已找到 14 个具体模型/硬件 PD 方案组；其中 Wings 只有 2 组基础方向对齐，6 组需要修订或拆分，6 组无精确 profile。
+7. 在这 14 个“社区已有方案”的 Ascend 场景中，12 个（85.7%）的直接阻塞点在 Wings 适配/配方对齐，而不是社区没有 PD 方案。
+8. Connector 不应自由互换：普通 Ascend 场景以 V1 为主，DeepSeek-R1 可选成套 Layerwise，DeepSeek-V4 使用 Hybrid，GLM-5.2 A2 使用 V1+AscendStore MultiConnector，NVIDIA 使用 NIXL。可以统一选择规则，不能统一 Connector 实现。
