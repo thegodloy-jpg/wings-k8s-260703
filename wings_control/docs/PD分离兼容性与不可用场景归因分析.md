@@ -101,6 +101,19 @@ NIXL 还要求 P/D 的 vLLM/NIXL 版本、模型架构、dtype、KV heads/head s
 
 因此，GLM 的正确结论不是“社区没有 NVIDIA PD”，而是：**社区已经给出 GLM-5/5.2 的 SGLang+NIXL 方案；当前 Wings NVIDIA 产品记录是 vLLM，且 GLM-5 的权重/精度/卡型不一致，GLM-4.7、GLM-5.1 又没有精确官方 Recipe。** 当前阻塞首先是 backend 与产品组合不匹配；若决定引入 SGLang，还需新增运行时、镜像、Parser、NIXL bootstrap、Router 和组网适配，之后才进入同等硬件验证。
 
+#### 3.2.3 其他 Backend 遗漏项闭环
+
+继续从全量 manifest 反查后，除 GLM 外还有 7 个 SGLang 和 12 个 TensorRT-LLM manifest。与当前 X86 模型相关的组合不能只写成一句“其他 backend”，但也不能混入 vLLM 产品支持率：
+
+| 与当前兼容表的关系 | 遗漏的官方 manifest | 官方组合摘要 | 结论 |
+|---|---:|---|---|
+| 精确模型 `deepseek-ai/DeepSeek-R1` | SGLang 2 + TensorRT-LLM 1 | SGLang：16×H200 TP8 1P1D、32×H200 TP16 1P1D；TRT-LLM：36×GB200，1 个 4-GPU P 节点+8 个 4-GPU D 节点 | 证明该模型有多 backend 社区方案；当前 8×NH02 vLLM 产品组合仍不匹配 |
+| 精确模型 `deepseek-ai/DeepSeek-V4-Pro` | SGLang 2 | B200：16 卡 1P1D、每侧 TP8；GB200：16 卡 1P1D、每侧跨 2 节点 TP8 | 是 Day-0 Experimental SGLang 方案；不能替代当前 Wings vLLM 适配和验收 |
+| 同模型族但非当前精确权重 | TensorRT-LLM 8 | `nvidia/DeepSeek-V3.2-NVFP4` 1 个；`Qwen/Qwen3-235B-A22B-FP8` 6 个；`Qwen/Qwen3-32B-FP8` 1 个 | 当前表分别是公共/不同量化权重；backend、精度、硬件和拓扑均需独立登记 |
+| 不在当前 X86 36 模型 | SGLang 3 + TensorRT-LLM 3 | SGLang：Nemotron-3-Super 1、Qwen3.8 2；TRT-LLM：GPT-OSS-120B、Kimi-K2.5、Nemotron-3-Super 各 1 | 只用于闭合官方库存，不进入当前产品分母 |
+
+由此闭环：SGLang 为 `GLM 4 + 其他 7 = 11`；TensorRT-LLM 为 `当前相关 9 + 当前表外 3 = 12`。这些补充不会新增 vLLM 的精确模型 ID 数：DeepSeek-R1、DeepSeek-V4-Pro 已经在 vLLM 的 4 个命中模型中，其余均为不同权重或当前表外模型。完整模型链接、P/D 组合和数据面见明细文档 4.3.4–4.3.5。
+
 NVIDIA 生产跨机 PD 还要求 RDMA/IB/RoCE、RDMA device plugin、Pod 的 `rdma/ib` 和 `IPC_LOCK`、正确的 UCX NIC/transport、Dynamo Frontend/Router 与 ETCD/NATS。GB200/GB300 的 MNNVL 方案还依赖 VMM KV 注册和 DRA `ComputeDomain`。这些均属于 Recipe 的组成部分，不是换一个 Connector 名称即可省略。
 
 逐模型权重、两套 Llama 拓扑、Qwen3.5 Hybrid 约束、GLM SGLang 方案、产品清单映射和官方逐条链接见 [PD 分离兼容性与 Mooncake 方案清单](./PD分离兼容性与Mooncake方案清单.md#43-nvidia-dynamo-官方模型级-pd-recipe按-backend-分层)。
@@ -281,7 +294,7 @@ Mooncake 解决的是 KV 跨实例传输基础能力，但 Connector 还定义�
 
 因此，可以建立通用的**选择规则**，但不能建立一个通用的**Connector 实现**：
 
-1. NVIDIA 平台进入 NIXL 策略，不进入 Ascend Mooncake 默认值。
+1. 当前 Wings NVIDIA/vLLM 路径进入 `NixlConnector` 策略，不进入 Ascend Mooncake 默认值；SGLang/TensorRT-LLM 必须按各自 manifest 选择 NIXL、Mooncake 可选路径或 UCX/DEFAULT transceiver，不能沿用 vLLM 参数。
 2. Ascend 必须先精确匹配“模型/权重+硬件+版本”的官方 recipe。
 3. DeepSeek-V4 选 Hybrid；GLM-5.2 A2 选 V1+AscendStore MultiConnector；官方明确的 Layerwise 方案成套选 Layerwise；其余有官方 V1 配方的普通模型选 V1。
 4. 没有精确官方 recipe 时不自动回退到 `default` Connector，而是标记“待适配/待验证”并进行独立配方验证。
@@ -292,7 +305,8 @@ Mooncake 解决的是 KV 跨实例传输基础能力，但 Connector 还定义�
 2. Wings 代码中有 79 个模型名，只有 29 个被 PD profile 机械命中，50 个无 large-EP profile；29 个命中项也不能当作已支持。
 3. vLLM/NIXL 在 7 个架构类别中，5 类基础支持、1 类未验证、1 类明确不支持。
 4. NVIDIA Dynamo 官方 PD 不能只看 vLLM：固定审计提交中有 28 个 vLLM、11 个 SGLang、12 个 TensorRT-LLM 显式 PD manifest，另有 5 个 vLLM 云厂商 overlay；GLM 单独占 4 个 SGLang manifest。
-5. NVIDIA Dynamo 的模型级 Recipe 使用 NIXL，不是 Mooncake；限定到当前 Wings vLLM 口径，X86 36 个去重文本生成模型中 4 个命中相同模型 ID，32 个没有相同模型 ID，0 个完整匹配产品组合。GLM 官方 SGLang 方案不改变这组 vLLM 统计。
-6. vLLM-Ascend 当前已找到 14 个具体模型/硬件 PD 方案组；其中 Wings 只有 2 组基础方向对齐，6 组需要修订或拆分，6 组无精确 profile。
-7. 在这 14 个“社区已有方案”的 Ascend 场景中，12 个（85.7%）的直接阻塞点在 Wings 适配/配方对齐，而不是社区没有 PD 方案。
-8. Connector 不应自由互换：普通 Ascend 场景以 V1 为主，DeepSeek-R1 可选成套 Layerwise，DeepSeek-V4 使用 Hybrid，GLM-5.2 A2 使用 V1+AscendStore MultiConnector，NVIDIA 使用 NIXL。可以统一选择规则，不能统一 Connector 实现。
+5. NVIDIA 没有跨 backend 的统一 Connector：vLLM 模型 Recipe 主线使用 `NixlConnector`；SGLang 检入方案以 NIXL 为主，但 DeepSeek-R1 未显式固定 transfer backend，Nemotron-3-Super 还正式记录 Mooncake 替代路径；TensorRT-LLM 使用 UCX 或 `DEFAULT` cache transceiver。
+6. 限定到当前 Wings vLLM 口径，X86 36 个去重文本生成模型中 4 个命中相同模型 ID，32 个没有相同模型 ID，0 个完整匹配产品组合。其他 backend 方案不改变这组 vLLM 统计。
+7. vLLM-Ascend 当前已找到 14 个具体模型/硬件 PD 方案组；其中 Wings 只有 2 组基础方向对齐，6 组需要修订或拆分，6 组无精确 profile。
+8. 在这 14 个“社区已有方案”的 Ascend 场景中，12 个（85.7%）的直接阻塞点在 Wings 适配/配方对齐，而不是社区没有 PD 方案。
+9. Connector 不应自由互换：普通 Ascend 场景以 V1 为主，DeepSeek-R1 可选成套 Layerwise，DeepSeek-V4 使用 Hybrid，GLM-5.2 A2 使用 V1+AscendStore MultiConnector；NVIDIA 还必须继续按 backend 和具体 manifest 分流。可以统一选择规则，不能统一 Connector 实现。
