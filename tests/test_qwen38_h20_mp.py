@@ -98,8 +98,6 @@ def test_qwen38_h20_selects_exact_distributed_defaults(model_name, card_name):
         "max_num_seqs": 8,
         "max_num_batched_tokens": 4096,
         "enable_expert_parallel": True,
-        "tensor_parallel_size": 8,
-        "data_parallel_size": 4,
         "all2all_backend": "allgather_reducescatter",
         "tool_call_parser": "qwen3_coder",
         "distributed_timeout_seconds": 7200,
@@ -146,6 +144,32 @@ def test_qwen38_four_node_h20_routes_to_native_mp(monkeypatch, model_name, card_
 
     assert params["distributed_executor_backend"] == "mp"
     assert "ray_head_port" not in params
+
+    params["model_architecture"] = _ARCHITECTURE
+    engine_config = {}
+    config_loader._set_parallelism_params(engine_config, params)
+    assert engine_config["tensor_parallel_size"] == 8
+    assert engine_config["data_parallel_size"] == 4
+
+
+def test_qwen38_runtime_parallelism_keeps_explicit_env_precedence(monkeypatch):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    params = _qwen38_route_params()
+    config_loader._handle_vllm_distributed(
+        {"vllm_distributed": {"ray_head_port": 28020}},
+        params,
+        _FakeQwen38Info(),
+    )
+    params["model_architecture"] = _ARCHITECTURE
+
+    engine_config = {}
+    config_loader._set_parallelism_params(engine_config, params)
+    monkeypatch.setenv("TENSOR_PARALLEL_SIZE", "4")
+    monkeypatch.setenv("DATA_PARALLEL_SIZE", "8")
+    config_loader._apply_cli_overrides(engine_config, {"engine": "vllm"})
+
+    assert engine_config["tensor_parallel_size"] == 4
+    assert engine_config["data_parallel_size"] == 8
 
 
 @pytest.mark.parametrize(("nnodes", "device_count"), [(2, 8), (4, 4), (4, 0)])

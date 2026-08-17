@@ -1039,6 +1039,33 @@ def _set_qwen397b_ascend_dp_tensor_parallel(params, ctx) -> bool:
     return True
 
 
+def _set_qwen38_h20_mp_parallelism(params, ctx) -> bool:
+    """按运行时拓扑设置 Qwen3.8 FP8 H20 原生 MP 的 TP/DP。"""
+    is_target = (
+        ctx.get("distributed")
+        and ctx.get("distributed_executor_backend") == "mp"
+        and _is_qwen38_h20_nvidia_mp(
+            ctx,
+            ctx.get("model_architecture", ""),
+        )
+    )
+    if not is_target:
+        return False
+
+    # Kimi/DeepSeek 原生 MP 使用全局 TP；该配方则固定为节点内 TP、节点间 DP。
+    # 精确模型和 4 机 8 卡约束已由统一识别函数校验，避免静态 defaults 承载拓扑策略。
+    # 同时保持 TP/DP 位于 all2all_backend 之前，确保最终启动命令与既有严格契约一致。
+    trailing_items = []
+    ordered_keys = list(params)
+    if "all2all_backend" in params:
+        trailing_keys = ordered_keys[ordered_keys.index("all2all_backend"):]
+        trailing_items = [(key, params.pop(key)) for key in trailing_keys]
+    params["tensor_parallel_size"] = int(ctx["device_count"])
+    params["data_parallel_size"] = int(ctx["nnodes"])
+    params.update(trailing_items)
+    return True
+
+
 def _ctx_model_identity(ctx) -> str:
     return " ".join(
         str(ctx.get(key, "")).lower() for key in ("model_name", "model_path")
@@ -1114,6 +1141,8 @@ def _set_parallelism_params(params, ctx):
     if _set_pd_parallelism_params(params, ctx):
         return
     if _set_qwen397b_ascend_dp_tensor_parallel(params, ctx):
+        return
+    if _set_qwen38_h20_mp_parallelism(params, ctx):
         return
     # 通用 TP 公式只处理标准推理路径；凡是 adapter 或 dp_deployment 已经明确接管
     # TP 语义的场景，都在 helper 内短路，避免入口函数继续堆叠模型特例。
