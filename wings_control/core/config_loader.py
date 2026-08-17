@@ -3869,6 +3869,22 @@ def _is_qwen38_h20_nvidia_mp(
     return True
 
 
+def _is_qwen35_397b_ascend_dp_route(
+    cmd_params: Dict[str, Any],
+    model_architecture: str,
+    is_ascend: bool,
+) -> bool:
+    """精确识别 Qwen3.5-397B Ascend 原生 DP，避免同架构模型误入。"""
+    if not is_ascend or model_architecture != "Qwen3_5MoeForConditionalGeneration":
+        return False
+
+    model_identity = " ".join(
+        str(cmd_params.get(key) or "").lower()
+        for key in ("model_name", "model_path")
+    )
+    return "qwen3.5-397b" in model_identity or "qwen3_5-397b" in model_identity
+
+
 def _resolve_vllm_distributed_route(
     cmd_params: Dict[str, Any],
     model_info,
@@ -3888,15 +3904,8 @@ def _resolve_vllm_distributed_route(
             "KimiK25ForConditionalGeneration",
         }
     )
-    # 397B 与同系列其他模型共享 architecture，仅在名称或路径明确命中时切换 DP。
-    qwen397b_identity = " ".join(
-        str(cmd_params.get(key) or "").lower()
-        for key in ("model_name", "model_path")
-    )
-    is_qwen35_397b_ascend_dp = (
-        is_ascend
-        and model_architecture == "Qwen3_5MoeForConditionalGeneration"
-        and ("qwen3.5-397b" in qwen397b_identity or "qwen3_5-397b" in qwen397b_identity)
+    is_qwen35_397b_ascend_dp = _is_qwen35_397b_ascend_dp_route(
+        cmd_params, model_architecture, is_ascend
     )
     is_kimi_k3_w4a8_ascend_dp = is_ascend and _is_kimi_k3_w4a8(model_info, cmd_params)
     if is_kimi_k3_w4a8_ascend_dp and int(cmd_params.get("nnodes") or 1) != 4:
