@@ -14,7 +14,7 @@ from engines import vllm_adapter  # noqa: E402
 from utils import model_utils  # noqa: E402
 
 
-_MODEL_NAME = "Qwen3.8-2.4T-A95B"
+_MODEL_NAME = "Qwen3.8-2.4T-A95B-FP8"
 _MODEL_PATH = "/models/Qwen3.8-2.4T-A95B-FP8"
 _ARCHITECTURE = "Qwen3_5MoeForCausalLM"
 
@@ -110,7 +110,7 @@ def test_qwen38_h20_selects_exact_distributed_defaults(model_name, card_name):
 @pytest.mark.parametrize(
     ("model_name", "model_path", "card_name"),
     [
-        ("Qwen3.8-2.4T-A95B-FP8", _MODEL_PATH, "NVIDIA H20 141GB"),
+        ("Qwen3.8-2.4T-A95B", _MODEL_PATH, "NVIDIA H20 141GB"),
         (_MODEL_NAME, _MODEL_PATH, "NVIDIA H100 80GB"),
     ],
 )
@@ -183,7 +183,7 @@ def test_qwen38_h20_rejects_invalid_topology_value(monkeypatch):
 def test_qwen38_route_does_not_broaden_to_neighbor_model(monkeypatch):
     monkeypatch.delenv("PD_ROLE", raising=False)
     params = _qwen38_route_params()
-    params["model_name"] = "Qwen3.8-2.4T-A95B-FP8"
+    params["model_name"] = "Qwen3.8-2.4T-A95B"
 
     config_loader._handle_vllm_distributed(
         {"vllm_distributed": {"ray_head_port": 28020}},
@@ -266,7 +266,7 @@ def test_qwen38_h20_spec_whitelist_uses_mtp3_only(card_token):
         "vllm", _MODEL_NAME, _MODEL_PATH, card_token
     ) == frozenset({"spec"})
     assert model_utils.resolve_feature_whitelist(
-        "vllm", "Qwen3.8-2.4T-A94B", "/models/Qwen3.8-2.4T-A94B", card_token
+        "vllm", "Qwen3.8-2.4T-A95B", "/models/Qwen3.8-2.4T-A95B", card_token
     ) == frozenset()
 
 

@@ -3836,8 +3836,8 @@ def _is_qwen38_h20_nvidia_mp(
     cmd_params: Dict[str, Any],
     model_architecture: str,
 ) -> bool:
-    """精确识别四机八卡 Qwen3.8-2.4T-A95B H20 原生 MP 配方。"""
-    target_name = "qwen3.8-2.4t-a95b"
+    """精确识别四机八卡 Qwen3.8-2.4T-A95B-FP8 H20 原生 MP 配方。"""
+    target_name = "qwen3.8-2.4t-a95b-fp8"
     model_name = str(cmd_params.get("model_name") or "").strip().lower().rstrip("/\\")
     model_name_basename = re.split(r"[/\\]", model_name)[-1] if model_name else ""
     is_target = (
@@ -3859,11 +3859,11 @@ def _is_qwen38_h20_nvidia_mp(
         device_count = int(cmd_params.get("device_count") or 0)
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            "Qwen3.8-2.4T-A95B H20 native MP requires valid nnodes/device_count"
+            "Qwen3.8-2.4T-A95B-FP8 H20 native MP requires valid nnodes/device_count"
         ) from exc
     if nnodes != 4 or device_count != 8:
         raise ValueError(
-            "Qwen3.8-2.4T-A95B H20 native MP requires exactly "
+            "Qwen3.8-2.4T-A95B-FP8 H20 native MP requires exactly "
             "4 nodes and 8 GPUs per node"
         )
     return True

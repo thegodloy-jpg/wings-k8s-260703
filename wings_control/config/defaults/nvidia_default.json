@@ -788,9 +788,9 @@
         }
       },
       "Qwen3_5MoeForCausalLM": {
-        "Qwen3.8-2.4T-A95B": {
+        "Qwen3.8-2.4T-A95B-FP8": {
           "exact_model_names": [
-            "qwen3.8-2.4t-a95b"
+            "qwen3.8-2.4t-a95b-fp8"
           ],
           "card_tokens": ["h20-96", "h20-141"],
           "vllm_distributed": {
