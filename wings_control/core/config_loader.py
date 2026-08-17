@@ -3599,6 +3599,9 @@ def _auto_select_engine(hardware_env: Dict[str, Any],
 
     cmd_known_params["model_type"] = model_info.identify_model_type()
     cmd_known_params["engine"] = engine
+    # 分布式后端在 SmartFeature 正式收口前就会完成选择；提前保存同一份标准卡型
+    # token，供精确模型/卡型路由使用，后续 gate 会基于硬件真值再次覆盖该字段。
+    cmd_known_params["_smart_card_token"] = resolve_card_token(hardware_env)
     _apply_engine_runtime_flags(cmd_known_params)
 
     final_engine = cmd_known_params.get("engine", engine)
@@ -3805,7 +3808,28 @@ class _VllmDistributedRoute:
     is_ascend: bool
     use_dp_deployment: bool
     is_kimi_k3_w4a8_ascend_dp: bool
-    is_kimi_k3_nvidia_mp: bool
+    use_nvidia_native_mp: bool
+
+
+def _is_deepseek_v4_pro_0813_h20_nvidia_mp(
+    cmd_params: Dict[str, Any],
+    model_architecture: str,
+) -> bool:
+    """精确识别 DeepSeek-V4-Pro-0813 H20 原生多节点 MP 配方。"""
+    target_name = "deepseek-v4-pro-0813"
+    identities = []
+    for key in ("model_name", "model_path"):
+        value = str(cmd_params.get(key) or "").strip().lower().rstrip("/\\")
+        if not value:
+            continue
+        identities.extend((value, re.split(r"[/\\]", value)[-1]))
+    return (
+        cmd_params.get("engine") == "vllm"
+        and model_architecture == "DeepseekV4ForCausalLM"
+        and target_name in identities
+        and str(cmd_params.get("_smart_card_token") or "").strip().lower()
+        in {"h20-96", "h20-141"}
+    )
 
 
 def _resolve_vllm_distributed_route(
@@ -3841,6 +3865,13 @@ def _resolve_vllm_distributed_route(
     if is_kimi_k3_w4a8_ascend_dp and int(cmd_params.get("nnodes") or 1) != 4:
         raise ValueError("Kimi-K3-W4A8 Ascend dp_deployment requires exactly 4 nodes")
     is_nvidia_pd = pd_role in {"P", "D"} and not is_ascend
+    is_kimi_k3_nvidia_mp = (
+        model_architecture == "KimiK3ForConditionalGeneration" and not is_ascend
+    )
+    is_deepseek_v4_pro_0813_h20_mp = (
+        not is_ascend
+        and _is_deepseek_v4_pro_0813_h20_nvidia_mp(cmd_params, model_architecture)
+    )
     return _VllmDistributedRoute(
         pd_role=pd_role,
         is_ascend=is_ascend,
@@ -3851,8 +3882,8 @@ def _resolve_vllm_distributed_route(
             or is_kimi_k3_w4a8_ascend_dp
         ),
         is_kimi_k3_w4a8_ascend_dp=is_kimi_k3_w4a8_ascend_dp,
-        is_kimi_k3_nvidia_mp=(
-            model_architecture == "KimiK3ForConditionalGeneration" and not is_ascend
+        use_nvidia_native_mp=(
+            is_kimi_k3_nvidia_mp or is_deepseek_v4_pro_0813_h20_mp
         ),
     )
 
@@ -3913,8 +3944,8 @@ def _handle_vllm_distributed(distributed_config: Dict[str, Any], cmd_params: Dic
     if route.use_dp_deployment:
         _apply_vllm_dp_deployment(distributed_config, cmd_params, distributed_port, route)
         return
-    if route.is_kimi_k3_nvidia_mp:
-        # NVIDIA Kimi-K3 继续复用原生 MP 及现有 NODE_IPS 编排链路。
+    if route.use_nvidia_native_mp:
+        # NVIDIA 原生 MP 模型共用 NODE_IPS/rank 编排，具体启动参数仍由精确 defaults 控制。
         cmd_params["distributed_executor_backend"] = "mp"
         return
     _apply_vllm_ray_deployment(distributed_config, cmd_params, distributed_port)

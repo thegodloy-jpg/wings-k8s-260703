@@ -135,6 +135,70 @@ def test_deepseek_v4_flash_0731_h20_selects_exact_defaults_without_sparse_fp8(ca
     assert "kv_cache_dtype" not in config
 
 
+@pytest.mark.parametrize(
+    ("model_name", "card_name"),
+    [
+        ("DeepSeek-V4-Pro-0813", "NVIDIA H20 96GB"),
+        ("deepseek-ai/DeepSeek-V4-Pro-0813", "NVIDIA H20 141GB"),
+    ],
+)
+def test_deepseek_v4_pro_0813_h20_selects_exact_distributed_defaults(
+    model_name,
+    card_name,
+):
+    arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV4ForCausalLM"]
+
+    config = config_loader._match_model_engine_config(
+        arch_dict,
+        model_name.lower(),
+        "vllm_distributed",
+        config_loader._SpecialEngineScenario(),
+        _FakeDeepSeekV4Info(),
+        {"device": "nvidia", "details": [{"name": card_name}]},
+    )
+
+    assert config == {
+        "use_vllm_serve": True,
+        "trust_remote_code": True,
+        "kv_cache_dtype": "fp8",
+        "block_size": 256,
+        "enable_expert_parallel": True,
+        "max_model_len": 200000,
+        "gpu_memory_utilization": 0.95,
+        "max_num_seqs": 16,
+        "no_enable_flashinfer_autotune": True,
+        "disable_custom_all_reduce": True,
+        "compilation_config": {
+            "mode": 0,
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+        },
+        "tokenizer_mode": "deepseek_v4",
+        "tool_call_parser": "deepseek_v4",
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_name"),
+    [
+        ("DeepSeek-V4-Pro-0812", "NVIDIA H20 96GB"),
+        ("DeepSeek-V4-Pro-0813", "NVIDIA H100 80GB"),
+    ],
+)
+def test_deepseek_v4_pro_0813_profile_does_not_broaden(model_name, card_name):
+    arch_dict = _model_deploy_config("nvidia")["llm"]["DeepseekV4ForCausalLM"]
+
+    config = config_loader._match_model_engine_config(
+        arch_dict,
+        model_name.lower(),
+        "vllm_distributed",
+        config_loader._SpecialEngineScenario(),
+        _FakeDeepSeekV4Info(),
+        {"device": "nvidia", "details": [{"name": card_name}]},
+    )
+
+    assert config == {}
+
+
 def test_model_card_profile_key_reuses_model_name_and_card_tokens():
     arch_dict = {
         "Model-H20-96G": {
@@ -2930,6 +2994,77 @@ def test_kimi_k3_nvidia_routes_to_mp_with_runtime_global_tp(monkeypatch, nnodes)
     config_loader._set_parallelism_params(engine_config, params)
     assert engine_config["tensor_parallel_size"] == 8 * nnodes
     assert "data_parallel_size" not in engine_config
+
+
+@pytest.mark.parametrize("nnodes", [2, 4])
+def test_deepseek_v4_pro_0813_h20_routes_to_mp_with_runtime_global_tp(
+    monkeypatch,
+    nnodes,
+):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.delenv("VLLM_DISTRIBUTED_PORT", raising=False)
+    distributed_config = {"vllm_distributed": {"ray_head_port": 28020}}
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": "/models/DeepSeek-V4-Pro-0813",
+        "device_count": 8,
+        "distributed": True,
+        "nnodes": nnodes,
+        "node_ips": ",".join(f"7.6.25.{57 + index}" for index in range(nnodes)),
+        "distributed_executor_backend": "ray",
+        "_smart_card_token": "h20-96",
+    }
+    model_info = _FakeModelInfo(
+        "DeepSeek-V4-Pro-0813",
+        "DeepseekV4ForCausalLM",
+    )
+
+    config_loader._handle_vllm_distributed(distributed_config, params, model_info)
+
+    assert params["distributed_executor_backend"] == "mp"
+    assert "ray_head_port" not in params
+    params.update({
+        "model_architecture": "DeepseekV4ForCausalLM",
+        "card_model": "h20_96G",
+    })
+    engine_config = {}
+    config_loader._set_parallelism_params(engine_config, params)
+    assert engine_config["tensor_parallel_size"] == 8 * nnodes
+    assert "data_parallel_size" not in engine_config
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_token"),
+    [
+        ("DeepSeek-V4-Pro-0813-extra", "h20-96"),
+        ("DeepSeek-V4-Pro-0813", "h100"),
+        ("DeepSeek-V4-Flash-0813", "h20-141"),
+    ],
+)
+def test_deepseek_v4_pro_0813_mp_route_does_not_broaden(
+    monkeypatch,
+    model_name,
+    card_token,
+):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    params = {
+        "engine": "vllm",
+        "model_name": model_name,
+        "model_path": f"/models/{model_name}",
+        "distributed": True,
+        "_smart_card_token": card_token,
+    }
+    model_info = _FakeModelInfo(model_name, "DeepseekV4ForCausalLM")
+
+    config_loader._handle_vllm_distributed(
+        {"vllm_distributed": {"ray_head_port": 28020}},
+        params,
+        model_info,
+    )
+
+    assert params["distributed_executor_backend"] == "ray"
+    assert params["ray_head_port"] == 28020
 
 
 def test_kimi_k3_w4a8_ascend_auto_selects_vllm_ascend_without_broadening_k3(monkeypatch):

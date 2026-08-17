@@ -565,7 +565,7 @@ def _is_kimi_k3_h20_tuned_mp(params: Dict[str, Any]) -> bool:
 
 
 def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
-    """构造 Kimi-K3 NVIDIA 原生 MP 通信环境，并保留每个节点的本地网卡配置。"""
+    """构造 NVIDIA 原生 MP 通信环境，并保留每个节点的本地 IP/网卡配置。"""
     net_if = os.getenv(
         "NETWORK_INTERFACE",
         os.getenv("NCCL_SOCKET_IFNAME", os.getenv("GLOO_SOCKET_IFNAME", "eth0")),
@@ -573,6 +573,7 @@ def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
     nccl_if = os.getenv("NCCL_SOCKET_IFNAME", net_if)
     gloo_if = os.getenv("GLOO_SOCKET_IFNAME", net_if)
     env_commands = [
+        _SH_VLLM_HOST,
         f"export NCCL_SOCKET_IFNAME={shlex.quote(nccl_if)}",
         f"export GLOO_SOCKET_IFNAME={shlex.quote(gloo_if)}",
     ]

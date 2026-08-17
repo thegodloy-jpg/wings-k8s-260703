@@ -366,6 +366,30 @@
             "tool_call_parser": "deepseekv3"
           }
         },
+        "DeepSeek-V4-Pro-0813-H20": {
+          "exact_model_names": [
+            "deepseek-v4-pro-0813"
+          ],
+          "card_tokens": ["h20-96", "h20-141"],
+          "vllm_distributed": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "kv_cache_dtype": "fp8",
+            "block_size": 256,
+            "enable_expert_parallel": true,
+            "max_model_len": 200000,
+            "gpu_memory_utilization": 0.95,
+            "max_num_seqs": 16,
+            "no_enable_flashinfer_autotune": true,
+            "disable_custom_all_reduce": true,
+            "compilation_config": {
+              "mode": 0,
+              "cudagraph_mode": "FULL_DECODE_ONLY"
+            },
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4"
+          }
+        },
         "DeepSeek-V4-Flash-0731-RTX-PRO-5000": {
           "exact_model_names": [
             "deepseek-ai/deepseek-v4-flash-0731",

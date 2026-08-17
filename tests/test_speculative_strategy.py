@@ -551,6 +551,105 @@ def test_deepseek_v4_flash_0731_h20_final_command_contains_complete_recipe(
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_deepseek_v4_pro_0813_h20_final_mp_command_matches_recipe(
+    monkeypatch,
+    card_token,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "false")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    monkeypatch.setenv("NETWORK_INTERFACE", "bond0")
+    monkeypatch.delenv("NCCL_SOCKET_IFNAME", raising=False)
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
+    model_path = "/models/DeepSeek-V4-Pro-0813"
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": model_path,
+        "model_type": "llm",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": 4,
+        "node_rank": 0,
+        "master_ip": "7.6.25.57",
+        "master_port": 29501,
+        "enable_sparse": False,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": model_path,
+            "trust_remote_code": True,
+            "kv_cache_dtype": "fp8",
+            "block_size": 256,
+            "enable_expert_parallel": True,
+            "tensor_parallel_size": 32,
+            "max_model_len": 200000,
+            "gpu_memory_utilization": 0.95,
+            "max_num_seqs": 16,
+            "no_enable_flashinfer_autotune": True,
+            "disable_custom_all_reduce": True,
+            "compilation_config": json.dumps({
+                "mode": 0,
+                "cudagraph_mode": "FULL_DECODE_ONLY",
+            }),
+            "tokenizer_mode": "deepseek_v4",
+            "enable_auto_tool_choice": True,
+            "tool_call_parser": "deepseek_v4",
+            "reasoning_parser": "deepseek_v4",
+        },
+    }
+    card_name = "NVIDIA H20 96GB" if card_token == "h20-96" else "NVIDIA H20 141GB"
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 8, "details": [{"name": card_name}]},
+    )
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert params["_allowed_smart_feats"] == ["spec"]
+    assert params["_smart_feats"] == ["spec"]
+    assert "export VLLM_HOST_IP=" in script
+    assert "export NCCL_SOCKET_IFNAME=bond0" in script
+    assert "export GLOO_SOCKET_IFNAME=bond0" in script
+    for expected in (
+        "--trust-remote-code",
+        "--kv-cache-dtype fp8",
+        "--block-size 256",
+        "--enable-expert-parallel",
+        "--tensor-parallel-size 32",
+        "--max-model-len 200000",
+        "--gpu-memory-utilization 0.95",
+        "--max-num-seqs 16",
+        "--no-enable-flashinfer-autotune",
+        "--disable-custom-all-reduce",
+        "--compilation-config",
+        "--tokenizer-mode deepseek_v4",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser deepseek_v4",
+        "--reasoning-parser deepseek_v4",
+        "--distributed-executor-backend mp",
+        "--nnodes 4",
+        "--node-rank 0",
+        "--master-addr 7.6.25.57",
+        "--master-port 29501",
+    ):
+        assert expected in exec_line
+    assert '"method":"dspark"' in exec_line
+    assert '"num_speculative_tokens":7' in exec_line
+    assert '"draft_sample_method":"probabilistic"' in exec_line
+    assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
+    assert exec_line.count("--speculative-config") == 1
+    assert "--headless" not in exec_line
+    assert "--data-parallel-size" not in exec_line
+    assert "--kv-transfer-config" not in exec_line
+
+
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
 def test_kimi_k3_h20_simple_cpu_offload_final_command_matches_tuned_recipe(
     monkeypatch,
     card_token,

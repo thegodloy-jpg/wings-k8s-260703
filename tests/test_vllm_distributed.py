@@ -58,6 +58,41 @@ def _kimi_k3_h20_mp_params():
     }
 
 
+def _deepseek_v4_pro_h20_mp_ctx(*, node_rank=0):
+    return DistScriptCtx(
+        engine="vllm",
+        cmd=(
+            "vllm serve /models/DeepSeek-V4-Pro-0813 --trust-remote-code "
+            "--kv-cache-dtype fp8 --block-size 256 --enable-expert-parallel "
+            "--tensor-parallel-size 32 --max-model-len 200000 "
+            "--gpu-memory-utilization 0.95 --max-num-seqs 16 "
+            "--no-enable-flashinfer-autotune --disable-custom-all-reduce "
+            "--compilation-config '{\"mode\":0,\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}' "
+            "--tokenizer-mode deepseek_v4 --tool-call-parser deepseek_v4 "
+            "--enable-auto-tool-choice --reasoning-parser deepseek_v4 "
+            "--speculative-config "
+            "'{\"method\":\"dspark\",\"num_speculative_tokens\":7,"
+            "\"draft_sample_method\":\"probabilistic\"}'"
+        ),
+        is_ascend=False,
+        node_rank=node_rank,
+        nnodes=4,
+        head_addr="7.6.25.57",
+        ray_port="28020",
+        node_ips="7.6.25.57,7.6.25.95,7.6.25.96,7.6.25.97",
+    )
+
+
+def _deepseek_v4_pro_h20_mp_params():
+    return {
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": "/models/DeepSeek-V4-Pro-0813",
+        "device_count": 8,
+        "nnodes": 4,
+        "_smart_card_token": "h20-96",
+    }
+
+
 def _kimi_k3_910c_ctx(*, node_rank=0):
     return DistScriptCtx(
         engine="vllm_ascend",
@@ -122,6 +157,7 @@ def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
     )
     final_command = commands[-1]
 
+    assert any(command.startswith("export VLLM_HOST_IP=") for command in commands)
     assert "export NCCL_SOCKET_IFNAME=enp66s0f1" in commands
     assert "export GLOO_SOCKET_IFNAME=enp66s0f1" in commands
     assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in commands
@@ -160,6 +196,7 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     )
     final_command = commands[-1]
 
+    assert any(command.startswith("export VLLM_HOST_IP=") for command in commands)
     assert "export NCCL_SOCKET_IFNAME=ens3f3" in commands
     assert "export GLOO_SOCKET_IFNAME=ens3f3" in commands
     assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in commands
@@ -179,6 +216,58 @@ def test_kimi_k3_mp_worker_is_headless_and_uses_local_nic(monkeypatch, node_rank
     assert "--reasoning-parser" not in final_command
     assert "--served-model-name kimi_k3" in final_command
     assert "--tensor-parallel-size 32" in final_command
+    assert "--data-parallel-size" not in final_command
+
+
+@pytest.mark.parametrize("node_rank", [0, 3])
+def test_deepseek_v4_pro_0813_four_node_mp_matches_native_recipe(
+    monkeypatch,
+    node_rank,
+):
+    monkeypatch.setenv("MASTER_PORT", "29501")
+    monkeypatch.setenv("NETWORK_INTERFACE", "bond0")
+    monkeypatch.delenv("NCCL_SOCKET_IFNAME", raising=False)
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
+
+    commands = vllm_distributed._build_mp_commands(
+        _deepseek_v4_pro_h20_mp_params(),
+        _deepseek_v4_pro_h20_mp_ctx(node_rank=node_rank),
+    )
+    final_command = commands[-1]
+
+    assert any(command.startswith("export VLLM_HOST_IP=") for command in commands)
+    assert "export NCCL_SOCKET_IFNAME=bond0" in commands
+    assert "export GLOO_SOCKET_IFNAME=bond0" in commands
+    assert "--distributed-executor-backend mp" in final_command
+    assert "--nnodes 4" in final_command
+    assert f"--node-rank {node_rank}" in final_command
+    assert "--master-addr 7.6.25.57" in final_command
+    assert "--master-port 29501" in final_command
+    assert "--tensor-parallel-size 32" in final_command
+    assert "--kv-cache-dtype fp8" in final_command
+    assert "--block-size 256" in final_command
+    assert "--enable-expert-parallel" in final_command
+    assert "--max-model-len 200000" in final_command
+    assert "--gpu-memory-utilization 0.95" in final_command
+    assert "--max-num-seqs 16" in final_command
+    assert "--no-enable-flashinfer-autotune" in final_command
+    assert "--disable-custom-all-reduce" in final_command
+    assert "--compilation-config" in final_command
+    assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in final_command
+    assert '"method":"dspark"' in final_command
+    assert '"num_speculative_tokens":7' in final_command
+    assert '"draft_sample_method":"probabilistic"' in final_command
+    assert final_command.count("--speculative-config") == 1
+    if node_rank == 0:
+        assert "--headless" not in final_command
+        assert "--enable-auto-tool-choice" in final_command
+        assert "--tool-call-parser deepseek_v4" in final_command
+        assert "--reasoning-parser deepseek_v4" in final_command
+    else:
+        assert "--headless" in final_command
+        assert "--enable-auto-tool-choice" not in final_command
+        assert "--tool-call-parser" not in final_command
+        assert "--reasoning-parser" not in final_command
     assert "--data-parallel-size" not in final_command
 
 

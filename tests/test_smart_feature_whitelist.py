@@ -557,6 +557,28 @@ def test_deepseek_v4_flash_0731_w8a8_smart_features_are_card_specific():
     ) == frozenset({"spec", "sparse"})
 
 
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_deepseek_v4_pro_0813_h20_uses_exact_dspark7_only(card_token):
+    model_name = "DeepSeek-V4-Pro-0813"
+    model_path = f"/models/{model_name}"
+
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm", model_name, model_path, card_token, "spec"
+    )
+
+    assert row is not None
+    assert row["arch"] == "DeepseekV4ForCausalLM"
+    assert row["mtp_method"] == "dspark"
+    assert row["mtp_num_speculative_tokens"] == 7
+    assert row["draft_sample_method"] == "probabilistic"
+    assert model_utils.resolve_feature_whitelist(
+        "vllm", model_name, model_path, card_token
+    ) == frozenset({"spec"})
+    assert model_utils.resolve_feature_whitelist(
+        "vllm", "DeepSeek-V4-Pro", "/models/DeepSeek-V4-Pro", card_token
+    ) == frozenset()
+
+
 def test_deepseek_coder_v2_spec_row_uses_model_config_architecture():
     row = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend",
