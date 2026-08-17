@@ -188,6 +188,10 @@ architectures:
       Qwen3.6-35B-A3B-w8a8:   {vllm: qwen3, vllm_ascend: qwen3}
       Qwen-AgentWorld-35B-A3B: {vllm: qwen3, vllm_ascend: qwen3}
 
+  - name: Qwen3_5MoeForCausalLM
+    models:
+      Qwen3.8-2.4T-A95B: {vllm: qwen3}
+
   - name: MiniMaxM2ForCausalLM
     config:
       vllm:        {default: minimax_m2_append_think}

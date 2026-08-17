@@ -3832,6 +3832,43 @@ def _is_deepseek_v4_pro_0813_h20_nvidia_mp(
     )
 
 
+def _is_qwen38_h20_nvidia_mp(
+    cmd_params: Dict[str, Any],
+    model_architecture: str,
+) -> bool:
+    """精确识别四机八卡 Qwen3.8-2.4T-A95B H20 原生 MP 配方。"""
+    target_name = "qwen3.8-2.4t-a95b"
+    model_name = str(cmd_params.get("model_name") or "").strip().lower().rstrip("/\\")
+    model_name_basename = re.split(r"[/\\]", model_name)[-1] if model_name else ""
+    is_target = (
+        cmd_params.get("engine") == "vllm"
+        and model_architecture == "Qwen3_5MoeForCausalLM"
+        # defaults 同样以规范 MODEL_NAME 为身份源；路由不单独按 MODEL_PATH 放宽，
+        # 避免 served alias 命中 MP、却回落通用 defaults 而丢失 TP8×DP4。
+        and model_name_basename == target_name
+        and str(cmd_params.get("_smart_card_token") or "").strip().lower()
+        in {"h20-96", "h20-141"}
+    )
+    if not is_target:
+        return False
+
+    # 该 profile 固定 TP8×DP4=32；其它拓扑若继续套用同一 defaults 会形成 world-size 冲突，
+    # 因此在路由层失败前置，而不是静默回退 Ray 后携带错误的并行参数继续启动。
+    try:
+        nnodes = int(cmd_params.get("nnodes") or 1)
+        device_count = int(cmd_params.get("device_count") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B H20 native MP requires valid nnodes/device_count"
+        ) from exc
+    if nnodes != 4 or device_count != 8:
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B H20 native MP requires exactly "
+            "4 nodes and 8 GPUs per node"
+        )
+    return True
+
+
 def _resolve_vllm_distributed_route(
     cmd_params: Dict[str, Any],
     model_info,
@@ -3872,6 +3909,11 @@ def _resolve_vllm_distributed_route(
         not is_ascend
         and _is_deepseek_v4_pro_0813_h20_nvidia_mp(cmd_params, model_architecture)
     )
+    is_qwen38_h20_mp = (
+        not is_ascend
+        and not is_nvidia_pd
+        and _is_qwen38_h20_nvidia_mp(cmd_params, model_architecture)
+    )
     return _VllmDistributedRoute(
         pd_role=pd_role,
         is_ascend=is_ascend,
@@ -3883,7 +3925,9 @@ def _resolve_vllm_distributed_route(
         ),
         is_kimi_k3_w4a8_ascend_dp=is_kimi_k3_w4a8_ascend_dp,
         use_nvidia_native_mp=(
-            is_kimi_k3_nvidia_mp or is_deepseek_v4_pro_0813_h20_mp
+            is_kimi_k3_nvidia_mp
+            or is_deepseek_v4_pro_0813_h20_mp
+            or is_qwen38_h20_mp
         ),
     )
 
