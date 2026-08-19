@@ -4239,24 +4239,6 @@ def _model_config_card_tokens_match(
     return False
 
 
-def _model_config_device_counts_match(
-    config: Dict[str, Any],
-    hardware_env: Dict[str, Any] | None,
-) -> bool:
-    """仅对显式声明卡数的模型画像校验本机可见设备数。"""
-    configured_counts = config.get("device_counts")
-    if configured_counts is None:
-        return True
-    if not isinstance(configured_counts, (list, tuple, set)):
-        configured_counts = [configured_counts]
-    try:
-        current_count = int((hardware_env or {}).get("count"))
-        allowed_counts = {int(value) for value in configured_counts}
-    except (TypeError, ValueError):
-        return False
-    return current_count in allowed_counts
-
-
 def _is_deepseek_v4_flash_lookup(lookup_names: list) -> bool:
     return any(
         "deepseek-v4-flash" in name
@@ -4562,13 +4544,6 @@ def _match_model_engine_config(
                 "Skipping engine config for model '%s' because current card does not match card_tokens=%s",
                 model,
                 config.get("card_tokens"),
-            )
-            continue
-        if not _model_config_device_counts_match(config, hardware_env):
-            logger.info(
-                "Skipping engine config for model '%s' because current device count does not match device_counts=%s",
-                model,
-                config.get("device_counts"),
             )
             continue
         engine_config = config.get(engine_key, {})
