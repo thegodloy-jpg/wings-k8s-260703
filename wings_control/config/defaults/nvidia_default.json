@@ -664,6 +664,17 @@
             "mm_encoder_tp_mode": "data",
             "enable_prefix_caching": true
           }
+        },
+        "Qwen3.8-27B-FP8": {
+          "exact_model_names": ["qwen3.8-27b-fp8"],
+          "card_tokens": ["rtxpro5000-72"],
+          "vllm": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "max_num_seqs": 512,
+            "tool_call_parser": "qwen3_coder",
+            "mm_encoder_tp_mode": "data"
+          }
         }
       },
       "Qwen3_5MoeForConditionalGeneration": {
