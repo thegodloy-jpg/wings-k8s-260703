@@ -1886,6 +1886,32 @@ def _build_qwen35_ascend_env(arch: str) -> List[str]:
     ]
 
 
+def _is_qwen38_27b_w8a8_910b_single_node_env_scope(
+    params: Dict[str, Any],
+    model_info: ModelIdentifier,
+) -> bool:
+    """精确识别 Qwen3.8-27B-w8a8 的 910B 单机双卡环境配方。"""
+    return (
+        model_info.model_architecture == "Qwen3_5ForConditionalGeneration"
+        and str(params.get("model_name") or "").strip().lower() == "qwen3.8-27b-w8a8"
+        and _ascend_platform_from_runtime(params) == "a2"
+        and not params.get("distributed")
+        and (_safe_int(params.get("nnodes")) or 1) == 1
+        and _safe_int(params.get("device_count")) == 2
+    )
+
+
+def _build_qwen38_27b_w8a8_910b_env() -> List[str]:
+    """仅注入已验证命令需要的环境变量，避免继承同架构其它型号的运行时配方。"""
+    return [
+        "export HCCL_BUFFSIZE=512",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=1",
+        "export TASK_QUEUE_ENABLE=1",
+    ]
+
+
 def _build_qwen35moe_ascend_env(arch: str) -> List[str]:
     """构建 Qwen3.5-MoE (Qwen3_5MoeForConditionalGeneration) Ascend 环境变量命令。"""
     logger.info("[Qwen3.5-MoE] Set Ascend environment variables for %s", arch)
@@ -2593,6 +2619,11 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
+    if _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info):
+        logger.info(
+            "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910B single-node environment variables"
+        )
+        return _build_qwen38_27b_w8a8_910b_env()
     if _is_deepseek_v4_flash_0731_w8a8_910c_env_scope(params, model_info):
         logger.info(
             "[DeepSeek-V4-Flash-0731-W8A8] Set dedicated Ascend A3 "
