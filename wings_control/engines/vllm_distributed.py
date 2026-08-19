@@ -564,6 +564,19 @@ def _is_kimi_k3_h20_tuned_mp(params: Dict[str, Any]) -> bool:
     )
 
 
+def _is_qwen38_h20_tuned_mp(params: Dict[str, Any]) -> bool:
+    """精确识别四机八卡 Qwen3.8 FP8 H20 MP 配方。"""
+    model_name = str(params.get("model_name") or "").strip().lower().rstrip("/\\")
+    model_name_basename = re.split(r"[/\\]", model_name)[-1] if model_name else ""
+    return (
+        model_name_basename == "qwen3.8-2.4t-a95b-fp8"
+        and str(params.get("_smart_card_token") or "").strip().lower()
+        in {"h20-96", "h20-141"}
+        and _safe_int(params.get("device_count")) == 8
+        and _safe_int(params.get("nnodes")) == 4
+    )
+
+
 def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
     """构造 NVIDIA 原生 MP 通信环境，并保留每个节点的本地 IP/网卡配置。"""
     net_if = os.getenv(
@@ -584,6 +597,10 @@ def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
             "export VLLM_USE_V2_MODEL_RUNNER=1",
             "export VLLM_USE_RUST_FRONTEND=1",
         ])
+    elif _is_qwen38_h20_tuned_mp(params):
+        # 2.4T 权重在四机冷启动时可能超过 vLLM 默认的 600 秒；仅放宽 EngineCore
+        # 就绪等待，不继承 Kimi 专属的 V2 runner / Rust frontend 运行时开关。
+        env_commands.append("export VLLM_ENGINE_READY_TIMEOUT_S=3600")
     return env_commands
 
 

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from core import config_loader  # noqa: E402
 from core.start_args_compat import parse_launch_args  # noqa: E402
-from engines import vllm_adapter  # noqa: E402
+from engines import vllm_adapter, vllm_distributed  # noqa: E402
 from utils import model_utils  # noqa: E402
 
 
@@ -170,6 +170,37 @@ def test_qwen38_runtime_parallelism_keeps_explicit_env_precedence(monkeypatch):
 
     assert engine_config["tensor_parallel_size"] == 4
     assert engine_config["data_parallel_size"] == 8
+
+
+@pytest.mark.parametrize("model_name", [_MODEL_NAME, f"Qwen/{_MODEL_NAME}"])
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_qwen38_four_node_h20_mp_adds_engine_ready_timeout(model_name, card_token):
+    params = _qwen38_route_params(card_token=card_token)
+    params["model_name"] = model_name
+
+    commands = vllm_distributed._build_mp_env_commands(params)
+
+    assert commands.count("export VLLM_ENGINE_READY_TIMEOUT_S=3600") == 1
+    assert not any("VLLM_USE_V2_MODEL_RUNNER" in command for command in commands)
+    assert not any("VLLM_USE_RUST_FRONTEND" in command for command in commands)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model_name": "Qwen3.8-2.4T-A95B"},
+        {"_smart_card_token": "h100"},
+        {"device_count": 4},
+        {"nnodes": 2},
+    ],
+)
+def test_qwen38_engine_ready_timeout_does_not_broaden(overrides):
+    params = _qwen38_route_params()
+    params.update(overrides)
+
+    commands = vllm_distributed._build_mp_env_commands(params)
+
+    assert not any("VLLM_ENGINE_READY_TIMEOUT_S" in command for command in commands)
 
 
 @pytest.mark.parametrize(("nnodes", "device_count"), [(2, 8), (4, 4), (4, 0)])
@@ -469,6 +500,7 @@ def test_qwen38_four_rank_final_mp_commands(monkeypatch, node_rank):
     assert "export VLLM_HOST_IP=" in script
     assert "export NCCL_SOCKET_IFNAME=bond0" in script
     assert "export GLOO_SOCKET_IFNAME=bond0" in script
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in script
     assert "VLLM_USE_V2_MODEL_RUNNER" not in script
     assert "VLLM_USE_RUST_FRONTEND" not in script
     assert "ray start" not in script

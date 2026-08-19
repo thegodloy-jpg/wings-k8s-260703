@@ -279,6 +279,7 @@ def test_generic_mp_worker_keeps_served_model_name_without_kimi_runtime_env(monk
     assert "--served-model-name kimi_k3" in commands[-1]
     assert not any("VLLM_USE_V2_MODEL_RUNNER" in command for command in commands)
     assert not any("VLLM_USE_RUST_FRONTEND" in command for command in commands)
+    assert not any("VLLM_ENGINE_READY_TIMEOUT_S" in command for command in commands)
     assert "unset PYTORCH_CUDA_ALLOC_CONF" not in commands
     assert "ulimit -l unlimited" not in commands
 
