@@ -127,7 +127,7 @@ def test_qwen38_27b_w8a8_910b_selects_exact_single_node_profile():
     assert "speculative_config" not in config
 
 
-def test_qwen38_27b_w8a8_910c_selects_exact_single_node_profile():
+def test_qwen38_27b_w8a8_910c_selects_exact_profile():
     config = _match_defaults(_MODEL_NAME, "Ascend910C")
 
     assert config == {
@@ -152,6 +152,10 @@ def test_qwen38_27b_w8a8_910c_selects_exact_single_node_profile():
     assert "enable_prefix_caching" not in config
     assert "speculative_config" not in config
 
+    profile = _ascend_arch_defaults()["Qwen3.8-27B-w8a8-910C"]
+    assert "Qwen3.8-27B-w8a8-910C-single-node" not in _ascend_arch_defaults()
+    assert "device_counts" not in profile
+
 
 @pytest.mark.parametrize(
     ("model_name", "card_name", "engine_key"),
@@ -167,9 +171,15 @@ def test_qwen38_27b_profile_does_not_broaden(model_name, card_name, engine_key):
     assert _match_defaults(model_name, card_name, engine_key) == {}
 
 
-def test_qwen38_27b_910c_profile_requires_exact_two_device_topology():
-    assert _match_defaults(_MODEL_NAME, "Ascend910C", device_count=1) == {}
-    assert _match_defaults(_MODEL_NAME, "Ascend910C", device_count=4) == {}
+@pytest.mark.parametrize("device_count", [1, 2, 4, 8])
+def test_qwen38_27b_910c_profile_does_not_restrict_local_device_count(
+    device_count,
+):
+    assert _match_defaults(
+        _MODEL_NAME,
+        "Ascend910C",
+        device_count=device_count,
+    ) == _match_defaults(_MODEL_NAME, "Ascend910C", device_count=2)
 
 
 def test_qwen38_27b_910b_spec_whitelist_renders_exact_mtp(monkeypatch):
@@ -238,7 +248,8 @@ def test_qwen38_27b_910b_uses_dedicated_minimal_env(monkeypatch):
     ]
 
 
-def test_qwen38_27b_910c_uses_dedicated_minimal_env(monkeypatch):
+@pytest.mark.parametrize("device_count", [1, 2, 4, 8])
+def test_qwen38_27b_910c_uses_dedicated_minimal_env(monkeypatch, device_count):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
     commands = vllm_adapter._build_model_env_commands(
         {
@@ -246,7 +257,7 @@ def test_qwen38_27b_910c_uses_dedicated_minimal_env(monkeypatch):
             "model_name": _MODEL_NAME,
             "model_path": "/usr/local/serving/models",
             "model_type": "llm",
-            "device_count": 2,
+            "device_count": device_count,
             "nnodes": 1,
             "distributed": False,
             "_smart_card_token": "ascend910c",
@@ -292,11 +303,10 @@ def test_qwen38_27b_env_scope_does_not_broaden(overrides):
     [
         {"model_name": "Qwen3.8-27B"},
         {"_smart_card_token": "ascend910b"},
-        {"device_count": 4},
         {"distributed": True, "nnodes": 2},
     ],
 )
-def test_qwen38_27b_910c_scope_does_not_broaden(overrides):
+def test_qwen38_27b_910c_local_scope_does_not_broaden(overrides):
     params = {
         "engine": "vllm_ascend",
         "model_name": _MODEL_NAME,
@@ -307,7 +317,24 @@ def test_qwen38_27b_910c_scope_does_not_broaden(overrides):
     }
     params.update(overrides)
 
-    assert not vllm_adapter._is_qwen38_27b_w8a8_910c_single_node_scope(
+    assert not vllm_adapter._is_qwen38_27b_w8a8_910c_local_scope(
+        params,
+        _FakeQwen38Identifier(_MODEL_NAME, "/usr/local/serving/models", "llm"),
+    )
+
+
+@pytest.mark.parametrize("device_count", [1, 2, 4, 8])
+def test_qwen38_27b_910c_local_scope_accepts_visible_device_count(device_count):
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": _MODEL_NAME,
+        "device_count": device_count,
+        "nnodes": 1,
+        "distributed": False,
+        "_smart_card_token": "ascend910c",
+    }
+
+    assert vllm_adapter._is_qwen38_27b_w8a8_910c_local_scope(
         params,
         _FakeQwen38Identifier(_MODEL_NAME, "/usr/local/serving/models", "llm"),
     )
@@ -399,6 +426,55 @@ def test_qwen38_27b_910c_startup_status_preparation_sees_mp_backend(monkeypatch)
 
     assert params["distributed_executor_backend"] == "mp"
     assert params["engine_config"]["distributed_executor_backend"] == "mp"
+
+
+@pytest.mark.parametrize("device_count", [1, 2, 4, 8])
+def test_qwen38_27b_910c_final_command_derives_tp_from_local_devices(
+    monkeypatch,
+    device_count,
+):
+    monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeQwen38Identifier)
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    monkeypatch.setattr(config_loader, "_check_vram_requirements", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_record_selected_engine", lambda *_args: None)
+    _clear_runtime_env(monkeypatch)
+
+    launch_args = parse_launch_args(
+        [
+            "--model-name",
+            _MODEL_NAME,
+            "--model-path",
+            "/usr/local/serving/models",
+            "--model-type",
+            "llm",
+            "--engine",
+            "vllm_ascend",
+            "--device-count",
+            str(device_count),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "18000",
+        ]
+    )
+    params = config_loader.load_and_merge_configs(
+        {
+            "device": "ascend",
+            "count": device_count,
+            "details": [{"name": "Ascend910C"}],
+        },
+        launch_args,
+    )
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+    shlex.split(exec_line, posix=True)
+
+    assert params["engine_config"]["tensor_parallel_size"] == device_count
+    assert params["distributed_executor_backend"] == "mp"
+    assert "--distributed-executor-backend mp" in exec_line
+    assert f"--tensor-parallel-size {device_count}" in exec_line
+    assert "export HCCL_BUFFSIZE=1024" in script
+    assert 'export HCCL_OP_EXPANSION_MODE="AIV"' in script
 
 
 def test_qwen38_27b_production_chain_renders_target_single_node_command(

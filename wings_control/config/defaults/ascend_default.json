@@ -876,10 +876,9 @@
             "additional_config": {"enable_cpu_binding": true}
           }
         },
-        "Qwen3.8-27B-w8a8-910C-single-node": {
+        "Qwen3.8-27B-w8a8-910C": {
           "exact_model_names": ["qwen3.8-27b-w8a8"],
           "card_tokens": ["910c"],
-          "device_counts": [2],
           "vllm_ascend": {
             "use_vllm_serve": true,
             "trust_remote_code": true,

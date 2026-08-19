@@ -1912,11 +1912,13 @@ def _build_qwen38_27b_w8a8_910b_env() -> List[str]:
     ]
 
 
-def _is_qwen38_27b_w8a8_910c_single_node_scope(
+def _is_qwen38_27b_w8a8_910c_local_scope(
     params: Dict[str, Any],
     model_info: ModelIdentifier,
 ) -> bool:
-    """精确识别 Qwen3.8-27B-w8a8 的 910C 单机双卡 MP 配方。"""
+    """精确识别 Qwen3.8-27B-w8a8 的 910C 本机 MP 配方。"""
+    # 910C 本机配方不按可见卡数收窄，TP 继续由通用拓扑推导并允许显式覆盖；
+    # 多节点仍由 distributed/nnodes 边界隔离，避免复用未经验证的跨节点环境配方。
     return (
         params.get("engine") == "vllm_ascend"
         and model_info.model_architecture == "Qwen3_5ForConditionalGeneration"
@@ -1924,7 +1926,6 @@ def _is_qwen38_27b_w8a8_910c_single_node_scope(
         and _ascend_platform_from_runtime(params) == "a3"
         and not params.get("distributed")
         and (_safe_int(params.get("nnodes")) or 1) == 1
-        and _safe_int(params.get("device_count")) == 2
     )
 
 
@@ -1952,7 +1953,7 @@ def _sync_qwen38_27b_w8a8_910c_runtime_backend(params: Dict[str, Any]) -> None:
         params.get("model_path"),
         params.get("model_type"),
     )
-    if not _is_qwen38_27b_w8a8_910c_single_node_scope(params, model_info):
+    if not _is_qwen38_27b_w8a8_910c_local_scope(params, model_info):
         return
     normalized_backend = str(backend).strip().lower()
     engine_config["distributed_executor_backend"] = normalized_backend
@@ -2666,9 +2667,9 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
-    if _is_qwen38_27b_w8a8_910c_single_node_scope(params, model_info):
+    if _is_qwen38_27b_w8a8_910c_local_scope(params, model_info):
         logger.info(
-            "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910C single-node environment variables"
+            "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910C local MP environment variables"
         )
         return _build_qwen38_27b_w8a8_910c_env()
     if _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info):
