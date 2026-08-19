@@ -1912,6 +1912,53 @@ def _build_qwen38_27b_w8a8_910b_env() -> List[str]:
     ]
 
 
+def _is_qwen38_27b_w8a8_910c_single_node_scope(
+    params: Dict[str, Any],
+    model_info: ModelIdentifier,
+) -> bool:
+    """精确识别 Qwen3.8-27B-w8a8 的 910C 单机双卡 MP 配方。"""
+    return (
+        params.get("engine") == "vllm_ascend"
+        and model_info.model_architecture == "Qwen3_5ForConditionalGeneration"
+        and str(params.get("model_name") or "").strip().lower() == "qwen3.8-27b-w8a8"
+        and _ascend_platform_from_runtime(params) == "a3"
+        and not params.get("distributed")
+        and (_safe_int(params.get("nnodes")) or 1) == 1
+        and _safe_int(params.get("device_count")) == 2
+    )
+
+
+def _build_qwen38_27b_w8a8_910c_env() -> List[str]:
+    """输出 910C 已验证环境配方；公共层仍负责补齐通用 OMP 安全默认。"""
+    return [
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export TASK_QUEUE_ENABLE=1",
+        "export HCCL_BUFFSIZE=1024",
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+    ]
+
+
+def _sync_qwen38_27b_w8a8_910c_runtime_backend(params: Dict[str, Any]) -> None:
+    """将精确 profile 的 MP 后端同步到顶层，避免状态判断与最终 CLI 分裂。"""
+    engine_config = params.get("engine_config")
+    if not isinstance(engine_config, dict):
+        return
+    backend = engine_config.get("distributed_executor_backend")
+    if backend in (None, ""):
+        # CONFIG_FORCE 或用户自定义配置未声明后端时不凭空回填，保持配置所有权边界。
+        return
+    model_info = ModelIdentifier(
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("model_type"),
+    )
+    if not _is_qwen38_27b_w8a8_910c_single_node_scope(params, model_info):
+        return
+    normalized_backend = str(backend).strip().lower()
+    engine_config["distributed_executor_backend"] = normalized_backend
+    params["distributed_executor_backend"] = normalized_backend
+
+
 def _build_qwen35moe_ascend_env(arch: str) -> List[str]:
     """构建 Qwen3.5-MoE (Qwen3_5MoeForConditionalGeneration) Ascend 环境变量命令。"""
     logger.info("[Qwen3.5-MoE] Set Ascend environment variables for %s", arch)
@@ -2619,6 +2666,11 @@ def _build_ascend_model_env_commands(
     model_info: ModelIdentifier,
     arch: str,
 ) -> List[str]:
+    if _is_qwen38_27b_w8a8_910c_single_node_scope(params, model_info):
+        logger.info(
+            "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910C single-node environment variables"
+        )
+        return _build_qwen38_27b_w8a8_910c_env()
     if _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info):
         logger.info(
             "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910B single-node environment variables"
@@ -3356,6 +3408,9 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     DP 回写必须在返回前完成，因为分布式脚本拓扑计算后续读取的是
     ``params["engine_config"]``，而不是本函数局部变量。
     """
+    # 精确 910C profile 的 backend 同时参与状态计算、拓扑校验和最终 CLI；
+    # 在统一准备入口同步，避免 build_start_script 之前仍短暂暴露解析器默认的 ray。
+    _sync_qwen38_27b_w8a8_910c_runtime_backend(params)
     engine_config = dict(params.get("engine_config", {}))
     _strip_internal_engine_config_keys(params, engine_config)
     explicit_keys = set(params.get("_explicit_cli_keys") or [])
