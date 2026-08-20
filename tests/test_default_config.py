@@ -2104,6 +2104,123 @@ def test_final_tp_fallback_updates_existing_dp_deployment_rank_fields():
     assert prepared["data_parallel_start_rank"] == 1
 
 
+def test_deepseek_v4_pro_0813_w4a8_selects_exact_static_profile_without_fingerprint(
+    monkeypatch,
+):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    model_name = "DeepSeek-V4-Pro-0813-w4a8"
+    # 刻意不给 _name_or_path/quantize 指纹，证明精确 JSON profile 本身即可稳定命中，
+    # 不依赖不同来源权重是否完整保留 config.json 身份字段。
+    model_info = _FakeModelInfo(model_name, "DeepseekV4ForCausalLM")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": model_name,
+        "model_path": f"/models/{model_name}",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "device_count": 16,
+        "nnodes": 2,
+        "node_rank": 0,
+        "enable_auto_tool_choice": True,
+    }
+
+    config = config_loader._get_model_specific_config(
+        {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+        params,
+        model_info,
+    )
+
+    assert config["max_model_len"] == 135000
+    assert config["max_num_batched_tokens"] == 4096
+    assert config["async_scheduling"] is True
+    assert config["quantization"] == "ascend"
+    assert config["tool_call_parser"] == "deepseek_v4"
+    assert json.loads(config["additional_config"])["enable_mc2_hierarchy_comm"] is True
+    assert "tensor_parallel_size" not in config
+    assert "data_parallel_size" not in config
+
+
+def test_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope_is_exact(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    target = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Pro-0813-w4a8",
+        "model_path": "/models/DeepSeek-V4-Pro-0813-w4a8",
+        "distributed": True,
+        "device_count": 16,
+        "nnodes": 2,
+        "node_rank": 0,
+        "_smart_card_token": "910c",
+    }
+
+    assert vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(target)
+
+    negative_overrides = (
+        {"model_name": "DeepSeek-V4-Pro-w4a8-mtp", "model_path": "/models/DeepSeek-V4-Pro-w4a8-mtp"},
+        {"model_name": "DeepSeek-V4-Pro-0812-w4a8", "model_path": "/models/DeepSeek-V4-Pro-0812-w4a8"},
+        {"device_count": 8},
+        {"nnodes": 1},
+        {"distributed": False},
+        {"engine": "vllm"},
+        {"_smart_card_token": "910b"},
+    )
+    for override in negative_overrides:
+        assert not vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(
+            {**target, **override}
+        )
+
+    wrong_arch = _FakeModelInfo(target["model_name"], "LlamaForCausalLM")
+    assert not vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(
+        target,
+        wrong_arch,
+    )
+
+
+def test_deepseek_v4_pro_0813_w4a8_hierarchy_mc2_is_json_scoped():
+    profiles = _model_deploy_config("ascend")["llm"]["DeepseekV4ForCausalLM"]
+    target_profile = profiles["DeepSeek-V4-Pro-0813-w4a8"]
+    target_config = target_profile["vllm_ascend_distributed"]
+    legacy_config = profiles["DeepSeek-V4-Pro-w4a8-mtp"]["vllm_ascend_distributed"]
+
+    assert target_profile["card_tokens"] == ["910c"]
+    assert target_config["additional_config"]["enable_mc2_hierarchy_comm"] is True
+    assert "enable_mc2_hierarchy_comm" not in legacy_config["additional_config"]
+    for key in (
+        "tensor_parallel_size",
+        "data_parallel_size",
+        "data_parallel_size_local",
+        "data_parallel_start_rank",
+    ):
+        assert key not in target_config
+
+
+def test_deepseek_v4_pro_0813_w4a8_static_profile_rejects_910b(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    model_name = "DeepSeek-V4-Pro-0813-w4a8"
+    model_info = _FakeModelInfo(model_name, "DeepseekV4ForCausalLM")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": model_name,
+        "model_path": f"/models/{model_name}",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "device_count": 16,
+        "nnodes": 2,
+        "node_rank": 0,
+    }
+
+    config = config_loader._get_model_specific_config(
+        {"device": "ascend", "details": [{"name": "Ascend910B_64G"}]},
+        params,
+        model_info,
+    )
+    additional_config = _as_dict(config.get("additional_config", {}))
+
+    assert "enable_mc2_hierarchy_comm" not in additional_config
+
+
 def test_final_tp_fallback_does_not_override_explicit_dp_deployment_tp():
     with pytest.raises(ValueError, match="tp_capacity=4"):
         vllm_adapter._prepare_engine_config({

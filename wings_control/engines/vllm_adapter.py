@@ -2529,6 +2529,39 @@ def _is_deepseek_v4_pro_params(
     return False
 
 
+def is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(
+    params: Dict[str, Any],
+    model_info: Optional[ModelIdentifier] = None,
+) -> bool:
+    """精确识别 0813-W4A8 的 910C 双机 16 卡配方。
+
+    通用 V4-Pro 适配仍允许每节点 8/16 卡动态推导 TP；本闸门只承载必须依赖
+    运行时拓扑的 FUSED_MC2 环境变量，层次化 MC2 静态字段由精确 JSON profile
+    承载。这样可防止通信选项扩散到旧模型、A2、单机或其它卡数。
+    架构证据存在且冲突时必须拒绝；权重尚不可读时允许
+    精确模型名/目录名继续命中，避免启动脚本生成阶段因挂载时序漏配。
+    """
+    # 广义闸门保持既有单参数调用契约；精确场景的架构否决在函数末尾结合
+    # model_info 单独完成，避免破坏已有测试和外部 monkeypatch。
+    if not is_deepseek_v4_pro_adapted_scope(params):
+        return False
+    if _safe_int(params.get("device_count")) != 16:
+        return False
+
+    target_name = "deepseek-v4-pro-0813-w4a8"
+    identity_matches = any(
+        str(value or "")
+        .strip()
+        .rstrip("/\\")
+        .replace("\\", "/")
+        .rsplit("/", 1)[-1]
+        .lower()
+        == target_name
+        for value in (params.get("model_name"), params.get("model_path"))
+    )
+    return identity_matches and _deepseek_v4_arch_matches(params, model_info) is not False
+
+
 def _build_deepseek_v4_flash_env(params: Dict[str, Any]) -> List[str]:
     """构建 DeepSeek-V4-Flash A2/A3 vLLM-Ascend 专属环境变量。
 

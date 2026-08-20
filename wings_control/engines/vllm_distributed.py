@@ -192,9 +192,13 @@ def _build_ray_worker_commands(params: Dict[str, Any], ctx: DistScriptCtx) -> Li
     return parts
 
 
-def _build_deepseek_v4_pro_dp_env_commands(net_if: str) -> List[str]:
+def _build_deepseek_v4_pro_dp_env_commands(
+    net_if: str,
+    *,
+    disable_fused_mc2: bool = False,
+) -> List[str]:
     """DeepSeek-V4-Pro 双机参考脚本要求固定的前置 export 集合。"""
-    return [
+    env_commands = [
         'export HCCL_OP_EXPANSION_MODE="AIV"',
         f"export HCCL_IF_IP={_DEEPSEEK_V4_PRO_HCCL_IF_IP}",
         f"export GLOO_SOCKET_IFNAME={net_if}",
@@ -206,8 +210,14 @@ def _build_deepseek_v4_pro_dp_env_commands(net_if: str) -> List[str]:
         "export OMP_NUM_THREADS=10",
         "export TASK_QUEUE_ENABLE=1",
         "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
-        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
     ]
+    # 旧 V4-Pro 配方要求 export 集合严格不含 FUSED_MC2；只有精确的
+    # 0813-W4A8 910C 双机 16 卡命令显式关闭 fused replacement。FUSED 必须位于
+    # FLASHCOMM1 之前，与双机参考脚本的最终 export 顺序保持一致。
+    if disable_fused_mc2:
+        env_commands.append("export VLLM_ASCEND_ENABLE_FUSED_MC2=0")
+    env_commands.append("export VLLM_ASCEND_ENABLE_FLASHCOMM1=1")
+    return env_commands
 
 
 def _resolve_ascend_dp_env_defaults(is_glm5_dp: bool) -> tuple[str, str, str]:
@@ -333,8 +343,13 @@ def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[s
     is_v4_pro_dp = vllm_adapter.is_deepseek_v4_pro_adapted_scope(params)
     if is_v4_pro_dp:
         # DeepSeek-V4-Pro 双机对齐参考 start_1/start_2：前置 export 变量名必须一致，
-        # 不继承通用 DP 的 whitelist/timeout，也不追加 multi-block/multi-groups/FUSED_MC2。
-        return _build_deepseek_v4_pro_dp_env_commands(net_if)
+        # 不继承通用 DP 的 whitelist/timeout；仅精确 0813-W4A8 配方追加 FUSED_MC2=0。
+        return _build_deepseek_v4_pro_dp_env_commands(
+            net_if,
+            disable_fused_mc2=(
+                vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(params)
+            ),
+        )
     if vllm_adapter.is_deepseek_v32_w8a8_official_scope(params):
         return _build_deepseek_v32_official_dp_env_commands(params, net_if)
     env_defaults = _resolve_ascend_dp_env_defaults(is_glm5_dp)

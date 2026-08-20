@@ -1834,6 +1834,236 @@ def test_deepseek_v4_pro_dp_env_matches_reference_script(monkeypatch):
     assert vllm_adapter._build_deepseek_v4_pro_env(params) == []
 
 
+def test_deepseek_v4_pro_0813_w4a8_dp_env_adds_fused_mc2_disable_only_for_16_cards(
+    monkeypatch,
+):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Pro-0813-w4a8",
+        "model_path": "/models/DeepSeek-V4-Pro-0813-w4a8",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "device_count": 16,
+        "nnodes": 2,
+        "node_rank": 0,
+        "_smart_card_token": "910c",
+    }
+
+    target_env = vllm_distributed._build_ascend_dp_env_commands(params, "enp196s0f0")
+    assert target_env == [
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+        "export HCCL_IF_IP=${POD_IP:-${RANK_IP:-$(hostname -i | awk '{print $1}')}}",
+        "export GLOO_SOCKET_IFNAME=enp196s0f0",
+        "export TP_SOCKET_IFNAME=enp196s0f0",
+        "export HCCL_SOCKET_IFNAME=enp196s0f0",
+        "export HCCL_BUFFSIZE=2048",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export TASK_QUEUE_ENABLE=1",
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        "export VLLM_ASCEND_ENABLE_FUSED_MC2=0",
+        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+    ]
+
+    eight_card_env = vllm_distributed._build_ascend_dp_env_commands(
+        {**params, "device_count": 8},
+        "enp196s0f0",
+    )
+    assert "export VLLM_ASCEND_ENABLE_FUSED_MC2=0" not in eight_card_env
+
+
+@pytest.mark.parametrize(
+    ("node_rank", "network_interface", "local_ip"),
+    [
+        (0, "enp196s0f0", "7.6.28.252"),
+        (1, "enp196s0f1", "7.6.28.253"),
+    ],
+)
+def test_deepseek_v4_pro_0813_w4a8_production_launcher_matches_dual_node_recipe(
+    monkeypatch,
+    tmp_path,
+    node_rank,
+    network_interface,
+    local_ip,
+):
+    for env_name in (
+        "ENABLE_SPECULATIVE_DECODE",
+        "ENABLE_SPARSE",
+        "ENABLE_KV_OFFLOAD",
+        "ENABLE_KV_MEM_OFFLOAD",
+        "ENABLE_KV_DISK_OFFLOAD",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    monkeypatch.setenv("NETWORK_INTERFACE", network_interface)
+    monkeypatch.setenv("POD_IP", local_ip)
+    monkeypatch.setenv("RANK_IP", local_ip)
+    monkeypatch.setenv("SERVED_MODEL_NAME", "dsv4")
+
+    hardware_file = tmp_path / f"hardware_info_rank{node_rank}.json"
+    hardware_file.write_text(
+        json.dumps(
+            {
+                "device": "ascend",
+                "count": 16,
+                "hardware_family": "Ascend910C",
+                "details": [
+                    {
+                        "device_id": index,
+                        "name": "Ascend910C",
+                        "total_memory": 64,
+                        "free_memory": 60,
+                        "used_memory": 4,
+                    }
+                    for index in range(16)
+                ],
+                "units": "GB",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / f"advanced_features_rank{node_rank}.json"),
+    )
+
+    model_dir = tmp_path / "DeepSeek-V4-Pro-0813-w4a8"
+    model_dir.mkdir(exist_ok=True)
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["DeepseekV4ForCausalLM"],
+                "_name_or_path": "DeepSeek-V4-Pro-0813-w4a8",
+                "model_type": "deepseek_v4",
+                "quantization_config": {"quant_method": "w4a8"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    argv = [
+        "--model-name", "DeepSeek-V4-Pro-0813-w4a8",
+        "--model-path", str(model_dir),
+        "--engine", "vllm_ascend",
+        "--device-count", "16",
+        "--model-type", "llm",
+        "--host", "0.0.0.0",
+        "--port", "8900",
+        "--enable-auto-tool-choice",
+        "--enable-auto-think-choice",
+        "--distributed",
+        "--nnodes", "2",
+        "--node-rank", str(node_rank),
+        "--node-ips", "7.6.28.252,7.6.28.253",
+        "--nodes", "7.6.28.252,7.6.28.253",
+        "--master-ip", "7.6.28.252",
+        "--head-node-addr", "7.6.28.252",
+        "--distributed-executor-backend", "dp_deployment",
+    ]
+    launch_args = parse_launch_args(argv)
+    port_plan = derive_port_plan(
+        port=launch_args.port,
+        enable_reason_proxy=False,
+        health_port=19000,
+    )
+
+    plan = wings_entry.build_launcher_plan(launch_args, port_plan)
+    exec_lines = [
+        line
+        for line in plan.command.splitlines()
+        if "vllm serve" in line and not line.lstrip().startswith("echo ")
+    ]
+    # 生产脚本会保留一次同参数崩溃重试；逐次启动各自只能出现一份配方，
+    # 且重试命令必须与首次命令完全一致，避免容错分支悄然丢参数。
+    assert len(exec_lines) == 2
+    assert exec_lines[0] == exec_lines[1]
+    exec_line = exec_lines[0]
+    exports = [line for line in plan.command.splitlines() if line.startswith("export ")]
+    launch_attempts = len(exec_lines)
+
+    assert plan.merged_params["distributed_executor_backend"] == "dp_deployment"
+    assert plan.merged_params.get("_smart_feats") == []
+    for expected_export in (
+        'export HCCL_OP_EXPANSION_MODE="AIV"',
+        "export HCCL_IF_IP=${POD_IP:-${RANK_IP:-$(hostname -i | awk '{print $1}')}}",
+        "export HCCL_BUFFSIZE=2048",
+        "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=10",
+        "export TASK_QUEUE_ENABLE=1",
+        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        "export VLLM_ASCEND_ENABLE_FUSED_MC2=0",
+        "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
+    ):
+        assert exports.count(expected_export) == launch_attempts
+    for env_name, expected in (
+        ("GLOO_SOCKET_IFNAME", network_interface),
+        ("TP_SOCKET_IFNAME", network_interface),
+        ("HCCL_SOCKET_IFNAME", network_interface),
+    ):
+        assert exports.count(f"export {env_name}={expected}") == launch_attempts
+    for forbidden_env in (
+        "HCCL_WHITELIST_DISABLE",
+        "HCCL_CONNECT_TIMEOUT",
+        "HCCL_EXEC_TIMEOUT",
+        "USE_MULTI_BLOCK_POOL",
+        "USE_MULTI_GROUPS_KV_CACHE",
+    ):
+        assert not any(forbidden_env in line for line in exports)
+
+    for expected_cli in (
+        "--max-model-len 135000",
+        "--max-num-batched-tokens 4096",
+        "--gpu-memory-utilization 0.9",
+        "--max-num-seqs 32",
+        "--enable-expert-parallel",
+        "--quantization ascend",
+        "--block-size 128",
+        "--async-scheduling",
+        "--safetensors-load-strategy prefetch",
+        "--tokenizer-mode deepseek_v4",
+        "--tool-call-parser deepseek_v4",
+        "--enable-auto-tool-choice",
+        "--reasoning-parser deepseek_v4",
+        "--served-model-name dsv4",
+        "--tensor-parallel-size 16",
+        "--data-parallel-address 7.6.28.252",
+        "--data-parallel-rpc-port 13399",
+        "--data-parallel-size 2",
+        "--data-parallel-size-local 1",
+        f"--data-parallel-start-rank {node_rank}",
+    ):
+        assert expected_cli in exec_line
+    assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
+    assert '"enable_npugraph_ex":true' in exec_line
+    assert '"enable_static_kernel":false' in exec_line
+    assert '"enable_cpu_binding":true' in exec_line
+    assert '"enable_mc2_hierarchy_comm":true' in exec_line
+    assert '"multistream_overlap_shared_expert":true' in exec_line
+    for forbidden_cli in (
+        "--speculative-config",
+        "--hf-overrides",
+        "--enforce-eager",
+    ):
+        assert forbidden_cli not in exec_line
+
+    if node_rank == 0:
+        assert "--headless" not in exec_line
+        # launcher 的既有服务发现契约会将 0.0.0.0 收敛为可路由 Pod IP。
+        assert f"--host {local_ip}" in exec_line
+        assert "--host 0.0.0.0" not in exec_line
+        assert "--port 8900" in exec_line
+    else:
+        assert "--headless" in exec_line
+        assert "--host " not in exec_line
+        assert "--port " not in exec_line
+
+
 @pytest.mark.parametrize(
     ("platform", "expected_omp", "expected_connect_timeout", "extra_exports"),
     [

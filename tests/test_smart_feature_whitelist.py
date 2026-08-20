@@ -449,6 +449,17 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
 
 
+def test_deepseek_v4_pro_0813_w4a8_ascend_does_not_inherit_mtp_features():
+    # 0813-W4A8 参考命令不含 MTP/IndexCache；独立 defaults profile 不应复用
+    # 旧 w4a8-mtp 的 SmartFeature 白名单身份。
+    assert model_utils.resolve_feature_whitelist(
+        "vllm_ascend",
+        "DeepSeek-V4-Pro-0813-w4a8",
+        "/models/DeepSeek-V4-Pro-0813-w4a8",
+        "910c",
+    ) == frozenset()
+
+
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
 def test_deepseek_v4_flash_0731_h20_uses_exact_native_offload(card_token):
     """0731 仅通过精确 H20 规则启用 native offload，避免继承通用模型行。"""

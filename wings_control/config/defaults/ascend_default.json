@@ -343,6 +343,33 @@
             "use_vllm_serve": true
           }
         },
+        "DeepSeek-V4-Pro-0813-w4a8": {
+          "card_tokens": ["910c"],
+          "vllm_ascend_distributed": {
+            "max_model_len": 135000,
+            "max_num_batched_tokens": 4096,
+            "gpu_memory_utilization": 0.9,
+            "max_num_seqs": 32,
+            "enable_expert_parallel": true,
+            "quantization": "ascend",
+            "block_size": 128,
+            "async_scheduling": true,
+            "safetensors_load_strategy": "prefetch",
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_mc2_hierarchy_comm": true,
+              "multistream_overlap_shared_expert": true,
+              "ascend_compilation_config": {
+                "enable_npugraph_ex": true,
+                "enable_static_kernel": false
+              }
+            },
+            "tokenizer_mode": "deepseek_v4",
+            "tool_call_parser": "deepseek_v4",
+            "use_vllm_serve": true
+          }
+        },
         "DeepSeek-V4-Pro-w4a8-mtp": {
           "vllm_ascend_distributed": {
             "max_model_len": 135000,

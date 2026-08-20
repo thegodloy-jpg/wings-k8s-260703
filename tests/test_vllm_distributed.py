@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
+from core import config_loader  # noqa: E402
 from engines import vllm_distributed  # noqa: E402
 from utils.vllm_helpers import DistScriptCtx, DpDeploymentTopology  # noqa: E402
 
@@ -129,6 +130,27 @@ class _FakeKimiK3ModelIdentifier:
         pass
 
 
+class _FakeDeepSeekV4Pro0813W4A8Identifier:
+    model_architecture = "DeepseekV4ForCausalLM"
+    model_quantize = "w4a8"
+    config = {
+        "architectures": ["DeepseekV4ForCausalLM"],
+        "_name_or_path": "DeepSeek-V4-Pro-0813-w4a8",
+    }
+
+    def __init__(self, model_name, model_path, model_type):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.model_type = model_type
+
+    def identify_model_architecture(self):
+        return self.model_architecture
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
+
+
 def _kimi_k3_910c_params(node_rank):
     return {
         "engine": "vllm_ascend",
@@ -144,6 +166,40 @@ def _kimi_k3_910c_params(node_rank):
         "_kimi_k3_910c_dp": True,
         "_preserve_dp_worker_port": True,
     }
+
+
+def _deepseek_v4_pro_0813_w4a8_910c_params(node_rank):
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Pro-0813-w4a8",
+        "model_path": "/models/DeepSeek-V4-Pro-0813-w4a8",
+        "model_type": "llm",
+        "served_model_name": "dsv4",
+        "device_count": 16,
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "nnodes": 2,
+        "node_rank": node_rank,
+        "master_ip": "7.6.28.252",
+        "node_ips": "7.6.28.252,7.6.28.253",
+        "rpc_port": 13399,
+        "host": "0.0.0.0",
+        "port": 8900,
+        "enable_auto_tool_choice": True,
+        "enable_auto_think_choice": True,
+        "_smart_card_token": "910c",
+    }
+    model_info = _FakeDeepSeekV4Pro0813W4A8Identifier(
+        params["model_name"],
+        params["model_path"],
+        params["model_type"],
+    )
+    params["engine_config"] = config_loader._get_model_specific_config(
+        {"device": "ascend", "details": [{"name": "Ascend910C"}]},
+        params,
+        model_info,
+    )
+    return params
 
 
 def test_kimi_k3_mp_rank0_keeps_frontend_and_native_topology(monkeypatch):
@@ -363,6 +419,91 @@ def test_kimi_k3_w4a8_910c_rank0_matches_standard_dp_recipe(monkeypatch):
     assert "--enable-auto-tool-choice" in final_command
     assert "--reasoning-parser kimi_k3" in final_command
     assert "--tool-call-parser kimi_k3" in final_command
+
+
+@pytest.mark.parametrize(
+    ("node_rank", "network_interface", "local_ip"),
+    [
+        (0, "enp196s0f0", "7.6.28.252"),
+        (1, "enp196s0f1", "7.6.28.253"),
+    ],
+)
+def test_deepseek_v4_pro_0813_w4a8_910c_final_rank_commands_match_recipe(
+    monkeypatch,
+    node_rank,
+    network_interface,
+    local_ip,
+):
+    vllm_adapter = vllm_distributed._import_vllm_adapter()
+    monkeypatch.setattr(
+        vllm_adapter,
+        "ModelIdentifier",
+        _FakeDeepSeekV4Pro0813W4A8Identifier,
+    )
+    monkeypatch.setattr(
+        vllm_distributed,
+        "ModelIdentifier",
+        _FakeDeepSeekV4Pro0813W4A8Identifier,
+    )
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    monkeypatch.setenv("NETWORK_INTERFACE", network_interface)
+    monkeypatch.setenv("POD_IP", local_ip)
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("PORT", "8900")
+    monkeypatch.setenv("SERVED_MODEL_NAME", "dsv4")
+
+    script = vllm_adapter.build_start_script(
+        _deepseek_v4_pro_0813_w4a8_910c_params(node_rank)
+    )
+    exports = [line for line in script.splitlines() if line.startswith("export ")]
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert exports.count("export VLLM_ASCEND_ENABLE_FUSED_MC2=0") == 1
+    assert exports.count("export VLLM_ASCEND_ENABLE_FLASHCOMM1=1") == 1
+    # 脚本保留运行时展开表达式，由各节点注入的 POD_IP/RANK_IP 得到 local_ip。
+    assert (
+        "export HCCL_IF_IP=${POD_IP:-${RANK_IP:-$(hostname -i | awk '{print $1}')}}"
+        in exports
+    )
+    assert f"export GLOO_SOCKET_IFNAME={network_interface}" in exports
+    assert f"export TP_SOCKET_IFNAME={network_interface}" in exports
+    assert f"export HCCL_SOCKET_IFNAME={network_interface}" in exports
+
+    for expected in (
+        "--max-model-len 135000",
+        "--max-num-batched-tokens 4096",
+        "--gpu-memory-utilization 0.9",
+        "--max-num-seqs 32",
+        "--enable-expert-parallel",
+        "--quantization ascend",
+        "--block-size 128",
+        "--async-scheduling",
+        "--safetensors-load-strategy prefetch",
+        "--tokenizer-mode deepseek_v4",
+        "--tool-call-parser deepseek_v4",
+        "--reasoning-parser deepseek_v4",
+        "--enable-auto-tool-choice",
+        "--served-model-name dsv4",
+        "--tensor-parallel-size 16",
+        "--data-parallel-address 7.6.28.252",
+        "--data-parallel-rpc-port 13399",
+        "--data-parallel-size 2",
+        "--data-parallel-size-local 1",
+        f"--data-parallel-start-rank {node_rank}",
+    ):
+        assert expected in exec_line
+    assert '"enable_mc2_hierarchy_comm":true' in exec_line
+    assert "--speculative-config" not in exec_line
+    assert "--hf-overrides" not in exec_line
+
+    if node_rank == 0:
+        assert "--headless" not in exec_line
+        assert "--host 0.0.0.0" in exec_line
+        assert "--port 8900" in exec_line
+    else:
+        assert "--headless" in exec_line
+        assert "--host " not in exec_line
+        assert "--port " not in exec_line
 
 
 @pytest.mark.parametrize("node_rank", [0, 1, 2, 3])
