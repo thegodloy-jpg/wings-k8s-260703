@@ -665,6 +665,20 @@
             "enable_prefix_caching": true
           }
         },
+        "Qwen3.8-27B-H20": {
+          "exact_model_names": ["qwen3.8-27b"],
+          "card_tokens": ["h20-96", "h20-141"],
+          "vllm": {
+            "use_vllm_serve": true,
+            "tool_call_parser": "qwen3_coder",
+            "mm_encoder_tp_mode": "data"
+          },
+          "vllm_distributed": {
+            "use_vllm_serve": true,
+            "tool_call_parser": "qwen3_coder",
+            "mm_encoder_tp_mode": "data"
+          }
+        },
         "Qwen3.8-27B-FP8": {
           "exact_model_names": ["qwen3.8-27b-fp8"],
           "card_tokens": ["rtxpro5000-72"],
