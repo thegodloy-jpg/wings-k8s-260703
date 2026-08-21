@@ -3,6 +3,7 @@ import json
 import logging
 import inspect
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -1828,7 +1829,7 @@ def test_deepseek_v4_pro_dp_env_matches_reference_script(monkeypatch):
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=10",
         "export TASK_QUEUE_ENABLE=1",
-        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
         "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
     ]
     assert vllm_adapter._build_deepseek_v4_pro_env(params) == []
@@ -1863,7 +1864,7 @@ def test_deepseek_v4_pro_0813_w4a8_dp_env_adds_fused_mc2_disable_only_for_16_car
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=10",
         "export TASK_QUEUE_ENABLE=1",
-        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
         "export VLLM_ASCEND_ENABLE_FUSED_MC2=0",
         "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
     ]
@@ -1873,6 +1874,43 @@ def test_deepseek_v4_pro_0813_w4a8_dp_env_adds_fused_mc2_disable_only_for_16_car
         "enp196s0f0",
     )
     assert "export VLLM_ASCEND_ENABLE_FUSED_MC2=0" not in eight_card_env
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a native bash runtime")
+def test_deepseek_v4_pro_dp_ld_preload_is_safe_with_bash_nounset(monkeypatch):
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Pro-0813-w4a8",
+        "model_path": "/models/DeepSeek-V4-Pro-0813-w4a8",
+        "model_type": "llm",
+        "distributed": True,
+        "distributed_executor_backend": "dp_deployment",
+        "device_count": 16,
+        "nnodes": 2,
+        "node_rank": 0,
+        "_smart_card_token": "910c",
+    }
+    env_commands = vllm_distributed._build_ascend_dp_env_commands(params, "eth0")
+    ld_preload = next(cmd for cmd in env_commands if cmd.startswith("export LD_PRELOAD="))
+
+    # 真实启动脚本使用 set -u；分别覆盖基础镜像未定义变量和已有 preload 链两种情况。
+    subprocess.run(
+        [
+            "bash",
+            "-u",
+            "-c",
+            (
+                f'unset LD_PRELOAD; {ld_preload}; '
+                '[[ "$LD_PRELOAD" == "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2" ]]; '
+                'LD_PRELOAD=/tmp/existing.so; '
+                f'{ld_preload}; '
+                '[[ "$LD_PRELOAD" == '
+                '"/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:/tmp/existing.so" ]]'
+            ),
+        ],
+        check=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1996,11 +2034,12 @@ def test_deepseek_v4_pro_0813_w4a8_production_launcher_matches_dual_node_recipe(
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=10",
         "export TASK_QUEUE_ENABLE=1",
-        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
         "export VLLM_ASCEND_ENABLE_FUSED_MC2=0",
         "export VLLM_ASCEND_ENABLE_FLASHCOMM1=1",
     ):
         assert exports.count(expected_export) == launch_attempts
+    assert "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" not in plan.command
     for env_name, expected in (
         ("GLOO_SOCKET_IFNAME", network_interface),
         ("TP_SOCKET_IFNAME", network_interface),

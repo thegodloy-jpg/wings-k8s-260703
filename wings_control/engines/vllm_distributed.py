@@ -209,7 +209,9 @@ def _build_deepseek_v4_pro_dp_env_commands(
         "export OMP_PROC_BIND=false",
         "export OMP_NUM_THREADS=10",
         "export TASK_QUEUE_ENABLE=1",
-        "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD",
+        # start_command.sh 启用 set -u；基础镜像未定义 LD_PRELOAD 时，裸展开会在
+        # vLLM 启动前直接退出。仅在旧值非空时追加冒号和旧值，同时保留已有 preload 链。
+        'export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"',
     ]
     # 旧 V4-Pro 配方要求 export 集合严格不含 FUSED_MC2；只有精确的
     # 0813-W4A8 910C 双机 16 卡命令显式关闭 fused replacement。FUSED 必须位于
