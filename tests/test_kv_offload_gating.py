@@ -1835,7 +1835,7 @@ def test_deepseek_v4_pro_dp_env_matches_reference_script(monkeypatch):
     assert vllm_adapter._build_deepseek_v4_pro_env(params) == []
 
 
-def test_deepseek_v4_pro_0813_w4a8_dp_env_adds_fused_mc2_disable_only_for_16_cards(
+def test_deepseek_v4_pro_0813_w4a8_dp_env_adds_fused_mc2_without_card_count_gate(
     monkeypatch,
 ):
     monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")
@@ -1873,7 +1873,7 @@ def test_deepseek_v4_pro_0813_w4a8_dp_env_adds_fused_mc2_disable_only_for_16_car
         {**params, "device_count": 8},
         "enp196s0f0",
     )
-    assert "export VLLM_ASCEND_ENABLE_FUSED_MC2=0" not in eight_card_env
+    assert "export VLLM_ASCEND_ENABLE_FUSED_MC2=0" in eight_card_env
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires a native bash runtime")

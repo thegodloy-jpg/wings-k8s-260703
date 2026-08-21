@@ -2154,12 +2154,16 @@ def test_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope_is_exact(monkeypatch):
         "_smart_card_token": "910c",
     }
 
-    assert vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(target)
+    # 通信闸门只识别模型/芯片/双机边界，不重复硬编码本机卡数；实际16卡拓扑
+    # 仍由运行时公式稳定推导为 TP16 / DP-local1 / 全局DP2。
+    for device_count in (8, 16):
+        assert vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(
+            {**target, "device_count": device_count}
+        )
 
     negative_overrides = (
         {"model_name": "DeepSeek-V4-Pro-w4a8-mtp", "model_path": "/models/DeepSeek-V4-Pro-w4a8-mtp"},
         {"model_name": "DeepSeek-V4-Pro-0812-w4a8", "model_path": "/models/DeepSeek-V4-Pro-0812-w4a8"},
-        {"device_count": 8},
         {"nnodes": 1},
         {"distributed": False},
         {"engine": "vllm"},
