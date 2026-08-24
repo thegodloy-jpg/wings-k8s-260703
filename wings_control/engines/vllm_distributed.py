@@ -665,17 +665,18 @@ def _is_qwen38_h20_tuned_mp(params: Dict[str, Any]) -> bool:
 
 def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
     """构造 NVIDIA 原生 MP 通信环境，并保留每个节点的本地 IP/网卡配置。"""
+    qwen38_reference_env = _is_qwen38_h20_tuned_mp(params)
     net_if = os.getenv(
         "NETWORK_INTERFACE",
         os.getenv("NCCL_SOCKET_IFNAME", os.getenv("GLOO_SOCKET_IFNAME", "eth0")),
     )
     nccl_if = os.getenv("NCCL_SOCKET_IFNAME", net_if)
     gloo_if = os.getenv("GLOO_SOCKET_IFNAME", net_if)
-    env_commands = [
-        _SH_VLLM_HOST,
+    env_commands = [] if qwen38_reference_env else [_SH_VLLM_HOST]
+    env_commands.extend([
         f"export NCCL_SOCKET_IFNAME={shlex.quote(nccl_if)}",
         f"export GLOO_SOCKET_IFNAME={shlex.quote(gloo_if)}",
-    ]
+    ])
     if _is_kimi_k3_h20_tuned_mp(params):
         # 仅该定制镜像配方要求 V2 runner、Rust frontend 和无限 memlock；其它 MP 场景保持原样。
         env_commands.extend([
@@ -683,10 +684,15 @@ def _build_mp_env_commands(params: Dict[str, Any]) -> List[str]:
             "export VLLM_USE_V2_MODEL_RUNNER=1",
             "export VLLM_USE_RUST_FRONTEND=1",
         ])
-    elif _is_qwen38_h20_tuned_mp(params):
-        # 2.4T 权重在四机冷启动时可能超过 vLLM 默认的 600 秒；仅放宽 EngineCore
-        # 就绪等待，不继承 Kimi 专属的 V2 runner / Rust frontend 运行时开关。
-        env_commands.append("export VLLM_ENGINE_READY_TIMEOUT_S=3600")
+    elif qwen38_reference_env:
+        # 仅该四机 H20 镜像配方使用补丁版 DP KV-aware、V2 runner 和 Rust frontend；
+        # 同时按参考容器环境移除额外的 VLLM_HOST_IP，避免其它 MP 场景被连带改写。
+        env_commands.extend([
+            "export VLLM_ENGINE_READY_TIMEOUT_S=10800",
+            "export VLLM_DP_LB_KV_CACHE_AWARE=1",
+            "export VLLM_USE_V2_MODEL_RUNNER=1",
+            "export VLLM_USE_RUST_FRONTEND=1",
+        ])
     return env_commands
 
 
@@ -695,14 +701,17 @@ def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: 
     if ctx.is_ascend:
         raise ValueError("vLLM native MP adaptation is only supported for NVIDIA")
 
-    raw_master_port = params.get("master_port")
-    if raw_master_port in (None, ""):
-        raw_master_port = get_master_port()
-    if raw_master_port in (None, ""):
-        raw_master_port = 29501
-    master_port = _safe_int(raw_master_port)
-    if master_port is None or not 1 <= master_port <= 65535:
-        raise ValueError(f"vLLM MP master_port must be in range 1..65535: {raw_master_port}")
+    qwen38_reference_cli = _is_qwen38_h20_tuned_mp(params)
+    master_port = None
+    if not qwen38_reference_cli:
+        raw_master_port = params.get("master_port")
+        if raw_master_port in (None, ""):
+            raw_master_port = get_master_port()
+        if raw_master_port in (None, ""):
+            raw_master_port = 29501
+        master_port = _safe_int(raw_master_port)
+        if master_port is None or not 1 <= master_port <= 65535:
+            raise ValueError(f"vLLM MP master_port must be in range 1..65535: {raw_master_port}")
 
     mp_cmd = ctx.cmd
     for flag in (
@@ -721,8 +730,15 @@ def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: 
         speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
     mp_cmd = f"{mp_cmd}{speculative_extra}{sparse_args}"
 
-    # Worker 不启动 OpenAI frontend；通用前端参数沿用既有清理边界。
-    if ctx.node_rank != 0:
+    if qwen38_reference_cli:
+        # 精确复现四机 H20 参考命令：所有 rank 保留 port/parser/auto-tool，worker
+        # 只额外进入 headless；host 和页面 thinking kwargs 不属于该参考 CLI。
+        for flag in ("--host", "--default-chat-template-kwargs"):
+            mp_cmd = _strip_cli_flag(mp_cmd, flag)
+        if ctx.node_rank != 0:
+            mp_cmd = f"{mp_cmd} --headless"
+    elif ctx.node_rank != 0:
+        # 其它 MP worker 不启动 OpenAI frontend，继续沿用通用前端参数清理边界。
         frontend_only_flags = [
             "--host",
             "--port",
@@ -734,13 +750,20 @@ def _build_mp_commands(params: Dict[str, Any], ctx: DistScriptCtx, sparse_args: 
         mp_cmd = re.sub(r"\s+--enable-auto-tool-choice\b", "", mp_cmd)
         mp_cmd = f"{mp_cmd} --headless"
 
-    topology_args = (
-        " --distributed-executor-backend mp"
-        f" --nnodes {int(ctx.nnodes)}"
-        f" --node-rank {int(ctx.node_rank)}"
-        f" --master-addr {shlex.quote(ctx.head_addr)}"
-        f" --master-port {master_port}"
-    )
+    if qwen38_reference_cli:
+        topology_args = (
+            f" --nnodes {int(ctx.nnodes)}"
+            f" --node-rank {int(ctx.node_rank)}"
+            f" --master-addr {shlex.quote(ctx.head_addr)}"
+        )
+    else:
+        topology_args = (
+            " --distributed-executor-backend mp"
+            f" --nnodes {int(ctx.nnodes)}"
+            f" --node-rank {int(ctx.node_rank)}"
+            f" --master-addr {shlex.quote(ctx.head_addr)}"
+            f" --master-port {master_port}"
+        )
     return [*_build_mp_env_commands(params), f"exec {mp_cmd}{topology_args}"]
 
 

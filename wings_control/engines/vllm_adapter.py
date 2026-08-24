@@ -4967,12 +4967,16 @@ def _prepare_effective_kv_sparse_args(params: Dict[str, Any], engine: str) -> st
     if params.get("enable_sparse"):
         return _build_kv_sparse_cmd(params, engine)
 
-    # 仅清理精确白名单拥有的 FP8，避免误删其它来源显式配置的 kv_cache_dtype。
+    # FP8 KV 统一归 sparse 所有：关闭时同时覆盖纯 strategy=fp8 和
+    # IndexCache+FP8 两种白名单表达，避免 fallback 或显式参数绕过特性开关。
     sparse_row = resolve_feature_whitelist_row_from_params(params, engine, "sparse")
     engine_config = params.get("engine_config") or {}
     if (
         sparse_row
-        and sparse_row.get("kv_cache_dtype") == "fp8"
+        and (
+            sparse_row.get("strategy") == "fp8"
+            or sparse_row.get("kv_cache_dtype") == "fp8"
+        )
         and engine_config.get("kv_cache_dtype") == "fp8"
     ):
         engine_config.pop("kv_cache_dtype", None)

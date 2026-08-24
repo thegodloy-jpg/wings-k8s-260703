@@ -1686,8 +1686,9 @@ def _build_advanced_feature_fallback_cmd(merged: dict) -> str:
                 "[AdvFeature] Removed kv_transfer_config "
                 "from engine_config for fallback (LMCache Offload was enabled)"
             )
-        if ec_copy != original_ec:
-            merged_no_features["engine_config"] = ec_copy
+        # 即使当前无需预删 spec/offload 字段，也必须隔离 fallback 的 engine_config；
+        # sparse adapter 会在重建命令时清理 FP8，不能反向污染原始高级特性状态。
+        merged_no_features["engine_config"] = ec_copy
     # kv_transfer_config 由 config_loader._set_kv_cache_config() 注入到
     # engine_config 嵌套字典中，需要从正确的层级移除。
     # 使用浅拷贝 engine_config 避免污染原始 merged 数据。

@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
-from core import config_loader  # noqa: E402
+from core import config_loader, wings_entry  # noqa: E402
 from core.start_args_compat import parse_launch_args  # noqa: E402
 from engines import vllm_adapter, vllm_distributed  # noqa: E402
 from utils import model_utils  # noqa: E402
@@ -95,8 +95,9 @@ def test_qwen38_h20_selects_exact_distributed_defaults(model_name, card_name):
         "max_model_len": 133000,
         "max_cudagraph_capture_size": 256,
         "gpu_memory_utilization": 0.9,
-        "max_num_seqs": 8,
-        "max_num_batched_tokens": 4096,
+        "max_num_seqs": 16,
+        "max_num_batched_tokens": 8192,
+        "enable_prefix_caching": True,
         "enable_expert_parallel": True,
         "all2all_backend": "allgather_reducescatter",
         "tool_call_parser": "qwen3_coder",
@@ -174,15 +175,27 @@ def test_qwen38_runtime_parallelism_keeps_explicit_env_precedence(monkeypatch):
 
 @pytest.mark.parametrize("model_name", [_MODEL_NAME, f"Qwen/{_MODEL_NAME}"])
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
-def test_qwen38_four_node_h20_mp_adds_engine_ready_timeout(model_name, card_token):
+def test_qwen38_four_node_h20_mp_matches_reference_env(
+    monkeypatch,
+    model_name,
+    card_token,
+):
+    monkeypatch.setenv("NETWORK_INTERFACE", "bond0")
+    monkeypatch.delenv("NCCL_SOCKET_IFNAME", raising=False)
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
     params = _qwen38_route_params(card_token=card_token)
     params["model_name"] = model_name
 
     commands = vllm_distributed._build_mp_env_commands(params)
 
-    assert commands.count("export VLLM_ENGINE_READY_TIMEOUT_S=3600") == 1
-    assert not any("VLLM_USE_V2_MODEL_RUNNER" in command for command in commands)
-    assert not any("VLLM_USE_RUST_FRONTEND" in command for command in commands)
+    assert commands == [
+        "export NCCL_SOCKET_IFNAME=bond0",
+        "export GLOO_SOCKET_IFNAME=bond0",
+        "export VLLM_ENGINE_READY_TIMEOUT_S=10800",
+        "export VLLM_DP_LB_KV_CACHE_AWARE=1",
+        "export VLLM_USE_V2_MODEL_RUNNER=1",
+        "export VLLM_USE_RUST_FRONTEND=1",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -194,13 +207,20 @@ def test_qwen38_four_node_h20_mp_adds_engine_ready_timeout(model_name, card_toke
         {"nnodes": 2},
     ],
 )
-def test_qwen38_engine_ready_timeout_does_not_broaden(overrides):
+def test_qwen38_reference_env_does_not_broaden(overrides):
     params = _qwen38_route_params()
     params.update(overrides)
 
     commands = vllm_distributed._build_mp_env_commands(params)
 
-    assert not any("VLLM_ENGINE_READY_TIMEOUT_S" in command for command in commands)
+    assert any(command.startswith("export VLLM_HOST_IP=") for command in commands)
+    for env_name in (
+        "VLLM_ENGINE_READY_TIMEOUT_S",
+        "VLLM_DP_LB_KV_CACHE_AWARE",
+        "VLLM_USE_V2_MODEL_RUNNER",
+        "VLLM_USE_RUST_FRONTEND",
+    ):
+        assert not any(command.startswith(f"export {env_name}=") for command in commands)
 
 
 @pytest.mark.parametrize(("nnodes", "device_count"), [(2, 8), (4, 4), (4, 0)])
@@ -304,25 +324,38 @@ def test_qwen38_reasoning_parser_is_vllm_only():
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
-def test_qwen38_h20_spec_whitelist_uses_mtp3_only(card_token):
-    row = model_utils.resolve_feature_whitelist_row(
+def test_qwen38_h20_spec_and_sparse_whitelists_are_exact(card_token):
+    spec_row = model_utils.resolve_feature_whitelist_row(
         "vllm",
         _MODEL_NAME,
         _MODEL_PATH,
         card_token,
         "spec",
     )
+    sparse_row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        _MODEL_NAME,
+        _MODEL_PATH,
+        card_token,
+        "sparse",
+    )
 
-    assert row is not None
-    assert row["arch"] == _ARCHITECTURE
-    assert row["mtp_method"] == "mtp"
-    assert row["mtp_num_speculative_tokens"] == 3
+    assert spec_row is not None
+    assert spec_row["arch"] == _ARCHITECTURE
+    assert spec_row["mtp_method"] == "mtp"
+    assert spec_row["mtp_num_speculative_tokens"] == 3
+    assert sparse_row is not None
+    assert sparse_row["arch"] == _ARCHITECTURE
+    assert sparse_row["strategy"] == "fp8"
     assert model_utils.resolve_feature_whitelist(
         "vllm", _MODEL_NAME, _MODEL_PATH, card_token
-    ) == frozenset({"spec"})
+    ) == frozenset({"sparse", "spec"})
     assert model_utils.resolve_feature_whitelist(
         "vllm", "Qwen3.8-2.4T-A95B", "/models/Qwen3.8-2.4T-A95B", card_token
     ) == frozenset()
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm", _MODEL_NAME, _MODEL_PATH, "h100", "sparse"
+    ) is None
 
 
 @pytest.mark.parametrize("node_rank", [0, 1, 2, 3])
@@ -363,6 +396,7 @@ def test_qwen38_full_config_chain_renders_four_rank_mp_commands(monkeypatch, nod
         "--enable-auto-tool-choice",
         "--enable-auto-think-choice",
         "--enable-speculative-decode",
+        "--enable-sparse",
         "--speculative-decode-model-path", "none",
     ])
     params = config_loader.load_and_merge_configs(
@@ -382,7 +416,8 @@ def test_qwen38_full_config_chain_renders_four_rank_mp_commands(monkeypatch, nod
     assert params["model_name"] == _MODEL_NAME
     assert params["model_path"] == _MODEL_PATH
     assert params["distributed_executor_backend"] == "mp"
-    assert params["_smart_feats"] == ["spec"]
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
+    assert params["_smart_feats"] == ["sparse", "spec"]
     assert params["engine_config"]["tensor_parallel_size"] == 8
     assert params["engine_config"]["data_parallel_size"] == 4
     assert params["engine_config"]["max_model_len"] == 133000
@@ -394,19 +429,18 @@ def test_qwen38_full_config_chain_renders_four_rank_mp_commands(monkeypatch, nod
         " --max-model-len 133000"
         " --max-cudagraph-capture-size 256"
         " --gpu-memory-utilization 0.9"
-        " --max-num-seqs 8"
-        " --max-num-batched-tokens 4096"
+        " --max-num-seqs 16"
+        " --max-num-batched-tokens 8192"
+        " --enable-prefix-caching"
         " --enable-expert-parallel"
         " --tensor-parallel-size 8"
         " --data-parallel-size 4"
         " --all2all-backend allgather_reducescatter"
     )
     topology = (
-        " --distributed-executor-backend mp"
         " --nnodes 4"
         f" --node-rank {node_rank}"
         " --master-addr 7.6.25.57"
-        " --master-port 29501"
     )
     if node_rank == 0:
         expected = (
@@ -415,21 +449,24 @@ def test_qwen38_full_config_chain_renders_four_rank_mp_commands(monkeypatch, nod
             + " --distributed-timeout-seconds 7200"
             + " --cpu-distributed-timeout-seconds 7200"
             + " --reasoning-parser qwen3"
-            + " --host 0.0.0.0"
             + " --port 8001"
             + " --served-model-name qwen3.8"
             + " --enable-auto-tool-choice"
-            + " --default-chat-template-kwargs '{\"enable_thinking\":true}'"
+            + " --kv-cache-dtype fp8"
             + " --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'"
             + topology
         )
     else:
         expected = (
             common
+            + " --tool-call-parser qwen3_coder"
             + " --distributed-timeout-seconds 7200"
             + " --cpu-distributed-timeout-seconds 7200"
+            + " --reasoning-parser qwen3"
+            + " --port 8001"
             + " --served-model-name qwen3.8"
-            + " --default-chat-template-kwargs '{\"enable_thinking\":true}'"
+            + " --enable-auto-tool-choice"
+            + " --kv-cache-dtype fp8"
             + " --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'"
             + " --headless"
             + topology
@@ -473,8 +510,11 @@ def test_qwen38_four_rank_final_mp_commands(monkeypatch, node_rank):
             "max_model_len": 133000,
             "max_cudagraph_capture_size": 256,
             "gpu_memory_utilization": 0.9,
-            "max_num_seqs": 8,
-            "max_num_batched_tokens": 4096,
+            # 即使上层残留了显式 FP8，sparse 关闭态也必须在最终渲染前清掉。
+            "kv_cache_dtype": "fp8",
+            "max_num_seqs": 16,
+            "max_num_batched_tokens": 8192,
+            "enable_prefix_caching": True,
             "enable_expert_parallel": True,
             "tensor_parallel_size": 8,
             "data_parallel_size": 4,
@@ -495,14 +535,15 @@ def test_qwen38_four_rank_final_mp_commands(monkeypatch, node_rank):
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
 
-    assert params["_allowed_smart_feats"] == ["spec"]
+    assert params["_allowed_smart_feats"] == ["sparse", "spec"]
     assert params["_smart_feats"] == ["spec"]
-    assert "export VLLM_HOST_IP=" in script
+    assert "export VLLM_HOST_IP=" not in script
     assert "export NCCL_SOCKET_IFNAME=bond0" in script
     assert "export GLOO_SOCKET_IFNAME=bond0" in script
-    assert "export VLLM_ENGINE_READY_TIMEOUT_S=3600" in script
-    assert "VLLM_USE_V2_MODEL_RUNNER" not in script
-    assert "VLLM_USE_RUST_FRONTEND" not in script
+    assert "export VLLM_ENGINE_READY_TIMEOUT_S=10800" in script
+    assert "export VLLM_DP_LB_KV_CACHE_AWARE=1" in script
+    assert "export VLLM_USE_V2_MODEL_RUNNER=1" in script
+    assert "export VLLM_USE_RUST_FRONTEND=1" in script
     assert "ray start" not in script
     for expected in (
         "--served-model-name qwen3.8",
@@ -510,39 +551,99 @@ def test_qwen38_four_rank_final_mp_commands(monkeypatch, node_rank):
         "--max-model-len 133000",
         "--max-cudagraph-capture-size 256",
         "--gpu-memory-utilization 0.9",
-        "--max-num-seqs 8",
-        "--max-num-batched-tokens 4096",
+        "--max-num-seqs 16",
+        "--max-num-batched-tokens 8192",
+        "--enable-prefix-caching",
         "--enable-expert-parallel",
         "--tensor-parallel-size 8",
         "--data-parallel-size 4",
         "--all2all-backend allgather_reducescatter",
-        "--default-chat-template-kwargs",
         "--distributed-timeout-seconds 7200",
         "--cpu-distributed-timeout-seconds 7200",
-        "--distributed-executor-backend mp",
         "--nnodes 4",
         f"--node-rank {node_rank}",
         "--master-addr 7.6.25.57",
-        "--master-port 29501",
     ):
         assert expected in exec_line
     assert '"method":"mtp"' in exec_line
     assert '"num_speculative_tokens":3' in exec_line
     assert exec_line.count("--speculative-config") == 1
     assert "--kv-cache-dtype" not in exec_line
+    assert "kv_cache_dtype" not in params["engine_config"]
     assert "--kv-transfer-config" not in exec_line
 
-    if node_rank == 0:
-        assert "--headless" not in exec_line
-        assert "--host 0.0.0.0" in exec_line
-        assert "--port 8001" in exec_line
-        assert "--enable-auto-tool-choice" in exec_line
-        assert "--tool-call-parser qwen3_coder" in exec_line
-        assert "--reasoning-parser qwen3" in exec_line
-    else:
-        assert "--headless" in exec_line
-        assert "--host" not in exec_line
-        assert "--port" not in exec_line
-        assert "--enable-auto-tool-choice" not in exec_line
-        assert "--tool-call-parser" not in exec_line
-        assert "--reasoning-parser" not in exec_line
+    assert "--host" not in exec_line
+    assert "--port 8001" in exec_line
+    assert "--enable-auto-tool-choice" in exec_line
+    assert "--tool-call-parser qwen3_coder" in exec_line
+    assert "--reasoning-parser qwen3" in exec_line
+    assert "--default-chat-template-kwargs" not in exec_line
+    assert "--distributed-executor-backend" not in exec_line
+    assert "--master-port" not in exec_line
+    assert ("--headless" in exec_line) is (node_rank != 0)
+
+
+def test_qwen38_sparse_fp8_status_and_fallback_are_consistent(monkeypatch):
+    # FP8 KV 必须由 sparse 有效态拥有；全特性回退后不能残留在重建命令中。
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakeQwen38Identifier)
+    monkeypatch.setattr(
+        wings_entry,
+        "start_engine_service",
+        lambda merged: vllm_adapter.build_start_script(merged),
+    )
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "false")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "false")
+    params = {
+        "engine": "vllm",
+        "model_name": _MODEL_NAME,
+        "model_path": _MODEL_PATH,
+        "model_type": "llm",
+        "device_count": 8,
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": _MODEL_PATH,
+            "speculative_config": {"method": "mtp", "num_speculative_tokens": 3},
+        },
+    }
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 8, "details": [{"name": "NVIDIA H20 141GB"}]},
+    )
+
+    enabled_script = vllm_adapter.build_start_script(params)
+    enabled_exec_line = next(
+        line for line in enabled_script.splitlines() if line.startswith("exec ")
+    )
+    status = wings_entry._resolve_advanced_feature_status("vllm", params)
+    fallback_cmd = wings_entry._build_advanced_feature_fallback_cmd(params)
+
+    assert enabled_exec_line.count("--kv-cache-dtype fp8") == 1
+    assert status["features"]["sparse_kv"] is True
+    assert status["variants"]["sparse_kv"] == "fp8"
+    assert "--kv-cache-dtype" not in fallback_cmd
+    assert "--speculative-config" not in fallback_cmd
+    assert params["engine_config"]["kv_cache_dtype"] == "fp8"
+
+    sparse_only = {
+        "engine": "vllm",
+        "model_name": _MODEL_NAME,
+        "model_path": _MODEL_PATH,
+        "model_type": "llm",
+        "device_count": 8,
+        "enable_sparse": True,
+        "enable_speculative_decode": False,
+        "engine_config": {"use_vllm_serve": True, "model": _MODEL_PATH},
+    }
+    config_loader.apply_effective_feature_enablement(
+        sparse_only,
+        {"device": "nvidia", "count": 8, "details": [{"name": "NVIDIA H20 141GB"}]},
+    )
+    vllm_adapter.build_start_script(sparse_only)
+
+    sparse_only_fallback = wings_entry._build_advanced_feature_fallback_cmd(sparse_only)
+
+    assert "--kv-cache-dtype" not in sparse_only_fallback
+    assert sparse_only["engine_config"]["kv_cache_dtype"] == "fp8"
