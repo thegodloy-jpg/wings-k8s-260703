@@ -1916,7 +1916,7 @@ def _is_qwen38_27b_w8a8_910c_local_scope(
     params: Dict[str, Any],
     model_info: ModelIdentifier,
 ) -> bool:
-    """精确识别 Qwen3.8-27B-w8a8 的 910C 本机 MP 配方。"""
+    """精确识别 Qwen3.8-27B-w8a8 的 910C 本机配方。"""
     # 910C 本机配方不按可见卡数收窄，TP 继续由通用拓扑推导并允许显式覆盖；
     # 多节点仍由 distributed/nnodes 边界隔离，避免复用未经验证的跨节点环境配方。
     return (
@@ -1930,34 +1930,12 @@ def _is_qwen38_27b_w8a8_910c_local_scope(
 
 
 def _build_qwen38_27b_w8a8_910c_env() -> List[str]:
-    """输出 910C 已验证环境配方；公共层仍负责补齐通用 OMP 安全默认。"""
+    """输出 910C 目标命令声明的环境；最终汇总层负责剔除公共附加项。"""
     return [
+        "export VLLM_USE_MODELSCOPE=True",
+        "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export TASK_QUEUE_ENABLE=1",
-        "export HCCL_BUFFSIZE=1024",
-        'export HCCL_OP_EXPANSION_MODE="AIV"',
     ]
-
-
-def _sync_qwen38_27b_w8a8_910c_runtime_backend(params: Dict[str, Any]) -> None:
-    """将精确 profile 的 MP 后端同步到顶层，避免状态判断与最终 CLI 分裂。"""
-    engine_config = params.get("engine_config")
-    if not isinstance(engine_config, dict):
-        return
-    backend = engine_config.get("distributed_executor_backend")
-    if backend in (None, ""):
-        # CONFIG_FORCE 或用户自定义配置未声明后端时不凭空回填，保持配置所有权边界。
-        return
-    model_info = ModelIdentifier(
-        params.get("model_name"),
-        params.get("model_path"),
-        params.get("model_type"),
-    )
-    if not _is_qwen38_27b_w8a8_910c_local_scope(params, model_info):
-        return
-    normalized_backend = str(backend).strip().lower()
-    engine_config["distributed_executor_backend"] = normalized_backend
-    params["distributed_executor_backend"] = normalized_backend
 
 
 def _build_qwen35moe_ascend_env(arch: str) -> List[str]:
@@ -2701,7 +2679,7 @@ def _build_ascend_model_env_commands(
 ) -> List[str]:
     if _is_qwen38_27b_w8a8_910c_local_scope(params, model_info):
         logger.info(
-            "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910C local MP environment variables"
+            "[Qwen3.8-27B-w8a8] Set dedicated Ascend 910C local environment variables"
         )
         return _build_qwen38_27b_w8a8_910c_env()
     if _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info):
@@ -2780,6 +2758,7 @@ def _build_env_commands(params: Dict[str, Any], current_ip: str, network_interfa
     env_commands.extend(_build_model_env_commands(params, engine))
     env_commands = _filter_vllm_ascend_ray_incompatible_env(env_commands, params, engine)
     env_commands.extend(_build_vllm_ascend_forced_env_commands(params, engine))
+    env_commands = _align_qwen38_27b_w8a8_910c_env(env_commands, params, engine)
     env_commands = _align_qwen35_397b_w8a8_mtp_910c_env(env_commands, params, engine)
 
     return env_commands
@@ -3457,9 +3436,6 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     DP 回写必须在返回前完成，因为分布式脚本拓扑计算后续读取的是
     ``params["engine_config"]``，而不是本函数局部变量。
     """
-    # 精确 910C profile 的 backend 同时参与状态计算、拓扑校验和最终 CLI；
-    # 在统一准备入口同步，避免 build_start_script 之前仍短暂暴露解析器默认的 ray。
-    _sync_qwen38_27b_w8a8_910c_runtime_backend(params)
     engine_config = dict(params.get("engine_config", {}))
     _strip_internal_engine_config_keys(params, engine_config)
     explicit_keys = set(params.get("_explicit_cli_keys") or [])
@@ -5237,6 +5213,37 @@ def _filter_deepseek_v4_flash_0731_w8a8_910b_env(
     ]
 
 
+def _align_qwen38_27b_w8a8_910c_env(
+    commands: List[str],
+    params: Dict[str, Any],
+    engine: str,
+) -> List[str]:
+    """将 Qwen3.8-27B-w8a8/910C 单机环境严格收口到目标配方。"""
+    if engine != "vllm_ascend":
+        return commands
+    model_info = ModelIdentifier(
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("model_type"),
+    )
+    if not _is_qwen38_27b_w8a8_910c_local_scope(params, model_info):
+        return commands
+
+    # 基础 Ascend 脚本与 forced 层都会补这些通用变量，但目标启动配方明确不声明；
+    # 在最终汇总层按变量名剔除，避免只关掉一个来源后仍从另一路径泄漏。
+    blocked_names = {
+        "OMP_PROC_BIND",
+        "OMP_NUM_THREADS",
+        "TASK_QUEUE_ENABLE",
+        "HCCL_OP_EXPANSION_MODE",
+    }
+    return [
+        command
+        for command in commands
+        if _top_level_export_name(command) not in blocked_names
+    ]
+
+
 def _align_minimax_m27_quarot_env(
     commands: List[str],
     params: Dict[str, Any],
@@ -5375,6 +5382,7 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
     # 这里收口去重，保证每个变量最终只有一条 export 生效（等价最终值，不动累加型与块内导出）。
     cmds = dedupe_env_exports(cmds)
     cmds = _filter_deepseek_v4_flash_0731_w8a8_910b_env(cmds, params)
+    cmds = _align_qwen38_27b_w8a8_910c_env(cmds, params, engine)
     cmds = _align_minimax_m27_quarot_env(cmds, params, engine)
     cmds = _align_qwen35_397b_w8a8_mtp_910c_env(cmds, params, engine)
     # 单机 GLM-5.2(a3) 对齐官方 recipe：去重后剔除 TASK_QUEUE_ENABLE（官方单机命令不设）。

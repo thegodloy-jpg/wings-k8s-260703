@@ -41,6 +41,7 @@ _RUNTIME_ENV_NAMES = (
     "LMCACHE_OFFLOAD",
     "ASCEND_ENFORCE_EAGER",
     "ASCEND_RT_VISIBLE_DEVICES",
+    "VLLM_USE_MODELSCOPE",
     "PYTORCH_NPU_ALLOC_CONF",
     "TASK_QUEUE_ENABLE",
     "HCCL_BUFFSIZE",
@@ -133,23 +134,20 @@ def test_qwen38_27b_w8a8_910c_selects_exact_profile():
     assert config == {
         "use_vllm_serve": True,
         "trust_remote_code": True,
-        "distributed_executor_backend": "mp",
         "quantization": "ascend",
-        "async_scheduling": True,
-        "max_model_len": 200000,
         "max_num_seqs": 32,
+        "max_model_len": 131072,
         "max_num_batched_tokens": 16384,
-        "gpu_memory_utilization": 0.92,
-        "compilation_config": {
-            "cudagraph_mode": "FULL_DECODE_ONLY",
-            "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32],
-        },
-        "additional_config": {"enable_flashcomm1": False},
+        "gpu_memory_utilization": 0.85,
+        "enable_prefix_caching": True,
+        "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+        "additional_config": {"enable_cpu_binding": True},
     }
-    # TP 仍由双卡运行时拓扑推导；该命令也没有声明 DP、前缀缓存或投机解码。
+    # TP/DP 属于运行时拓扑，不固化到模型 defaults；前缀缓存仍是静态配方。
     assert "tensor_parallel_size" not in config
     assert "data_parallel_size" not in config
-    assert "enable_prefix_caching" not in config
+    assert config["enable_prefix_caching"] is True
+    # 投机能力仍由精确白名单和页面开关控制，不在模型 defaults 中强开。
     assert "speculative_config" not in config
 
     profile = _ascend_arch_defaults()["Qwen3.8-27B-w8a8-910C"]
@@ -182,12 +180,16 @@ def test_qwen38_27b_910c_profile_does_not_restrict_local_device_count(
     ) == _match_defaults(_MODEL_NAME, "Ascend910C", device_count=2)
 
 
-def test_qwen38_27b_910b_spec_whitelist_renders_exact_mtp(monkeypatch):
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_qwen38_27b_ascend_spec_whitelist_renders_exact_mtp(
+    monkeypatch,
+    card_token,
+):
     row = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend",
         _MODEL_NAME,
         _MODEL_PATH,
-        "910b",
+        card_token,
         "spec",
     )
 
@@ -196,10 +198,7 @@ def test_qwen38_27b_910b_spec_whitelist_renders_exact_mtp(monkeypatch):
     assert row["mtp_num_speculative_tokens"] == 3
     assert row["enforce_eager"] is True
     assert model_utils.resolve_feature_whitelist_row(
-        "vllm_ascend", _MODEL_NAME, _MODEL_PATH, "910c", "spec"
-    ) is None
-    assert model_utils.resolve_feature_whitelist_row(
-        "vllm_ascend", "Qwen3.8-27B", "/models/Qwen3.8-27B", "910b", "spec"
+        "vllm_ascend", "Qwen3.8-27B", "/models/Qwen3.8-27B", card_token, "spec"
     ) is None
 
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
@@ -212,7 +211,7 @@ def test_qwen38_27b_910b_spec_whitelist_renders_exact_mtp(monkeypatch):
             "enable_speculative_decode": True,
             "speculative_decode_model_path": "none",
             "_smart_feats": ["spec"],
-            "_smart_card_token": "910b",
+            "_smart_card_token": card_token,
         },
         "vllm_ascend",
     )
@@ -266,10 +265,9 @@ def test_qwen38_27b_910c_uses_dedicated_minimal_env(monkeypatch, device_count):
     )
 
     assert commands == [
+        "export VLLM_USE_MODELSCOPE=True",
+        "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export TASK_QUEUE_ENABLE=1",
-        "export HCCL_BUFFSIZE=1024",
-        'export HCCL_OP_EXPANSION_MODE="AIV"',
     ]
 
 
@@ -340,94 +338,6 @@ def test_qwen38_27b_910c_local_scope_accepts_visible_device_count(device_count):
     )
 
 
-def test_qwen38_27b_910c_explicit_backend_override_is_preserved(monkeypatch):
-    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
-    monkeypatch.setenv("DISTRIBUTED_EXECUTOR_BACKEND", "ray")
-    engine_config = {"distributed_executor_backend": "mp"}
-
-    config_loader._apply_cli_overrides(engine_config, {"engine": "vllm_ascend"})
-    params = {
-        "engine": "vllm_ascend",
-        "model_name": _MODEL_NAME,
-        "model_path": "/usr/local/serving/models",
-        "model_type": "llm",
-        "device_count": 2,
-        "nnodes": 1,
-        "distributed": False,
-        "_smart_card_token": "ascend910c",
-        "engine_config": engine_config,
-    }
-    vllm_adapter._sync_qwen38_27b_w8a8_910c_runtime_backend(params)
-
-    assert engine_config["distributed_executor_backend"] == "ray"
-    assert params["distributed_executor_backend"] == "ray"
-    assert "--distributed-executor-backend ray" in vllm_adapter._build_vllm_cmd_parts(
-        params
-    )
-
-
-def test_qwen38_27b_910c_explicit_cli_backend_override_is_preserved(monkeypatch):
-    monkeypatch.delenv("DISTRIBUTED_EXECUTOR_BACKEND", raising=False)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["wings", "--distributed-executor-backend", "ray"],
-    )
-    engine_config = {"distributed_executor_backend": "mp"}
-
-    config_loader._apply_cli_overrides(
-        engine_config,
-        {"engine": "vllm_ascend", "distributed_executor_backend": "ray"},
-    )
-
-    assert engine_config["distributed_executor_backend"] == "ray"
-
-
-def test_qwen38_27b_910c_config_force_without_backend_is_not_backfilled(monkeypatch):
-    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
-    params = {
-        "engine": "vllm_ascend",
-        "model_name": _MODEL_NAME,
-        "model_path": "/usr/local/serving/models",
-        "model_type": "llm",
-        "device_count": 2,
-        "nnodes": 1,
-        "distributed": False,
-        "_smart_card_token": "ascend910c",
-        "distributed_executor_backend": "ray",
-        "engine_config": {"trust_remote_code": True},
-    }
-
-    vllm_adapter._sync_qwen38_27b_w8a8_910c_runtime_backend(params)
-
-    assert params["distributed_executor_backend"] == "ray"
-    assert "distributed_executor_backend" not in params["engine_config"]
-
-
-def test_qwen38_27b_910c_startup_status_preparation_sees_mp_backend(monkeypatch):
-    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
-    params = {
-        "engine": "vllm_ascend",
-        "model_name": _MODEL_NAME,
-        "model_path": "/usr/local/serving/models",
-        "model_type": "llm",
-        "device_count": 2,
-        "nnodes": 1,
-        "distributed": False,
-        "_smart_card_token": "ascend910c",
-        "distributed_executor_backend": "ray",
-        "engine_config": {
-            "distributed_executor_backend": "mp",
-            "tensor_parallel_size": 2,
-        },
-    }
-
-    vllm_adapter.prepare_params_for_startup_status(params)
-
-    assert params["distributed_executor_backend"] == "mp"
-    assert params["engine_config"]["distributed_executor_backend"] == "mp"
-
-
 @pytest.mark.parametrize("device_count", [1, 2, 4, 8])
 def test_qwen38_27b_910c_final_command_derives_tp_from_local_devices(
     monkeypatch,
@@ -470,11 +380,51 @@ def test_qwen38_27b_910c_final_command_derives_tp_from_local_devices(
     shlex.split(exec_line, posix=True)
 
     assert params["engine_config"]["tensor_parallel_size"] == device_count
-    assert params["distributed_executor_backend"] == "mp"
-    assert "--distributed-executor-backend mp" in exec_line
+    assert "data_parallel_size" not in params["engine_config"]
+    assert "distributed_executor_backend" not in params["engine_config"]
+    assert "--distributed-executor-backend" not in exec_line
     assert f"--tensor-parallel-size {device_count}" in exec_line
-    assert "export HCCL_BUFFSIZE=1024" in script
-    assert 'export HCCL_OP_EXPANSION_MODE="AIV"' in script
+    assert "--data-parallel-size" not in exec_line
+    assert "export VLLM_USE_MODELSCOPE=True" in script
+    assert "export HCCL_BUFFSIZE=512" in script
+    assert "export OMP_PROC_BIND=" not in script
+    assert "export OMP_NUM_THREADS=" not in script
+    assert "export TASK_QUEUE_ENABLE=" not in script
+    assert "export HCCL_OP_EXPANSION_MODE=" not in script
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"_smart_card_token": "ascend910b"},
+        {"distributed": True, "nnodes": 2},
+        {"model_name": "Qwen3.8-27B"},
+        {"engine": "vllm"},
+    ],
+)
+def test_qwen38_27b_910c_env_alignment_does_not_broaden(monkeypatch, overrides):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": _MODEL_NAME,
+        "model_path": "/usr/local/serving/models",
+        "model_type": "llm",
+        "device_count": 2,
+        "nnodes": 1,
+        "distributed": False,
+        "_smart_card_token": "ascend910c",
+    }
+    params.update(overrides)
+    commands = [
+        "export OMP_PROC_BIND=false",
+        "export OMP_NUM_THREADS=1",
+        "export TASK_QUEUE_ENABLE=1",
+        "export HCCL_OP_EXPANSION_MODE=AIV",
+    ]
+
+    assert vllm_adapter._align_qwen38_27b_w8a8_910c_env(
+        commands, params, params["engine"]
+    ) == commands
 
 
 def test_qwen38_27b_production_chain_renders_target_single_node_command(
@@ -573,7 +523,9 @@ def test_qwen38_27b_production_chain_renders_target_single_node_command(
     ]
 
 
-def test_qwen38_27b_910c_production_chain_renders_target_command(monkeypatch):
+def test_qwen38_27b_910c_production_chain_renders_target_command(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeQwen38Identifier)
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
     monkeypatch.setattr(config_loader, "_check_vram_requirements", lambda *_args: None)
@@ -581,15 +533,20 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(monkeypatch):
     _clear_runtime_env(monkeypatch)
     monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0,1")
     # 该画像承载的是目标启动配方，外层遗留值不能让最终脚本漂移。
+    monkeypatch.setenv("VLLM_USE_MODELSCOPE", "False")
     monkeypatch.setenv("PYTORCH_NPU_ALLOC_CONF", "max_split_size_mb:64")
     monkeypatch.setenv("TASK_QUEUE_ENABLE", "0")
-    monkeypatch.setenv("HCCL_BUFFSIZE", "512")
+    monkeypatch.setenv("HCCL_BUFFSIZE", "1024")
     monkeypatch.setenv("HCCL_OP_EXPANSION_MODE", "NONE")
     monkeypatch.setenv("OMP_NUM_THREADS", "8")
     monkeypatch.setenv("OMP_PROC_BIND", "true")
-    monkeypatch.setenv("ENGINE_PORT", "17000")
+    monkeypatch.setenv("SERVED_MODEL_NAME", "qwen3.8")
+    monkeypatch.setenv("ENGINE_PORT", "8000")
     monkeypatch.setenv("POD_IP", "10.0.0.9")
 
+    # DP=1 由本次部署显式声明；模型 defaults 不持有运行时拓扑。
+    config_file = tmp_path / "qwen38-27b-910c-runtime.json"
+    config_file.write_text(json.dumps({"data_parallel_size": 1}), encoding="utf-8")
     launch_args = parse_launch_args(
         [
             "--model-name",
@@ -606,6 +563,11 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(monkeypatch):
             "0.0.0.0",
             "--port",
             "18000",
+            "--config-file",
+            str(config_file),
+            "--enable-speculative-decode",
+            "--speculative-decode-model-path",
+            "none",
         ]
     )
     port_plan = derive_port_plan(
@@ -626,42 +588,37 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(monkeypatch):
     shlex.split(exec_line, posix=True)
 
     assert params["_smart_card_token"].endswith("910c")
-    assert params["_smart_feats"] == []
-    assert params["distributed_executor_backend"] == "mp"
-    assert params["engine_config"]["distributed_executor_backend"] == "mp"
+    assert params["_smart_feats"] == ["spec"]
+    assert "distributed_executor_backend" not in params["engine_config"]
     assert params["engine_config"]["tensor_parallel_size"] == 2
-    assert "data_parallel_size" not in params["engine_config"]
+    assert params["engine_config"]["data_parallel_size"] == 1
     assert port_plan.proxy_port == 18000
-    assert port_plan.backend_port == 17000
+    assert port_plan.backend_port == 8000
     assert exec_line == (
         "exec vllm serve /usr/local/serving/models"
         " --trust-remote-code"
-        " --distributed-executor-backend mp"
         " --quantization ascend"
-        " --async-scheduling"
-        " --max-model-len 200000"
         " --max-num-seqs 32"
+        " --max-model-len 131072"
         " --max-num-batched-tokens 16384"
-        " --gpu-memory-utilization 0.92"
-        " --compilation-config "
-        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\","
-        "\"cudagraph_capture_sizes\":[1,2,4,8,16,32]}'"
-        " --additional-config '{\"enable_flashcomm1\":false}'"
+        " --gpu-memory-utilization 0.85"
+        " --enable-prefix-caching"
+        " --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}'"
+        " --additional-config '{\"enable_cpu_binding\":true}'"
         " --host 10.0.0.9"
-        " --port 17000"
-        " --served-model-name Qwen3.8-27B-w8a8"
+        " --port 8000"
+        " --served-model-name qwen3.8"
         " --default-chat-template-kwargs '{\"enable_thinking\":false}'"
         " --tensor-parallel-size 2"
+        " --data-parallel-size 1"
+        " --speculative-config "
+        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3,\"enforce_eager\":true}'"
     )
-    assert "--data-parallel-size" not in exec_line
-    assert "--enable-prefix-caching" not in exec_line
-    assert "--speculative-config" not in exec_line
+    assert "--distributed-executor-backend" not in exec_line
+    assert "--async-scheduling" not in exec_line
     assert "ASCEND_RT_VISIBLE_DEVICES=" not in script
     assert [line for line in script.splitlines() if line.startswith("export ")] == [
-        "export OMP_PROC_BIND=false",
-        "export OMP_NUM_THREADS=1",
+        "export VLLM_USE_MODELSCOPE=True",
+        "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export TASK_QUEUE_ENABLE=1",
-        "export HCCL_BUFFSIZE=1024",
-        'export HCCL_OP_EXPANSION_MODE="AIV"',
     ]

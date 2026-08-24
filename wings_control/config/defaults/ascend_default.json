@@ -909,18 +909,14 @@
           "vllm_ascend": {
             "use_vllm_serve": true,
             "trust_remote_code": true,
-            "distributed_executor_backend": "mp",
             "quantization": "ascend",
-            "async_scheduling": true,
-            "max_model_len": 200000,
             "max_num_seqs": 32,
+            "max_model_len": 131072,
             "max_num_batched_tokens": 16384,
-            "gpu_memory_utilization": 0.92,
-            "compilation_config": {
-              "cudagraph_mode": "FULL_DECODE_ONLY",
-              "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32]
-            },
-            "additional_config": {"enable_flashcomm1": false}
+            "gpu_memory_utilization": 0.85,
+            "enable_prefix_caching": true,
+            "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+            "additional_config": {"enable_cpu_binding": true}
           }
         },
         "Qwen3.5-27B-Ascend910C": {
