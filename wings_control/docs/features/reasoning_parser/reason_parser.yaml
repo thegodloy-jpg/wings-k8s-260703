@@ -191,6 +191,7 @@ architectures:
   - name: Qwen3_5MoeForCausalLM
     models:
       Qwen3.8-2.4T-A95B-FP8: {vllm: qwen3}
+      Qwen3.8-2.4T-A95B-w8a8: {vllm_ascend: qwen3}
 
   - name: MiniMaxM2ForCausalLM
     config:

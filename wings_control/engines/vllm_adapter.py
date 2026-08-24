@@ -3059,6 +3059,22 @@ def _apply_kimi_ascend_engine_defaults(
             engine_config["tensor_parallel_size"] = device_count
 
 
+def _apply_qwen38_24t_w8a8_ascend_dp_topology(
+    params: Dict[str, Any],
+    engine_config: Dict[str, Any],
+    explicit_keys: set,
+) -> None:
+    """按节点设备数补齐 Qwen3.8 2.4T 四机 DP 的本地 TP。"""
+    if not params.get("_qwen38_24t_w8a8_910c_dp"):
+        return
+
+    # TP 属于运行时拓扑，不能固化在模型 default；精确路由已经校验四机、每机
+    # 16 卡，这里只在用户未显式指定时把本机设备数写入最终 engine_config。
+    device_count = _safe_int(params.get("device_count")) or 0
+    if device_count > 0 and "tensor_parallel_size" not in explicit_keys:
+        engine_config["tensor_parallel_size"] = device_count
+
+
 def _apply_ascend910c_single_node_16_tp_dp_recipe(
     params: Dict[str, Any],
     engine_config: Dict[str, Any],
@@ -3456,6 +3472,7 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
     _apply_minimax_m27_nvfp4_nv_engine_defaults(params, engine_config, explicit_keys)
     _apply_glm5_ascend_engine_defaults(params, engine_config, explicit_keys)
     _apply_kimi_ascend_engine_defaults(params, engine_config, explicit_keys)
+    _apply_qwen38_24t_w8a8_ascend_dp_topology(params, engine_config, explicit_keys)
     _apply_generic_deepseek_ascend_dp_defaults(params, engine_config, explicit_keys)
     # 通用 DP 默认先落地，再由精确的 910C 单机 16 卡 recipe 覆盖最终 TP/DP。
     _apply_ascend910c_single_node_16_tp_dp_recipe(params, engine_config, explicit_keys)
@@ -5379,6 +5396,26 @@ def _build_vllm_common_env_cmds(params: Dict[str, Any], engine: str) -> List[str
             if _top_level_export_name(command) not in generic_env_names
         ]
         logger.info("[Kimi-K3-W4A8-910C] removed generic Ascend runtime env defaults")
+    if (
+        engine == "vllm_ascend"
+        and params.get("_qwen38_24t_w8a8_910c_dp")
+        and params.get("distributed_executor_backend") == "dp_deployment"
+    ):
+        # 该四机配方的运行时变量由 DP builder 在每个 rank 上一次性生成；公共层若保留
+        # OMP/TASK/HCCL 软默认，会让最终脚本出现重复值并掩盖配方真实边界。
+        recipe_env_names = {
+            "HCCL_IF_IP", "GLOO_SOCKET_IFNAME", "HCCL_SOCKET_IFNAME", "TP_SOCKET_IFNAME",
+            "HCCL_BUFFSIZE", "HCCL_BUFFSIZE_EP", "HCCL_CONNECT_TIMEOUT",
+            "VLLM_ENGINE_READY_TIMEOUT_S", "VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS",
+            "OMP_PROC_BIND", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TASK_QUEUE_ENABLE",
+            "PYTORCH_NPU_ALLOC_CONF", "ASCEND_RT_VISIBLE_DEVICES", "HCCL_OP_EXPANSION_MODE",
+        }
+        cmds = [
+            command
+            for command in cmds
+            if _top_level_export_name(command) not in recipe_env_names
+        ]
+        logger.info("[Qwen3.8-2.4T-W8A8-910C] removed generic Ascend runtime env defaults")
     return cmds
 
 

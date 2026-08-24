@@ -1503,6 +1503,30 @@
           }
         }
       },
+      "Qwen3_5MoeForCausalLM": {
+        "Qwen3.8-2.4T-A95B-w8a8-Ascend910C": {
+          "exact_model_names": ["qwen3.8-2.4t-a95b-w8a8"],
+          "card_tokens": ["910c"],
+          "vllm_ascend_distributed": {
+            "use_vllm_serve": true,
+            "trust_remote_code": true,
+            "quantization": "ascend",
+            "safetensors_load_strategy": "lazy",
+            "enable_prefix_caching": true,
+            "enable_expert_parallel": true,
+            "max_model_len": 133120,
+            "max_num_seqs": 8,
+            "max_num_batched_tokens": 16384,
+            "gpu_memory_utilization": 0.85,
+            "enforce_eager": true,
+            "additional_config": {
+              "enable_cpu_binding": true,
+              "enable_flashcomm1": false,
+              "enable_fused_mc2": 0
+            }
+          }
+        }
+      },
       "MiniMaxM2ForCausalLM": {
         "default": {
           "vllm_ascend": {

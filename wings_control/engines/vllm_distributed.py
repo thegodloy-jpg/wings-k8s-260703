@@ -324,6 +324,67 @@ def _build_kimi_k3_910c_dp_env_commands(params: Dict[str, Any], net_if: str) -> 
     return env_commands
 
 
+def _validate_qwen38_24t_w8a8_910c_dp_env_params(params: Dict[str, Any]) -> int:
+    """校验专用环境构造器的硬件和拓扑，防止仅靠内部标记绕过路由约束。"""
+    vllm_adapter = _import_vllm_adapter()
+    platform = vllm_adapter.ascend_platform_from_runtime(params)
+    if platform != "a3":
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B-w8a8 dp_deployment requires Ascend 910C/A3; "
+            f"detected platform={platform or 'unknown'}"
+        )
+
+    device_count = _safe_int(params.get("device_count"))
+    nnodes = _safe_int(params.get("nnodes"))
+    node_rank = _safe_int(params.get("node_rank"))
+    if device_count != 16:
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B-w8a8 Ascend DP requires device_count=16; "
+            f"got {params.get('device_count')!r}"
+        )
+    if nnodes != 4:
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B-w8a8 Ascend DP requires nnodes=4; "
+            f"got {params.get('nnodes')!r}"
+        )
+    if node_rank is None or node_rank not in range(4):
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B-w8a8 Ascend DP requires node_rank in 0..3; "
+            f"got {params.get('node_rank')!r}"
+        )
+    return device_count
+
+
+def _build_qwen38_24t_w8a8_910c_dp_env_commands(
+    params: Dict[str, Any],
+    net_if: str,
+) -> List[str]:
+    """构造 Qwen3.8 2.4T W8A8 四机 A3 配方的节点本地通信环境。"""
+    device_count = _validate_qwen38_24t_w8a8_910c_dp_env_params(params)
+    gloo_socket_if = os.getenv("GLOO_SOCKET_IFNAME", net_if)
+    tp_socket_if = os.getenv("TP_SOCKET_IFNAME", net_if)
+    hccl_socket_if = os.getenv("HCCL_SOCKET_IFNAME", net_if)
+    return [
+        _SH_VLLM_HOST,
+        "export HCCL_IF_IP=$VLLM_HOST_IP",
+        f"export GLOO_SOCKET_IFNAME={gloo_socket_if}",
+        f"export HCCL_SOCKET_IFNAME={hccl_socket_if}",
+        f"export TP_SOCKET_IFNAME={tp_socket_if}",
+        f"export HCCL_BUFFSIZE={os.getenv('HCCL_BUFFSIZE', '1024')}",
+        f"export HCCL_BUFFSIZE_EP={os.getenv('HCCL_BUFFSIZE_EP', '2048')}",
+        f"export HCCL_CONNECT_TIMEOUT={os.getenv('HCCL_CONNECT_TIMEOUT', '600')}",
+        f"export VLLM_ENGINE_READY_TIMEOUT_S={os.getenv('VLLM_ENGINE_READY_TIMEOUT_S', '7200')}",
+        "export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS="
+        + os.getenv("VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS", "3000"),
+        f"export OMP_PROC_BIND={os.getenv('OMP_PROC_BIND', 'false')}",
+        f"export OPENBLAS_NUM_THREADS={os.getenv('OPENBLAS_NUM_THREADS', '1')}",
+        "export PYTORCH_NPU_ALLOC_CONF="
+        + os.getenv("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"),
+        "export ASCEND_RT_VISIBLE_DEVICES="
+        + ",".join(str(index) for index in range(device_count)),
+    ]
+
+
 def _build_ascend_dp_env_commands(params: Dict[str, Any], net_if: str) -> List[str]:
     """构造 Ascend dp_deployment 通信环境。
 
@@ -433,6 +494,14 @@ def _build_dp_env_commands(
 ) -> List[str]:
     """返回 dp_deployment 模式的分布式通信环境变量命令。"""
     net_if = os.getenv("NETWORK_INTERFACE", os.getenv("GLOO_SOCKET_IFNAME", "eth0"))
+    if is_ascend and params.get("_qwen38_24t_w8a8_910c_dp"):
+        if model_architecture != "Qwen3_5MoeForCausalLM":
+            raise ValueError(
+                "Qwen3.8-2.4T-A95B-w8a8 910C DP marker requires "
+                "Qwen3_5MoeForCausalLM; "
+                f"got {model_architecture or 'unknown'}"
+            )
+        return _build_qwen38_24t_w8a8_910c_dp_env_commands(params, net_if)
     if is_ascend and params.get("_kimi_k3_910c_dp"):
         if model_architecture != "KimiK3ForConditionalGeneration":
             raise ValueError(

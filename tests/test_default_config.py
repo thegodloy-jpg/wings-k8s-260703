@@ -1314,8 +1314,8 @@ def test_all_ascend_card_profiles_select_without_smart_whitelist(monkeypatch):
                         engine_key,
                     )
 
-    assert profile_count == 28
-    assert engine_config_count == 54
+    assert profile_count == 29
+    assert engine_config_count == 55
 
 
 def test_deepseek_coder_v2_910c_baseline_keeps_runtime_tp_and_function_gate(monkeypatch):

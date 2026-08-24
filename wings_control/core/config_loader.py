@@ -3714,6 +3714,28 @@ def _is_kimi_k3_w4a8(model_info=None, params: Optional[Dict[str, Any]] = None) -
     return any("kimi-k3-w4a8" in value for value in normalized)
 
 
+def _is_qwen38_24t_w8a8(model_info=None, params: Optional[Dict[str, Any]] = None) -> bool:
+    """精确识别 Qwen3.8 2.4T W8A8，不把同架构 FP8 或服务别名带入。"""
+    architecture = getattr(model_info, "model_architecture", None)
+    if architecture != "Qwen3_5MoeForCausalLM":
+        return False
+
+    target_name = "qwen3.8-2.4t-a95b-w8a8"
+    # 路由阶段以已合并的启动参数为身份真值；只有自动选引擎尚无 params 时才回退
+    # model_info，避免测试对象或陈旧元数据覆盖用户实际传入的规范模型名。
+    identity_values = (
+        [params.get("model_name", "")]
+        if params is not None
+        else [getattr(model_info, "model_name", "")]
+    )
+    return any(
+        re.split(r"[/\\]", str(value or "").strip().lower().rstrip("/\\"))[-1]
+        == target_name
+        for value in identity_values
+        if str(value or "").strip()
+    )
+
+
 def _select_ascend_engine(device_name: str, model_info) -> str:
     """华为昇腾 NPU 场景下的引擎自动选择逻辑。
 
@@ -3747,6 +3769,10 @@ def _select_ascend_engine(device_name: str, model_info) -> str:
         return "vllm_ascend"
     elif get_router_env():
         logger.info("Wings router enabled, automatically switched to VLLM engine")
+        return "vllm_ascend"
+    elif _is_qwen38_24t_w8a8(model_info):
+        # 该权重只收编 vLLM-Ascend 四机原生 DP 配方；架构级放宽会误伤同架构 FP8。
+        logger.info("Qwen3.8-2.4T-A95B-w8a8 requires vllm_ascend, automatically selected")
         return "vllm_ascend"
     elif _is_kimi_k3_w4a8(model_info):
         # Kimi-K3-W4A8 的四机 910C 标准方案依赖 vLLM-Ascend 原生 DP。
@@ -3838,6 +3864,7 @@ class _VllmDistributedRoute:
     is_ascend: bool
     use_dp_deployment: bool
     is_kimi_k3_w4a8_ascend_dp: bool
+    is_qwen38_24t_w8a8_ascend_dp: bool
     use_nvidia_native_mp: bool
 
 
@@ -3915,6 +3942,35 @@ def _is_qwen35_397b_ascend_dp_route(
     return "qwen3.5-397b" in model_identity or "qwen3_5-397b" in model_identity
 
 
+def _is_qwen38_24t_w8a8_ascend_dp_route(
+    cmd_params: Dict[str, Any],
+    model_info,
+    is_ascend: bool,
+) -> bool:
+    """只让已验证的 A3 四机十六卡拓扑进入原生 DP，错误拓扑前置失败。"""
+    if (
+        not is_ascend
+        or not _is_qwen38_24t_w8a8(model_info, cmd_params)
+        or _normalize_card_token_for_match(cmd_params.get("_smart_card_token"))
+        not in {"910c", "ascend910c"}
+    ):
+        return False
+
+    try:
+        nnodes = int(cmd_params.get("nnodes") or 1)
+        device_count = int(cmd_params.get("device_count") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B-w8a8 Ascend DP requires valid nnodes/device_count"
+        ) from exc
+    if nnodes != 4 or device_count != 16:
+        raise ValueError(
+            "Qwen3.8-2.4T-A95B-w8a8 Ascend DP requires exactly "
+            "4 nodes and 16 NPUs per node"
+        )
+    return True
+
+
 def _resolve_vllm_distributed_route(
     cmd_params: Dict[str, Any],
     model_info,
@@ -3936,6 +3992,9 @@ def _resolve_vllm_distributed_route(
     )
     is_qwen35_397b_ascend_dp = _is_qwen35_397b_ascend_dp_route(
         cmd_params, model_architecture, is_ascend
+    )
+    is_qwen38_24t_w8a8_ascend_dp = _is_qwen38_24t_w8a8_ascend_dp_route(
+        cmd_params, model_info, is_ascend
     )
     is_kimi_k3_w4a8_ascend_dp = is_ascend and _is_kimi_k3_w4a8(model_info, cmd_params)
     if is_kimi_k3_w4a8_ascend_dp and int(cmd_params.get("nnodes") or 1) != 4:
@@ -3960,9 +4019,11 @@ def _resolve_vllm_distributed_route(
             is_nvidia_pd
             or is_ascend_deepseek
             or is_qwen35_397b_ascend_dp
+            or is_qwen38_24t_w8a8_ascend_dp
             or is_kimi_k3_w4a8_ascend_dp
         ),
         is_kimi_k3_w4a8_ascend_dp=is_kimi_k3_w4a8_ascend_dp,
+        is_qwen38_24t_w8a8_ascend_dp=is_qwen38_24t_w8a8_ascend_dp,
         use_nvidia_native_mp=(
             is_kimi_k3_nvidia_mp
             or is_deepseek_v4_pro_0813_h20_mp
@@ -3983,6 +4044,9 @@ def _apply_vllm_dp_deployment(
     if route.is_kimi_k3_w4a8_ascend_dp:
         # 27777 来自 Kimi-K3-W4A8 910C 四机标准命令，不影响其他 DP 模型。
         rpc_port = os.getenv("VLLM_DP_RPC_PORT") or "27777"
+    elif route.is_qwen38_24t_w8a8_ascend_dp:
+        # 8002 仅属于该四机配方；保留环境覆盖能力，不修改全局 DP RPC 默认值。
+        rpc_port = os.getenv("VLLM_DP_RPC_PORT") or "8002"
     else:
         rpc_port = vllm_config.get("rpc_port", 27071)
     cmd_params.update({
@@ -3994,6 +4058,8 @@ def _apply_vllm_dp_deployment(
     if route.is_kimi_k3_w4a8_ascend_dp:
         cmd_params["_kimi_k3_910c_dp"] = True
         cmd_params["_preserve_dp_worker_port"] = True
+    if route.is_qwen38_24t_w8a8_ascend_dp:
+        cmd_params["_qwen38_24t_w8a8_910c_dp"] = True
 
 
 def _apply_vllm_ray_deployment(

@@ -14,7 +14,8 @@
                  Glm4ForCausalLM, Glm4MoeForCausalLM,
                  Qwen2ForCausalLM, Qwen3ForCausalLM, Qwen3MoeForCausalLM,
                  Qwen3NextForCausalLM, Qwen3_5ForConditionalGeneration,
-                 Qwen3_5MoeForConditionalGeneration, MiniMaxM2ForCausalLM,
+                 Qwen3_5MoeForConditionalGeneration, Qwen3_5MoeForCausalLM,
+                 MiniMaxM2ForCausalLM,
                  LlamaForCausalLM
     - Embedding: XLMRobertaModel, BertModel, Qwen3ForCausalLM(Embedding)
     - Rerank:    XLMRobertaForSequenceClassification
@@ -745,6 +746,10 @@ _LLM_MODELS = {
         "Qwen3.6-35B-A3B-w8a8",
         "Qwen-AgentWorld-35B-A3B"
         ],
+    "Qwen3_5MoeForCausalLM": [
+        "Qwen3.8-2.4T-A95B-FP8",
+        "Qwen3.8-2.4T-A95B-w8a8"
+        ],
     "MiniMaxM2ForCausalLM": [
         "MiniMax-M2.5",
         "MiniMax-M2.5-NVFP4",
@@ -807,6 +812,9 @@ THINKING_ALWAYS_ON = "always_on"    # 始终推理：无法关闭思考，off_kw
 THINKING_NONE = "none"              # 非思考模型 / 无法识别：不介入，off_kwargs 为空
 # 始终推理（无法关闭思考）模型名片段，优先于混合推理判断。
 _ALWAYS_ON_THINKING_TOKENS = ("r1", "qwq", "minimax-m2")
+# Qwen3.8 2.4T 开源权重固定输出思考链。按精确 basename 收口，避免把其它
+# 可切换思考的 Qwen3/Qwen3.8 模型一并改成 always-on。
+_ALWAYS_ON_THINKING_MODEL_NAMES = {"qwen3.8-2.4t-a95b-w8a8"}
 
 
 def resolve_thinking_off_policy(model_name: str):
@@ -827,7 +835,11 @@ def resolve_thinking_off_policy(model_name: str):
     name = model_name.lower().replace("_", "-")
 
     # 1) 始终推理模型优先（R1 / R1-Distill / QwQ / MiniMax-M2）
-    if any(tok in name for tok in _ALWAYS_ON_THINKING_TOKENS):
+    model_basename = name.rstrip("/").rsplit("/", 1)[-1]
+    if (
+        model_basename in _ALWAYS_ON_THINKING_MODEL_NAMES
+        or any(tok in name for tok in _ALWAYS_ON_THINKING_TOKENS)
+    ):
         return THINKING_ALWAYS_ON, {}
 
     # 2) Qwen3 系列（混合推理）：enable_thinking
