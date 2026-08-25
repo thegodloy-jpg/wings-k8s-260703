@@ -648,13 +648,6 @@ _SIMPLE_CPU_OFFLOAD_TOPOLOGY = {
     "pipeline_parallel_size": 1,
     "nnodes": 4,
 }
-_DEEPSEEK_V4_PRO_0813_H20_DUAL_MP_TOPOLOGY = {
-    "device_count": 8,
-    "tensor_parallel_size": 16,
-    "data_parallel_size": 1,
-    "pipeline_parallel_size": 1,
-    "nnodes": 2,
-}
 _KIMI_K3_910C_DP_TOPOLOGY = {
     "device_count": 16,
     "nnodes": 4,
@@ -702,68 +695,6 @@ def _offload_runtime_value(params: Optional[Dict[str, Any]], key: str) -> Any:
     if isinstance(engine_config, dict):
         return engine_config.get(key)
     return None
-
-
-def is_deepseek_v4_pro_0813_h20_whitelist_scope(
-    params: Optional[Dict[str, Any]],
-    engine: str,
-) -> bool:
-    """匹配 Pro-0813 H20 白名单行，供 gate 对双机运行边界做二次收紧。"""
-    if not params or engine != "vllm":
-        return False
-    model_text = " ".join(
-        str(params.get(key) or "").strip().lower()
-        for key in ("model_name", "model_path")
-    )
-    card = str(params.get("_smart_card_token") or "").strip().lower()
-    return (
-        "deepseek-v4-pro-0813" in model_text
-        and card in {"h20-96", "h20-141"}
-    )
-
-
-def is_deepseek_v4_pro_0813_h20_dual_mp_scope(
-    params: Optional[Dict[str, Any]],
-    engine: str = "vllm",
-    *,
-    allow_premerge_topology: bool = False,
-) -> bool:
-    """精确识别 DeepSeek-V4-Pro-0813 双机八卡 H20 原生 MP 调优配方。"""
-    if not is_deepseek_v4_pro_0813_h20_whitelist_scope(params, engine):
-        return False
-
-    target_name = "deepseek-v4-pro-0813"
-    identities = []
-    for key in ("model_name", "model_path"):
-        value = str(params.get(key) or "").strip().lower().rstrip("/\\")
-        if value:
-            identities.extend((value, re.split(r"[/\\]", value)[-1]))
-    if target_name not in identities:
-        return False
-    if get_pd_role_env() or params.get("distributed") is not True:
-        return False
-    if str(params.get("distributed_executor_backend") or "mp").strip().lower() != "mp":
-        return False
-
-    for key, expected in _DEEPSEEK_V4_PRO_0813_H20_DUAL_MP_TOPOLOGY.items():
-        raw_value = _offload_runtime_value(params, key)
-        if (
-            key == "tensor_parallel_size"
-            and raw_value in (None, "")
-            and allow_premerge_topology
-        ):
-            # SmartFeature gate 早于模型 defaults/并行参数合并；原生 MP 已在此时
-            # 确定 2 节点×8 卡，后续通用公式会固定生成全局 TP16。仅门控阶段
-            # 允许按该确定性公式补齐，最终 defaults/命令/状态仍必须看到显式 TP16。
-            raw_value = (
-                (_safe_int(_offload_runtime_value(params, "device_count")) or 0)
-                * (_safe_int(_offload_runtime_value(params, "nnodes")) or 0)
-            )
-        if key in {"data_parallel_size", "pipeline_parallel_size"} and raw_value in (None, ""):
-            raw_value = 1
-        if _safe_int(raw_value) != expected:
-            return False
-    return True
 
 
 def is_kimi_k3_910c_dp_scope(
@@ -856,10 +787,24 @@ def _is_deepseek_v4_pro_0813_h20_simple_cpu_scope(
     params: Optional[Dict[str, Any]],
     engine: str,
 ) -> bool:
-    """双机 Pro-0813 仅在有效 offload 选择 SimpleCPU 且 prefix 未关闭时放行。"""
-    if not is_deepseek_v4_pro_0813_h20_dual_mp_scope(params, engine):
+    """Pro-0813 H20 按白名单选择 SimpleCPU，不绑定节点数或 TP/DP 组合。"""
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "offload",
+        require_enabled=True,
+    )
+    name_tokens = {
+        str(token).strip().lower()
+        for token in (row.get("name_tokens") or ())
+    } if row else set()
+    if (
+        not row
+        or row.get("backend") != _OFFLOAD_SIMPLE_CPU_BACKEND
+        or "deepseek-v4-pro-0813" not in name_tokens
+    ):
         return False
-    if resolve_offload_whitelist_backend(params, engine) != _OFFLOAD_SIMPLE_CPU_BACKEND:
+    if get_pd_role_env():
         return False
     if _offload_runtime_value(params, "no_enable_prefix_caching") is True:
         return False
@@ -1012,13 +957,20 @@ def resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(
     params: Optional[Dict[str, Any]],
     engine: str = "vllm",
 ) -> Optional[Dict[str, Any]]:
-    """生成双机 Pro-0813 H20 调优配方的 SimpleCPU connector。"""
+    """按实际本机 rank 数生成 Pro-0813 H20 SimpleCPU connector。"""
     if not _is_deepseek_v4_pro_0813_h20_simple_cpu_scope(params, engine):
+        return None
+    local_rank_count = _safe_int(_offload_runtime_value(params, "device_count"))
+    if local_rank_count is None or local_rank_count <= 0:
+        logger.warning(
+            "[SimpleCPU Offload] DeepSeek-V4-Pro-0813 requires a positive "
+            "device_count to split node capacity; request discarded."
+        )
         return None
     return _build_simple_cpu_offload_config(
         params,
         engine,
-        _DEEPSEEK_V4_PRO_0813_H20_DUAL_MP_TOPOLOGY["device_count"],
+        local_rank_count,
     )
 
 

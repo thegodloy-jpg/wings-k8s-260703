@@ -623,7 +623,7 @@ def test_deepseek_v4_pro_0813_h20_final_mp_command_matches_recipe(
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
 
-    assert params["_allowed_smart_feats"] == ["spec"]
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
     assert params["_smart_feats"] == ["spec"]
     assert "export VLLM_HOST_IP=" in script
     assert "export NCCL_SOCKET_IFNAME=bond0" in script
@@ -801,18 +801,36 @@ def test_deepseek_v4_pro_0813_dual_h20_matches_tuned_three_feature_recipe(
 
 
 @pytest.mark.parametrize(
-    ("nnodes", "expected_features"),
+    "topology",
     [
-        (2, ["offload", "sparse", "spec"]),
-        (4, ["spec"]),
+        {
+            "distributed": True,
+            "distributed_executor_backend": "mp",
+            "nnodes": 2,
+            "engine_config": {"tensor_parallel_size": 16},
+        },
+        {
+            "distributed": True,
+            "distributed_executor_backend": "mp",
+            "nnodes": 4,
+            "engine_config": {"tensor_parallel_size": 32},
+        },
+        {
+            "distributed": False,
+            "distributed_executor_backend": "ray",
+            "nnodes": 1,
+            "engine_config": {
+                "tensor_parallel_size": 4,
+                "data_parallel_size": 2,
+            },
+        },
     ],
 )
-def test_deepseek_v4_pro_0813_h20_premerge_gate_derives_global_tp(
+def test_deepseek_v4_pro_0813_h20_features_do_not_depend_on_topology(
     monkeypatch,
-    nnodes,
-    expected_features,
+    topology,
 ):
-    """gate 在 TP 合并前按 MP 拓扑推导，且只放行已调优的 2x8 范围。"""
+    """Pro-0813 H20 的三项特性仅由白名单和页面开关控制。"""
     monkeypatch.delenv("PD_ROLE", raising=False)
     monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
     monkeypatch.setenv("ENABLE_SPARSE", "true")
@@ -822,12 +840,10 @@ def test_deepseek_v4_pro_0813_h20_premerge_gate_derives_global_tp(
         "model_name": "DeepSeek-V4-Pro-0813",
         "model_path": "/models/DeepSeek-V4-Pro-0813",
         "device_count": 8,
-        "distributed": True,
-        "distributed_executor_backend": "mp",
-        "nnodes": nnodes,
         "enable_sparse": True,
         "enable_speculative_decode": True,
     }
+    params.update(topology)
 
     config_loader.apply_effective_feature_enablement(
         params,
@@ -838,63 +854,45 @@ def test_deepseek_v4_pro_0813_h20_premerge_gate_derives_global_tp(
         },
     )
 
-    assert "tensor_parallel_size" not in params
-    assert "engine_config" not in params
-    assert params["_allowed_smart_feats"] == expected_features
-    assert params["_smart_feats"] == expected_features
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    ("device_count", "expected_per_rank_bytes"),
     [
-        {
-            "model_name": "DeepSeek-V4-Pro-0813-extra",
-            "model_path": "/models/DeepSeek-V4-Pro-0813-extra",
-        },
-        {"_smart_card_token": "h100"},
-        {"distributed": False},
-        {"distributed_executor_backend": "ray"},
-        {"nnodes": 4, "engine_config": {"tensor_parallel_size": 32}},
-        {"device_count": 4, "engine_config": {"tensor_parallel_size": 8}},
-        {"engine_config": {"tensor_parallel_size": 8}},
+        (4, 137438953472),
+        (8, 68719476736),
     ],
 )
-def test_deepseek_v4_pro_0813_dual_h20_scope_does_not_broaden(
+def test_deepseek_v4_pro_0813_h20_simple_cpu_uses_local_device_count(
     monkeypatch,
-    overrides,
+    device_count,
+    expected_per_rank_bytes,
 ):
+    """节点容量按实际本机 worker 数均分，不依赖固定 TP/DP recipe。"""
     monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "512")
     params = {
         "engine": "vllm",
         "model_name": "DeepSeek-V4-Pro-0813",
         "model_path": "/models/DeepSeek-V4-Pro-0813",
         "_smart_card_token": "h20-96",
-        "device_count": 8,
-        "distributed": True,
-        "distributed_executor_backend": "mp",
-        "nnodes": 2,
-        "engine_config": {"tensor_parallel_size": 16},
-    }
-    params.update(overrides)
-
-    assert not vllm_adapter.is_deepseek_v4_pro_0813_h20_dual_mp_scope(params)
-
-
-def test_deepseek_v4_pro_0813_dual_h20_scope_rejects_pd(monkeypatch):
-    monkeypatch.setenv("PD_ROLE", "P")
-    params = {
-        "engine": "vllm",
-        "model_name": "DeepSeek-V4-Pro-0813",
-        "model_path": "/models/DeepSeek-V4-Pro-0813",
-        "_smart_card_token": "h20-141",
-        "device_count": 8,
-        "distributed": True,
-        "distributed_executor_backend": "mp",
-        "nnodes": 2,
-        "engine_config": {"tensor_parallel_size": 16},
+        "_smart_feats": ["offload"],
+        "device_count": device_count,
+        "engine_config": {"enable_prefix_caching": True},
     }
 
-    assert not vllm_adapter.is_deepseek_v4_pro_0813_h20_dual_mp_scope(params)
+    config = vllm_adapter.resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(
+        params,
+        "vllm",
+    )
+
+    assert config is not None
+    assert config["kv_connector_extra_config"]["cpu_bytes_to_use_per_rank"] == (
+        expected_per_rank_bytes
+    )
 
 
 @pytest.mark.parametrize(
@@ -918,7 +916,7 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
     local_ip,
     nnodes,
 ):
-    """从生产入口验证统一 H20 defaults/DSpark，以及双机专属稀疏和卸载。"""
+    """从生产入口验证 H20 三项特性在双机和四机拓扑保持一致。"""
     for env_name in (
         "PD_ROLE",
         "CONFIG_FORCE",
@@ -1008,7 +1006,7 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
 
     assert params["_smart_card_token"] == card_token
     assert params["distributed_executor_backend"] == "mp"
-    expected_features = ["offload", "sparse", "spec"] if nnodes == 2 else ["spec"]
+    expected_features = ["offload", "sparse", "spec"]
     assert params["_allowed_smart_feats"] == expected_features
     assert params["_smart_feats"] == expected_features
     assert params["engine_config"]["tensor_parallel_size"] == 8 * nnodes
@@ -1024,17 +1022,14 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
         # 这些值必须在 adapter 运行前就由 nvidia defaults 选配完成。
         assert params["engine_config"][key] == expected
         assert prepared_config[key] == expected
-    if nnodes == 2:
-        assert json.loads(params["engine_config"]["kv_transfer_config"]) == {
-            "kv_connector": "SimpleCPUOffloadConnector",
-            "kv_role": "kv_both",
-            "kv_connector_extra_config": {
-                "cpu_bytes_to_use_per_rank": 68719476736,
-                "lazy_offload": False,
-            },
-        }
-    else:
-        assert "kv_transfer_config" not in params["engine_config"]
+    assert json.loads(params["engine_config"]["kv_transfer_config"]) == {
+        "kv_connector": "SimpleCPUOffloadConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "cpu_bytes_to_use_per_rank": 68719476736,
+            "lazy_offload": False,
+        },
+    }
 
     assert "export VLLM_HOST_IP=${POD_IP:-${RANK_IP:-" in script
     assert os.environ["RANK_IP"] == local_ip
@@ -1068,10 +1063,10 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
     assert '"method":"dspark"' in exec_line
     assert '"num_speculative_tokens":5' in exec_line
     assert '"draft_sample_method":"greedy"' in exec_line
-    assert (exec_line.count("--hf-overrides") == 1) is (nnodes == 2)
-    assert ('"use_index_cache":true,"index_topk_freq":8' in exec_line) is (nnodes == 2)
-    assert (exec_line.count("SimpleCPUOffloadConnector") == 1) is (nnodes == 2)
-    assert (exec_line.count("68719476736") == 1) is (nnodes == 2)
+    assert exec_line.count("--hf-overrides") == 1
+    assert '"use_index_cache":true,"index_topk_freq":8' in exec_line
+    assert exec_line.count("SimpleCPUOffloadConnector") == 1
+    assert exec_line.count("68719476736") == 1
     assert ("--headless" in exec_line) is (node_rank != 0)
     # headless worker 沿用框架既有 API 参数裁剪；这些字段只保留在 rank0 API server。
     for api_flag in (
@@ -1086,24 +1081,24 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
     status = json.loads(status_file.read_text(encoding="utf-8"))
     assert status["features"] == {
         "speculative_decode": True,
-        "sparse_kv": nnodes == 2,
-        "kv_offload": nnodes == 2,
+        "sparse_kv": True,
+        "kv_offload": True,
         "rag_acc": False,
     }
     assert status["variants"] == {
         "speculative_decode": "dspark",
-        "sparse_kv": "indexcache_use_index_cache_topk8" if nnodes == 2 else None,
-        "kv_offload": "simple_cpu_offload_connector+custom" if nnodes == 2 else None,
+        "sparse_kv": "indexcache_use_index_cache_topk8",
+        "kv_offload": "simple_cpu_offload_connector+custom",
     }
-    assert status["others"]["kv_mem_offload_size"] == (512 if nnodes == 2 else None)
+    assert status["others"]["kv_mem_offload_size"] == 512
     assert status["others"]["speculative_decode"] == {
         "method": "dspark",
         "num_speculative_tokens": 5,
         "moe_backend": None,
         "draft_sample_method": "greedy",
     }
-    assert ("SimpleCPUOffloadConnector" in plan.command) is (nnodes == 2)
-    assert ("index_topk_freq" in plan.command) is (nnodes == 2)
+    assert "SimpleCPUOffloadConnector" in plan.command
+    assert "index_topk_freq" in plan.command
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
