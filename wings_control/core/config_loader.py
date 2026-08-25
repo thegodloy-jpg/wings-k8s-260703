@@ -70,16 +70,20 @@ except ImportError:
 try:
     from wings_control.engines.vllm_adapter import (
         is_deepseek_v4_flash_0731_rtx_pro_5000_scope,
+        is_deepseek_v4_pro_0813_h20_dual_mp_scope,
+        is_deepseek_v4_pro_0813_h20_whitelist_scope,
         is_kimi_k3_910c_dp_scope,
-        resolve_kimi_k3_h20_simple_cpu_config,
+        resolve_simple_cpu_offload_config,
         resolve_kimi_k3_910c_native_transfer_config,
         resolve_kv_offload_effective_state,
     )
 except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
         is_deepseek_v4_flash_0731_rtx_pro_5000_scope,
+        is_deepseek_v4_pro_0813_h20_dual_mp_scope,
+        is_deepseek_v4_pro_0813_h20_whitelist_scope,
         is_kimi_k3_910c_dp_scope,
-        resolve_kimi_k3_h20_simple_cpu_config,
+        resolve_simple_cpu_offload_config,
         resolve_kimi_k3_910c_native_transfer_config,
         resolve_kv_offload_effective_state,
     )
@@ -1844,10 +1848,10 @@ def _set_kv_cache_config(params, ctx, model_info=None):
                 "PD-only connector path."
             )
         else:
-            # Kimi-K3/H20 调优场景只注入 SimpleCPU connector；提前返回以隔离其它卸载后端。
+            # 已验证的 H20 调优场景只注入 SimpleCPU connector；提前返回以隔离其它卸载后端。
             effective_ctx = dict(ctx)
             effective_ctx["engine_config"] = params
-            connector_config = resolve_kimi_k3_h20_simple_cpu_config(
+            connector_config = resolve_simple_cpu_offload_config(
                 effective_ctx,
                 ctx.get("engine", ""),
             )
@@ -2046,7 +2050,7 @@ def _enforce_native_offload_no_kv_transfer_config(
 def _enforce_simple_cpu_offload_kv_transfer_config(
     engine_config: Dict[str, Any], ctx: Dict[str, Any],
 ) -> None:
-    """最终仅在精确 Kimi-K3 四节点 H20 拓扑写入 SimpleCPU connector。"""
+    """最终仅在已验证的精确 H20 拓扑写入 SimpleCPU connector。"""
     if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) != "simple_cpu":
         return
     smart_feats = ctx.get("_smart_feats")
@@ -2060,7 +2064,7 @@ def _enforce_simple_cpu_offload_kv_transfer_config(
 
     effective_ctx = dict(ctx)
     effective_ctx["engine_config"] = engine_config
-    connector_config = resolve_kimi_k3_h20_simple_cpu_config(
+    connector_config = resolve_simple_cpu_offload_config(
         effective_ctx,
         ctx.get("engine", ""),
     )
@@ -3133,8 +3137,20 @@ def _resolve_smart_feature_matches(
     card: str,
 ) -> Tuple[set, set]:
     name, path = p.get("model_name"), p.get("model_path")
-    feats = resolve_feature_whitelist(engine, name, path, card)
-    forced_feats = resolve_forced_feature_whitelist(engine, name, path, card)
+    feats = set(resolve_feature_whitelist(engine, name, path, card))
+    forced_feats = set(resolve_forced_feature_whitelist(engine, name, path, card))
+    if (
+        is_deepseek_v4_pro_0813_h20_whitelist_scope(p, engine)
+        and not is_deepseek_v4_pro_0813_h20_dual_mp_scope(
+            p,
+            engine,
+            allow_premerge_topology=True,
+        )
+    ):
+        # sparse/SimpleCPU 配方只经过双机 2x8 调优；其它 H20 拓扑仍保留统一的
+        # DSpark5 spec，但不能因为模型/卡型白名单是子串匹配而继承这两项新能力。
+        feats.difference_update({"sparse", "offload"})
+        forced_feats.difference_update({"sparse", "offload"})
     p["_allowed_smart_feats"] = sorted(feats)
     p["_forced_smart_feats"] = sorted(forced_feats)
     return feats, forced_feats

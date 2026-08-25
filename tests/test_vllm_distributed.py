@@ -72,8 +72,8 @@ def _deepseek_v4_pro_h20_mp_ctx(*, node_rank=0):
             "--tokenizer-mode deepseek_v4 --tool-call-parser deepseek_v4 "
             "--enable-auto-tool-choice --reasoning-parser deepseek_v4 "
             "--speculative-config "
-            "'{\"method\":\"dspark\",\"num_speculative_tokens\":7,"
-            "\"draft_sample_method\":\"probabilistic\"}'"
+            "'{\"method\":\"dspark\",\"num_speculative_tokens\":5,"
+            "\"draft_sample_method\":\"greedy\"}'"
         ),
         is_ascend=False,
         node_rank=node_rank,
@@ -311,8 +311,8 @@ def test_deepseek_v4_pro_0813_four_node_mp_matches_native_recipe(
     assert "--compilation-config" in final_command
     assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in final_command
     assert '"method":"dspark"' in final_command
-    assert '"num_speculative_tokens":7' in final_command
-    assert '"draft_sample_method":"probabilistic"' in final_command
+    assert '"num_speculative_tokens":5' in final_command
+    assert '"draft_sample_method":"greedy"' in final_command
     assert final_command.count("--speculative-config") == 1
     if node_rank == 0:
         assert "--headless" not in final_command

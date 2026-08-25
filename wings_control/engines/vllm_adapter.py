@@ -624,7 +624,7 @@ def _native_backend_auto_requested(params: Dict[str, Any], engine: str) -> bool:
     return os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip().lower() == "auto"
 
 
-def _mtp_whitelist_override_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
+def _resolve_mtp_whitelist_row(params: Dict[str, Any], engine: str) -> Optional[dict]:
     """Return a spec whitelist row that owns inline method selection."""
     row = resolve_feature_whitelist_row_from_params(params, engine, "spec")
     if not row or not row.get("mtp_method"):
@@ -647,6 +647,13 @@ _SIMPLE_CPU_OFFLOAD_TOPOLOGY = {
     "data_parallel_size": 1,
     "pipeline_parallel_size": 1,
     "nnodes": 4,
+}
+_DEEPSEEK_V4_PRO_0813_H20_DUAL_MP_TOPOLOGY = {
+    "device_count": 8,
+    "tensor_parallel_size": 16,
+    "data_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "nnodes": 2,
 }
 _KIMI_K3_910C_DP_TOPOLOGY = {
     "device_count": 16,
@@ -695,6 +702,68 @@ def _offload_runtime_value(params: Optional[Dict[str, Any]], key: str) -> Any:
     if isinstance(engine_config, dict):
         return engine_config.get(key)
     return None
+
+
+def is_deepseek_v4_pro_0813_h20_whitelist_scope(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> bool:
+    """匹配 Pro-0813 H20 白名单行，供 gate 对双机运行边界做二次收紧。"""
+    if not params or engine != "vllm":
+        return False
+    model_text = " ".join(
+        str(params.get(key) or "").strip().lower()
+        for key in ("model_name", "model_path")
+    )
+    card = str(params.get("_smart_card_token") or "").strip().lower()
+    return (
+        "deepseek-v4-pro-0813" in model_text
+        and card in {"h20-96", "h20-141"}
+    )
+
+
+def is_deepseek_v4_pro_0813_h20_dual_mp_scope(
+    params: Optional[Dict[str, Any]],
+    engine: str = "vllm",
+    *,
+    allow_premerge_topology: bool = False,
+) -> bool:
+    """精确识别 DeepSeek-V4-Pro-0813 双机八卡 H20 原生 MP 调优配方。"""
+    if not is_deepseek_v4_pro_0813_h20_whitelist_scope(params, engine):
+        return False
+
+    target_name = "deepseek-v4-pro-0813"
+    identities = []
+    for key in ("model_name", "model_path"):
+        value = str(params.get(key) or "").strip().lower().rstrip("/\\")
+        if value:
+            identities.extend((value, re.split(r"[/\\]", value)[-1]))
+    if target_name not in identities:
+        return False
+    if get_pd_role_env() or params.get("distributed") is not True:
+        return False
+    if str(params.get("distributed_executor_backend") or "mp").strip().lower() != "mp":
+        return False
+
+    for key, expected in _DEEPSEEK_V4_PRO_0813_H20_DUAL_MP_TOPOLOGY.items():
+        raw_value = _offload_runtime_value(params, key)
+        if (
+            key == "tensor_parallel_size"
+            and raw_value in (None, "")
+            and allow_premerge_topology
+        ):
+            # SmartFeature gate 早于模型 defaults/并行参数合并；原生 MP 已在此时
+            # 确定 2 节点×8 卡，后续通用公式会固定生成全局 TP16。仅门控阶段
+            # 允许按该确定性公式补齐，最终 defaults/命令/状态仍必须看到显式 TP16。
+            raw_value = (
+                (_safe_int(_offload_runtime_value(params, "device_count")) or 0)
+                * (_safe_int(_offload_runtime_value(params, "nnodes")) or 0)
+            )
+        if key in {"data_parallel_size", "pipeline_parallel_size"} and raw_value in (None, ""):
+            raw_value = 1
+        if _safe_int(raw_value) != expected:
+            return False
+    return True
 
 
 def is_kimi_k3_910c_dp_scope(
@@ -783,11 +852,29 @@ def _is_kimi_k3_h20_simple_cpu_scope(
     return True
 
 
-def _resolve_kimi_k3_simple_cpu_auto_node_size_gib(
+def _is_deepseek_v4_pro_0813_h20_simple_cpu_scope(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> bool:
+    """双机 Pro-0813 仅在有效 offload 选择 SimpleCPU 且 prefix 未关闭时放行。"""
+    if not is_deepseek_v4_pro_0813_h20_dual_mp_scope(params, engine):
+        return False
+    if resolve_offload_whitelist_backend(params, engine) != _OFFLOAD_SIMPLE_CPU_BACKEND:
+        return False
+    if _offload_runtime_value(params, "no_enable_prefix_caching") is True:
+        return False
+    engine_config = params.get("engine_config") if params else None
+    return not (
+        isinstance(engine_config, dict)
+        and engine_config.get("enable_prefix_caching") is False
+    )
+
+
+def _resolve_simple_cpu_auto_node_size_gib(
     params: Optional[Dict[str, Any]],
     local_rank_count: int,
 ) -> Optional[int]:
-    """解析并按本地 rank 对齐 Kimi-K3 SimpleCPU 的 auto 容量。"""
+    """解析并按本地 rank 对齐 SimpleCPU 的 auto 容量。"""
     node_size_gib = resolve_offload_cpu_capacity_gb(params)
     if node_size_gib is None:
         logger.warning(
@@ -822,14 +909,14 @@ def _resolve_kimi_k3_simple_cpu_auto_node_size_gib(
     return node_size_gib
 
 
-def _resolve_kimi_k3_simple_cpu_node_size_gib(
+def _resolve_simple_cpu_node_size_gib(
     params: Optional[Dict[str, Any]],
     raw_size: str,
     local_rank_count: int,
 ) -> Optional[int]:
-    """解析并校验 Kimi-K3 SimpleCPU 的节点级 GiB 容量。"""
+    """解析并校验 SimpleCPU 的节点级 GiB 容量。"""
     if raw_size.lower() == "auto":
-        node_size_gib = _resolve_kimi_k3_simple_cpu_auto_node_size_gib(
+        node_size_gib = _resolve_simple_cpu_auto_node_size_gib(
             params,
             local_rank_count,
         )
@@ -855,27 +942,18 @@ def _resolve_kimi_k3_simple_cpu_node_size_gib(
     return node_size_gib
 
 
-def resolve_kimi_k3_h20_simple_cpu_config(
+def _build_simple_cpu_offload_config(
     params: Optional[Dict[str, Any]],
-    engine: str = "vllm",
+    engine: str,
+    local_rank_count: int,
 ) -> Optional[Dict[str, Any]]:
-    """Build the exact Kimi-K3 H20 SimpleCPU connector config, or return None.
-
-    容量入口仍是页面下发的节点总 GiB：显式整数原样校验，``auto`` 只在
-    该 Kimi-K3/H20 精确场景复用已有节点反向预算，再按本地 8 个 worker 向下对齐。
-    这里不改动通用 native/LMCache/MemCache 分支，仅让 SimpleCPU connector 接受页面的
-    现有 ``auto`` 输入；节点总量均分后再转为每 rank 字节数。
-    """
-    if not _is_kimi_k3_h20_simple_cpu_scope(params, engine):
-        return None
+    """按节点级 GiB 输入生成每 rank SimpleCPU connector 配置。"""
     if os.getenv("ENABLE_KV_MEM_OFFLOAD", "false").strip().lower() != "true":
         logger.info("[SimpleCPU Offload] memory offload switch is disabled.")
         return None
 
     raw_size = os.getenv("KV_MEM_OFFLOAD_SIZE", "").strip()
-    local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
-    # 容量解析独立成 helper，避免单个场景解析器再次触发超大函数门禁；数值和日志保持原样。
-    node_size_gib = _resolve_kimi_k3_simple_cpu_node_size_gib(
+    node_size_gib = _resolve_simple_cpu_node_size_gib(
         params,
         raw_size,
         local_rank_count,
@@ -890,7 +968,7 @@ def resolve_kimi_k3_h20_simple_cpu_config(
         require_enabled=True,
     )
     lazy_offload = row.get("lazy_offload") if row else None
-    # 最新 Kimi-K3 镜像按 JSON 布尔值消费该字段；严格校验可避免字符串再次混入运行命令。
+    # 当前两套调优镜像都按 JSON 布尔值消费该字段，拒绝字符串可避免半启用配置。
     if lazy_offload is not False:
         logger.warning(
             "[SimpleCPU Offload] whitelist lazy_offload must be boolean false; "
@@ -907,6 +985,52 @@ def resolve_kimi_k3_h20_simple_cpu_config(
             "lazy_offload": lazy_offload,
         },
     }
+
+
+def resolve_kimi_k3_h20_simple_cpu_config(
+    params: Optional[Dict[str, Any]],
+    engine: str = "vllm",
+) -> Optional[Dict[str, Any]]:
+    """Build the exact Kimi-K3 H20 SimpleCPU connector config, or return None.
+
+    容量入口仍是页面下发的节点总 GiB：显式整数原样校验，``auto`` 只在
+    该 Kimi-K3/H20 精确场景复用已有节点反向预算，再按本地 8 个 worker 向下对齐。
+    这里不改动通用 native/LMCache/MemCache 分支，仅让 SimpleCPU connector 接受页面的
+    现有 ``auto`` 输入；节点总量均分后再转为每 rank 字节数。
+    """
+    if not _is_kimi_k3_h20_simple_cpu_scope(params, engine):
+        return None
+    local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
+    return _build_simple_cpu_offload_config(
+        params,
+        engine,
+        local_rank_count,
+    )
+
+
+def resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(
+    params: Optional[Dict[str, Any]],
+    engine: str = "vllm",
+) -> Optional[Dict[str, Any]]:
+    """生成双机 Pro-0813 H20 调优配方的 SimpleCPU connector。"""
+    if not _is_deepseek_v4_pro_0813_h20_simple_cpu_scope(params, engine):
+        return None
+    return _build_simple_cpu_offload_config(
+        params,
+        engine,
+        _DEEPSEEK_V4_PRO_0813_H20_DUAL_MP_TOPOLOGY["device_count"],
+    )
+
+
+def resolve_simple_cpu_offload_config(
+    params: Optional[Dict[str, Any]],
+    engine: str = "vllm",
+) -> Optional[Dict[str, Any]]:
+    """分派当前已验证的两套 H20 SimpleCPU 调优配方。"""
+    kimi_config = resolve_kimi_k3_h20_simple_cpu_config(params, engine)
+    if kimi_config is not None:
+        return kimi_config
+    return resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(params, engine)
 
 
 def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str) -> str:
@@ -1474,7 +1598,7 @@ def resolve_offload_variant(params: Optional[Dict[str, Any]], engine: str) -> st
     if not _is_kv_offload_requested(params):
         return ""
     if resolve_offload_whitelist_backend(params, engine) == _OFFLOAD_SIMPLE_CPU_BACKEND:
-        config = resolve_kimi_k3_h20_simple_cpu_config(params, engine)
+        config = resolve_simple_cpu_offload_config(params, engine)
         return _OFFLOAD_SIMPLE_CPU_VARIANT if config is not None else "disabled"
     memcache_variant = _resolve_memcache_offload_variant(params, engine)
     if memcache_variant is not None:
@@ -1537,14 +1661,16 @@ def resolve_effective_kv_mem_offload_size(
         return _resolve_status_kv_mem_offload_node_size_gb(params)
     if resolved_variant == _OFFLOAD_SIMPLE_CPU_VARIANT:
         # 从同一 connector 解析结果反推节点总 GiB，确保 auto 对齐后的状态与命令同源。
-        config = resolve_kimi_k3_h20_simple_cpu_config(params, engine)
+        config = resolve_simple_cpu_offload_config(params, engine)
         if config is None:
             return None
         extra_config = config.get("kv_connector_extra_config") or {}
         per_rank_bytes = _safe_int(extra_config.get("cpu_bytes_to_use_per_rank"))
         if per_rank_bytes is None or per_rank_bytes <= 0:
             return None
-        local_rank_count = _SIMPLE_CPU_OFFLOAD_TOPOLOGY["device_count"]
+        local_rank_count = _safe_int(_offload_runtime_value(params, "device_count"))
+        if local_rank_count is None or local_rank_count <= 0:
+            return None
         return (per_rank_bytes // _SIMPLE_CPU_OFFLOAD_GIB) * local_rank_count
     if resolved_variant.startswith("native_kv_offloading_backend"):
         special = _classify_offload_special_case(params, engine)
@@ -4354,7 +4480,7 @@ def _resolve_whitelist_mtp_num_speculative_tokens(params: Dict[str, Any], engine
     在不同芯片上使用不同 token 数时（例如 Qwen3.5-27B 的 910C 与 910B），
     也能保持单一事实源。
     """
-    row = resolve_feature_whitelist_row_from_params(params, engine, "spec")
+    row = _resolve_mtp_whitelist_row(params, engine)
     if not row:
         return None
     raw_tokens = row.get("mtp_num_speculative_tokens")
@@ -4453,7 +4579,7 @@ def _lmcache_requires_suffix_speculative_strategy(
 
 def _resolve_whitelist_mtp_strategy(params: Dict[str, Any], engine: str) -> str:
     """Return the explicit whitelist MTP method when its effective gate is on."""
-    mtp_row = _mtp_whitelist_override_row(params, engine)
+    mtp_row = _resolve_mtp_whitelist_row(params, engine)
     if not mtp_row or not params.get("enable_speculative_decode"):
         return ""
     smart_feats = params.get("_smart_feats")
@@ -4668,7 +4794,7 @@ def _build_mtp_speculative_cmd(
     没有白名单行时才回到架构默认 token 规则。这里不处理 DFlash/Eagle3，
     因为它们必须先验证真实 draft path。
     """
-    row = _mtp_whitelist_override_row(params, engine)
+    row = _resolve_mtp_whitelist_row(params, engine)
     if row:
         tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)
         if tokens is None:
@@ -4770,7 +4896,7 @@ def _build_speculative_cmd(params: Dict[str, Any], engine: str) -> str:
         bool((params.get("engine_config") or {}).get("speculative_config")),
     )
 
-    mtp_row = _mtp_whitelist_override_row(params, engine)
+    mtp_row = _resolve_mtp_whitelist_row(params, engine)
     if not mtp_row and strategy not in {"suffix", "mtp"} and not strategy.endswith("_mtp"):
         return _build_whitelist_draft_speculative_cmd(params, engine)
 
@@ -4818,7 +4944,7 @@ def resolve_effective_speculative_details(
     smart_feats = params.get("_smart_feats")
     if smart_feats is not None and "spec" not in smart_feats:
         return None
-    row = _mtp_whitelist_override_row(params, engine)
+    row = _resolve_mtp_whitelist_row(params, engine)
     if not row:
         return None
     tokens = _resolve_whitelist_mtp_num_speculative_tokens(params, engine)

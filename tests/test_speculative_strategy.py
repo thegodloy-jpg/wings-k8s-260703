@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
 from core import config_loader, wings_entry  # noqa: E402
+from core.port_plan import derive_port_plan  # noqa: E402
+from core.start_args_compat import parse_launch_args  # noqa: E402
 from engines import vllm_adapter  # noqa: E402
 
 
@@ -23,6 +26,7 @@ class _FakeModelIdentifier:
 
 
 class _FakeDeepSeekV4Identifier:
+    config = {}
     model_architecture = "DeepseekV4ForCausalLM"
     model_quantize = "w8a8"
 
@@ -30,6 +34,14 @@ class _FakeDeepSeekV4Identifier:
         self.model_name = model_name
         self.model_path = model_path
         self.model_type = model_type
+
+    @staticmethod
+    def identify_model_architecture():
+        return "DeepseekV4ForCausalLM"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
 
 
 class _FakeKimiK3Identifier:
@@ -640,13 +652,458 @@ def test_deepseek_v4_pro_0813_h20_final_mp_command_matches_recipe(
     ):
         assert expected in exec_line
     assert '"method":"dspark"' in exec_line
-    assert '"num_speculative_tokens":7' in exec_line
-    assert '"draft_sample_method":"probabilistic"' in exec_line
+    assert '"num_speculative_tokens":5' in exec_line
+    assert '"draft_sample_method":"greedy"' in exec_line
     assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
     assert exec_line.count("--speculative-config") == 1
     assert "--headless" not in exec_line
     assert "--data-parallel-size" not in exec_line
     assert "--kv-transfer-config" not in exec_line
+
+
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+@pytest.mark.parametrize("node_rank", [0, 1])
+def test_deepseek_v4_pro_0813_dual_h20_matches_tuned_three_feature_recipe(
+    monkeypatch,
+    card_token,
+    node_rank,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "512")
+    monkeypatch.setenv("NETWORK_INTERFACE", "bond0")
+    monkeypatch.delenv("NCCL_SOCKET_IFNAME", raising=False)
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
+    model_path = "/models/DeepSeek-V4-Pro-0813"
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": model_path,
+        "model_type": "llm",
+        "device": "nvidia",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": 2,
+        "node_rank": node_rank,
+        "master_ip": "7.6.25.59",
+        "master_port": 29501,
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+        "speculative_decode_model_path": "none",
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": model_path,
+            "trust_remote_code": True,
+            "kv_cache_dtype": "fp8",
+            "block_size": 256,
+            # adapter 单测直接消费已经由 nvidia_default.json 合并好的引擎配置。
+            "enable_prefix_caching": True,
+            "enable_expert_parallel": True,
+            "enable_ep_weight_filter": True,
+            "tensor_parallel_size": 16,
+            "max_model_len": 133000,
+            "gpu_memory_utilization": 0.92,
+            "max_num_seqs": 32,
+            "max_num_batched_tokens": 8192,
+            "no_enable_flashinfer_autotune": True,
+            "disable_custom_all_reduce": True,
+            "cpu_distributed_timeout_seconds": 7200,
+            "compilation_config": {
+                "mode": 0,
+                "cudagraph_mode": "FULL_DECODE_ONLY",
+            },
+            "tokenizer_mode": "deepseek_v4",
+            "enable_auto_tool_choice": True,
+            "tool_call_parser": "deepseek_v4",
+            "reasoning_parser": "deepseek_v4",
+        },
+    }
+    card_name = "NVIDIA H20 96GB" if card_token == "h20-96" else "NVIDIA H20 141GB"
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "nvidia", "count": 8, "details": [{"name": card_name}]},
+    )
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
+
+    config_loader._set_kv_cache_config(
+        params["engine_config"],
+        params,
+        _FakeDeepSeekV4Identifier(params["model_name"], model_path, "llm"),
+    )
+    connector = json.loads(params["engine_config"]["kv_transfer_config"])
+    assert connector == {
+        "kv_connector": "SimpleCPUOffloadConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "cpu_bytes_to_use_per_rank": 68719476736,
+            "lazy_offload": False,
+        },
+    }
+
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+    for expected in (
+        "--kv-cache-dtype fp8",
+        "--block-size 256",
+        "--enable-prefix-caching",
+        "--enable-expert-parallel",
+        "--enable-ep-weight-filter",
+        "--tensor-parallel-size 16",
+        "--max-model-len 133000",
+        "--gpu-memory-utilization 0.92",
+        "--max-num-seqs 32",
+        "--max-num-batched-tokens 8192",
+        "--cpu-distributed-timeout-seconds 7200",
+        "--no-enable-flashinfer-autotune",
+        "--disable-custom-all-reduce",
+        "--nnodes 2",
+        f"--node-rank {node_rank}",
+        "--master-addr 7.6.25.59",
+        "--master-port 29501",
+    ):
+        assert expected in exec_line
+    assert exec_line.count("--speculative-config") == 1
+    assert '"method":"dspark"' in exec_line
+    assert '"num_speculative_tokens":5' in exec_line
+    assert '"draft_sample_method":"greedy"' in exec_line
+    assert exec_line.count("--hf-overrides") == 1
+    assert '"use_index_cache":true,"index_topk_freq":8' in exec_line
+    assert exec_line.count("SimpleCPUOffloadConnector") == 1
+    assert exec_line.count("68719476736") == 1
+    assert '"lazy_offload":false' in exec_line
+    assert "--kv-offloading-backend" not in exec_line
+    assert "LMCacheConnector" not in exec_line
+    assert "LMCACHE_" not in script
+    assert ("--headless" in exec_line) is (node_rank == 1)
+
+    assert vllm_adapter.resolve_effective_speculative_details(params, "vllm") == {
+        "method": "dspark",
+        "num_speculative_tokens": 5,
+        "moe_backend": None,
+        "draft_sample_method": "greedy",
+    }
+    assert vllm_adapter.resolve_sparse_variant(params, "vllm") == (
+        "indexcache_use_index_cache_topk8"
+    )
+    feature_status = wings_entry._resolve_advanced_feature_status("vllm", params)
+    assert feature_status["features"]["kv_offload"] is True
+    assert feature_status["variants"]["kv_offload"] == (
+        "simple_cpu_offload_connector+custom"
+    )
+    assert feature_status["others"]["kv_mem_offload_size"] == 512
+
+
+@pytest.mark.parametrize(
+    ("nnodes", "expected_features"),
+    [
+        (2, ["offload", "sparse", "spec"]),
+        (4, ["spec"]),
+    ],
+)
+def test_deepseek_v4_pro_0813_h20_premerge_gate_derives_global_tp(
+    monkeypatch,
+    nnodes,
+    expected_features,
+):
+    """gate 在 TP 合并前按 MP 拓扑推导，且只放行已调优的 2x8 范围。"""
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": "/models/DeepSeek-V4-Pro-0813",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": nnodes,
+        "enable_sparse": True,
+        "enable_speculative_decode": True,
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {
+            "device": "nvidia",
+            "count": 8,
+            "details": [{"name": "NVIDIA H20 96GB"}],
+        },
+    )
+
+    assert "tensor_parallel_size" not in params
+    assert "engine_config" not in params
+    assert params["_allowed_smart_feats"] == expected_features
+    assert params["_smart_feats"] == expected_features
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "model_name": "DeepSeek-V4-Pro-0813-extra",
+            "model_path": "/models/DeepSeek-V4-Pro-0813-extra",
+        },
+        {"_smart_card_token": "h100"},
+        {"distributed": False},
+        {"distributed_executor_backend": "ray"},
+        {"nnodes": 4, "engine_config": {"tensor_parallel_size": 32}},
+        {"device_count": 4, "engine_config": {"tensor_parallel_size": 8}},
+        {"engine_config": {"tensor_parallel_size": 8}},
+    ],
+)
+def test_deepseek_v4_pro_0813_dual_h20_scope_does_not_broaden(
+    monkeypatch,
+    overrides,
+):
+    monkeypatch.delenv("PD_ROLE", raising=False)
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": "/models/DeepSeek-V4-Pro-0813",
+        "_smart_card_token": "h20-96",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": 2,
+        "engine_config": {"tensor_parallel_size": 16},
+    }
+    params.update(overrides)
+
+    assert not vllm_adapter.is_deepseek_v4_pro_0813_h20_dual_mp_scope(params)
+
+
+def test_deepseek_v4_pro_0813_dual_h20_scope_rejects_pd(monkeypatch):
+    monkeypatch.setenv("PD_ROLE", "P")
+    params = {
+        "engine": "vllm",
+        "model_name": "DeepSeek-V4-Pro-0813",
+        "model_path": "/models/DeepSeek-V4-Pro-0813",
+        "_smart_card_token": "h20-141",
+        "device_count": 8,
+        "distributed": True,
+        "distributed_executor_backend": "mp",
+        "nnodes": 2,
+        "engine_config": {"tensor_parallel_size": 16},
+    }
+
+    assert not vllm_adapter.is_deepseek_v4_pro_0813_h20_dual_mp_scope(params)
+
+
+@pytest.mark.parametrize(
+    ("card_name", "card_token"),
+    [
+        ("NVIDIA H20 96GB", "h20-96"),
+        ("NVIDIA H20 141GB", "h20-141"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("node_rank", "local_ip"),
+    [(0, "7.6.25.59"), (1, "7.6.25.95")],
+)
+@pytest.mark.parametrize("nnodes", [2, 4])
+def test_deepseek_v4_pro_0813_h20_production_config_chain(
+    monkeypatch,
+    tmp_path,
+    card_name,
+    card_token,
+    node_rank,
+    local_ip,
+    nnodes,
+):
+    """从生产入口验证统一 H20 defaults/DSpark，以及双机专属稀疏和卸载。"""
+    for env_name in (
+        "PD_ROLE",
+        "CONFIG_FORCE",
+        "TENSOR_PARALLEL_SIZE",
+        "DATA_PARALLEL_SIZE",
+        "PIPELINE_PARALLEL_SIZE",
+        "MASTER_PORT",
+        "VLLM_DISTRIBUTED_PORT",
+        "NCCL_SOCKET_IFNAME",
+        "GLOO_SOCKET_IFNAME",
+        "LMCACHE_OFFLOAD",
+        "ENABLE_KV_DISK_OFFLOAD",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "512")
+    monkeypatch.setenv("NETWORK_INTERFACE", "bond0")
+    monkeypatch.setenv("RANK_IP", local_ip)
+
+    hardware_file = tmp_path / f"hardware_rank{node_rank}_{card_token}.json"
+    hardware_file.write_text(
+        json.dumps({
+            "device": "nvidia",
+            "count": 8,
+            "details": [
+                {
+                    "device_id": index,
+                    "name": card_name,
+                    "total_memory": 96 if card_token == "h20-96" else 141,
+                    "free_memory": 90 if card_token == "h20-96" else 135,
+                    "used_memory": 6,
+                }
+                for index in range(8)
+            ],
+            "units": "GB",
+        }),
+        encoding="utf-8",
+    )
+    status_file = tmp_path / f"advanced_features_rank{node_rank}_{card_token}.json"
+    monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
+    monkeypatch.setattr(wings_entry, "_ADVANCED_FEATURES_FILE", str(status_file))
+    monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakeDeepSeekV4Identifier)
+    monkeypatch.setattr(config_loader, "_check_vram_requirements", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_record_selected_engine", lambda *_args: None)
+    node_ips = ",".join(
+        ["7.6.25.59", "7.6.25.95", "7.6.25.96", "7.6.25.97"][:nnodes]
+    )
+
+    launch_args = parse_launch_args([
+        "--model-name", "DeepSeek-V4-Pro-0813",
+        "--model-path", "/mnt/models/DeepSeek-V4-Pro-0813",
+        "--model-type", "llm",
+        "--engine", "vllm",
+        "--device-count", "8",
+        "--port", "8000",
+        "--distributed",
+        "--nnodes", str(nnodes),
+        "--node-rank", str(node_rank),
+        "--node-ips", node_ips,
+        "--nodes", node_ips,
+        "--master-ip", "7.6.25.59",
+        "--head-node-addr", "7.6.25.59",
+        "--enable-auto-tool-choice",
+        "--enable-auto-think-choice",
+        "--enable-speculative-decode",
+        "--enable-sparse",
+        "--speculative-decode-model-path", "none",
+    ])
+    plan = wings_entry.build_launcher_plan(
+        launch_args,
+        derive_port_plan(
+            port=launch_args.port,
+            enable_reason_proxy=False,
+            health_port=19000,
+        ),
+    )
+    params = plan.merged_params
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+    shlex.split(exec_line, posix=True)
+    prepared_config = vllm_adapter._prepare_engine_config(params)
+
+    assert params["_smart_card_token"] == card_token
+    assert params["distributed_executor_backend"] == "mp"
+    expected_features = ["offload", "sparse", "spec"] if nnodes == 2 else ["spec"]
+    assert params["_allowed_smart_feats"] == expected_features
+    assert params["_smart_feats"] == expected_features
+    assert params["engine_config"]["tensor_parallel_size"] == 8 * nnodes
+    for key, expected in (
+        ("max_model_len", 133000),
+        ("gpu_memory_utilization", 0.92),
+        ("max_num_seqs", 32),
+        ("max_num_batched_tokens", 8192),
+        ("enable_prefix_caching", True),
+        ("enable_ep_weight_filter", True),
+        ("cpu_distributed_timeout_seconds", 7200),
+    ):
+        # 这些值必须在 adapter 运行前就由 nvidia defaults 选配完成。
+        assert params["engine_config"][key] == expected
+        assert prepared_config[key] == expected
+    if nnodes == 2:
+        assert json.loads(params["engine_config"]["kv_transfer_config"]) == {
+            "kv_connector": "SimpleCPUOffloadConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {
+                "cpu_bytes_to_use_per_rank": 68719476736,
+                "lazy_offload": False,
+            },
+        }
+    else:
+        assert "kv_transfer_config" not in params["engine_config"]
+
+    assert "export VLLM_HOST_IP=${POD_IP:-${RANK_IP:-" in script
+    assert os.environ["RANK_IP"] == local_ip
+    assert "export NCCL_SOCKET_IFNAME=bond0" in script
+    assert "export GLOO_SOCKET_IFNAME=bond0" in script
+    for expected in (
+        "--trust-remote-code",
+        "--kv-cache-dtype fp8",
+        "--block-size 256",
+        "--enable-expert-parallel",
+        f"--tensor-parallel-size {8 * nnodes}",
+        f"--nnodes {nnodes}",
+        f"--node-rank {node_rank}",
+        "--master-addr 7.6.25.59",
+        "--master-port 29501",
+        "--max-model-len 133000",
+        "--gpu-memory-utilization 0.92",
+        "--max-num-seqs 32",
+        "--max-num-batched-tokens 8192",
+        "--enable-prefix-caching",
+        "--enable-ep-weight-filter",
+        "--cpu-distributed-timeout-seconds 7200",
+        "--no-enable-flashinfer-autotune",
+        "--disable-custom-all-reduce",
+        "--tokenizer-mode deepseek_v4",
+        "--distributed-executor-backend mp",
+    ):
+        assert expected in exec_line
+    assert '"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
+    assert exec_line.count("--speculative-config") == 1
+    assert '"method":"dspark"' in exec_line
+    assert '"num_speculative_tokens":5' in exec_line
+    assert '"draft_sample_method":"greedy"' in exec_line
+    assert (exec_line.count("--hf-overrides") == 1) is (nnodes == 2)
+    assert ('"use_index_cache":true,"index_topk_freq":8' in exec_line) is (nnodes == 2)
+    assert (exec_line.count("SimpleCPUOffloadConnector") == 1) is (nnodes == 2)
+    assert (exec_line.count("68719476736") == 1) is (nnodes == 2)
+    assert ("--headless" in exec_line) is (node_rank != 0)
+    # headless worker 沿用框架既有 API 参数裁剪；这些字段只保留在 rank0 API server。
+    for api_flag in (
+        "--host 7.6.25.59",
+        "--port 8000",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser deepseek_v4",
+        "--reasoning-parser deepseek_v4",
+    ):
+        assert (api_flag in exec_line) is (node_rank == 0)
+
+    status = json.loads(status_file.read_text(encoding="utf-8"))
+    assert status["features"] == {
+        "speculative_decode": True,
+        "sparse_kv": nnodes == 2,
+        "kv_offload": nnodes == 2,
+        "rag_acc": False,
+    }
+    assert status["variants"] == {
+        "speculative_decode": "dspark",
+        "sparse_kv": "indexcache_use_index_cache_topk8" if nnodes == 2 else None,
+        "kv_offload": "simple_cpu_offload_connector+custom" if nnodes == 2 else None,
+    }
+    assert status["others"]["kv_mem_offload_size"] == (512 if nnodes == 2 else None)
+    assert status["others"]["speculative_decode"] == {
+        "method": "dspark",
+        "num_speculative_tokens": 5,
+        "moe_backend": None,
+        "draft_sample_method": "greedy",
+    }
+    assert ("SimpleCPUOffloadConnector" in plan.command) is (nnodes == 2)
+    assert ("index_topk_freq" in plan.command) is (nnodes == 2)
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])

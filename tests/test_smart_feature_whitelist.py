@@ -569,7 +569,7 @@ def test_deepseek_v4_flash_0731_w8a8_smart_features_are_card_specific():
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
-def test_deepseek_v4_pro_0813_h20_uses_exact_dspark7_only(card_token):
+def test_deepseek_v4_pro_0813_h20_declares_tuned_feature_capabilities(card_token):
     model_name = "DeepSeek-V4-Pro-0813"
     model_path = f"/models/{model_name}"
 
@@ -580,11 +580,23 @@ def test_deepseek_v4_pro_0813_h20_uses_exact_dspark7_only(card_token):
     assert row is not None
     assert row["arch"] == "DeepseekV4ForCausalLM"
     assert row["mtp_method"] == "dspark"
-    assert row["mtp_num_speculative_tokens"] == 7
-    assert row["draft_sample_method"] == "probabilistic"
+    assert row["mtp_num_speculative_tokens"] == 5
+    assert row["draft_sample_method"] == "greedy"
+    sparse_row = model_utils.resolve_feature_whitelist_row(
+        "vllm", model_name, model_path, card_token, "sparse"
+    )
+    offload_row = model_utils.resolve_feature_whitelist_row(
+        "vllm", model_name, model_path, card_token, "offload"
+    )
+    assert sparse_row is not None
+    assert sparse_row["strategy"] == "indexcache"
+    assert sparse_row["topk"] == {"accuracy_first": 8}
+    assert offload_row is not None
+    assert offload_row["backend"] == "simple_cpu"
+    assert offload_row["lazy_offload"] is False
     assert model_utils.resolve_feature_whitelist(
         "vllm", model_name, model_path, card_token
-    ) == frozenset({"spec"})
+    ) == frozenset({"offload", "sparse", "spec"})
     assert model_utils.resolve_feature_whitelist(
         "vllm", "DeepSeek-V4-Pro", "/models/DeepSeek-V4-Pro", card_token
     ) == frozenset()
