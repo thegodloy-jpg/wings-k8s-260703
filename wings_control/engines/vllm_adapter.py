@@ -132,6 +132,7 @@ logger = logging.getLogger(__name__)
 # 低版本 (< 0.14) 沿用 --num-gpus（兼容 V1 行为）。
 # 同时，v0.14 需要 Triton NPU 补丁和 --enforce-eager 标志。
 _ASCEND_NPU_RESOURCE_MIN_VERSION = (0, 14)
+_QWEN38_27B_NATIVE_OFFLOAD_VERSION = (0, 23)
 
 
 def _parse_engine_version() -> tuple:
@@ -1477,6 +1478,15 @@ def _resolve_native_backend_variant(
         return None
     if (
         engine == "vllm_ascend"
+        and str((params or {}).get("model_name") or "").strip().lower()
+        == "qwen3.8-27b-w8a8"
+        and not _is_qwen38_27b_w8a8_ascend_native_offload_scope(params or {}, engine)
+    ):
+        # 白名单只声明能力；实际镜像/平台不满足 0.23 金粉边界时，最终状态必须与
+        # env/CLI 一起关闭，避免 advanced_features.json 仍显示 native 已生效。
+        return "disabled"
+    if (
+        engine == "vllm_ascend"
         and str((params or {}).get("model_name") or "").strip().lower() == "kimi-k3-w4a8"
     ):
         if not is_kimi_k3_910c_dp_scope(params, engine):
@@ -1982,11 +1992,9 @@ def _is_qwen38_27b_w8a8_910b_single_node_env_scope(
 def _build_qwen38_27b_w8a8_910b_env() -> List[str]:
     """仅注入已验证命令需要的环境变量，避免继承同架构其它型号的运行时配方。"""
     return [
+        "export VLLM_USE_MODELSCOPE=True",
         "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export OMP_PROC_BIND=false",
-        "export OMP_NUM_THREADS=1",
-        "export TASK_QUEUE_ENABLE=1",
     ]
 
 
@@ -2014,6 +2022,29 @@ def _build_qwen38_27b_w8a8_910c_env() -> List[str]:
         "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
     ]
+
+
+def _is_qwen38_27b_w8a8_ascend_native_offload_scope(
+    params: Dict[str, Any],
+    engine: str,
+) -> bool:
+    """仅放行 vLLM-Ascend 0.23 金粉镜像覆盖的 Qwen3.8 本机配方。"""
+    if (
+        engine != "vllm_ascend"
+        or _parse_engine_version() != _QWEN38_27B_NATIVE_OFFLOAD_VERSION
+    ):
+        return False
+    model_info = ModelIdentifier(
+        params.get("model_name"),
+        params.get("model_path"),
+        params.get("model_type"),
+    )
+    is_910b = _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info)
+    is_910c = _is_qwen38_27b_w8a8_910c_local_scope(params, model_info)
+    image_platform = engine_version_platform()
+    # 官方 A3 镜像必须带 -a3；A2 官方标签无平台后缀，因此只拒绝明确的 A3 镜像。
+    # 硬件识别仍由既有 scope 负责，这里只阻止 910B/910C 误配镜像后启用新 offload。
+    return (is_910b and image_platform != "a3") or (is_910c and image_platform == "a3")
 
 
 def _build_qwen35moe_ascend_env(arch: str) -> List[str]:
@@ -5081,8 +5112,8 @@ def resolve_sparse_variant(params: Dict[str, Any], engine: str) -> str:
 def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     """构建白名单 native KV 卸载 CLI 片段。
 
-    - 通用路径仍仅允许 ``engine == "vllm"``；Ascend 只放行精确的
-      Kimi-K3-W4A8 四节点和 DeepSeek-V4-Pro-0813-W4A8 双节点 910C 原生 DP 配方。
+    - 通用路径仍仅允许 ``engine == "vllm"``；Ascend 只放行精确的 Kimi-K3-W4A8、
+      0.23 Qwen3.8-27B 和 DeepSeek-V4-Pro-0813-W4A8 收编配方。
     - 复用 ``ENABLE_KV_OFFLOAD`` 总开关（get_lmcache_env）作为触发条件。
     - Pro 5000 新增场景优先读白名单 backend：Qwen / MiniMax-M2.5 / MiniMax-M3
       命中 native，MiniMax-M2.7 命中 lmcache，不在这里生成 native CLI。
@@ -5092,11 +5123,17 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。
     """
     kimi_k3_910c_native = is_kimi_k3_910c_dp_scope(params, engine)
+    qwen38_27b_ascend_native = _is_qwen38_27b_w8a8_ascend_native_offload_scope(
+        params,
+        engine,
+    )
     deepseek_v4_pro_0813_910c_native = (
         is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(params)
     )
     if engine != "vllm" and not (
-        kimi_k3_910c_native or deepseek_v4_pro_0813_910c_native
+        kimi_k3_910c_native
+        or qwen38_27b_ascend_native
+        or deepseek_v4_pro_0813_910c_native
     ):
         return ""
     if params.get("_wings_fallback_no_kv_offload"):
@@ -5305,7 +5342,7 @@ def _align_qwen38_27b_w8a8_910c_env(
     params: Dict[str, Any],
     engine: str,
 ) -> List[str]:
-    """将 Qwen3.8-27B-w8a8/910C 单机环境严格收口到目标配方。"""
+    """将 Qwen3.8-27B-w8a8 的 910B/910C 本机环境严格收口到目标配方。"""
     if engine != "vllm_ascend":
         return commands
     model_info = ModelIdentifier(
@@ -5313,22 +5350,30 @@ def _align_qwen38_27b_w8a8_910c_env(
         params.get("model_path"),
         params.get("model_type"),
     )
-    if not _is_qwen38_27b_w8a8_910c_local_scope(params, model_info):
+    if not (
+        _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info)
+        or _is_qwen38_27b_w8a8_910c_local_scope(params, model_info)
+    ):
         return commands
 
     # 基础 Ascend 脚本与 forced 层都会补这些通用变量，但目标启动配方明确不声明；
-    # 在最终汇总层按变量名剔除，避免只关掉一个来源后仍从另一路径泄漏。
+    # SimpleCPU 开关也先剔除再按最终 native CLI 判定补回，保证环境与 backend/size
+    # 三项同时出现或同时消失，避免页面关闭 offload 后仍留下误导性运行时开关。
     blocked_names = {
         "OMP_PROC_BIND",
         "OMP_NUM_THREADS",
         "TASK_QUEUE_ENABLE",
         "HCCL_OP_EXPANSION_MODE",
+        "VLLM_USE_SIMPLE_KV_OFFLOAD",
     }
-    return [
+    aligned = [
         command
         for command in commands
         if _top_level_export_name(command) not in blocked_names
     ]
+    if _build_kv_offload_cmd(params, engine):
+        aligned.append("export VLLM_USE_SIMPLE_KV_OFFLOAD=1")
+    return aligned
 
 
 def _align_minimax_m27_quarot_env(

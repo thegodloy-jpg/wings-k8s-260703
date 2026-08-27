@@ -39,6 +39,9 @@ _RUNTIME_ENV_NAMES = (
     "ENABLE_SPARSE",
     "ENABLE_KV_OFFLOAD",
     "LMCACHE_OFFLOAD",
+    "ENABLE_KV_MEM_OFFLOAD",
+    "KV_MEM_OFFLOAD_SIZE",
+    "ENGINE_VERSION",
     "ASCEND_ENFORCE_EAGER",
     "ASCEND_RT_VISIBLE_DEVICES",
     "VLLM_USE_MODELSCOPE",
@@ -48,6 +51,7 @@ _RUNTIME_ENV_NAMES = (
     "HCCL_OP_EXPANSION_MODE",
     "OMP_NUM_THREADS",
     "OMP_PROC_BIND",
+    "VLLM_USE_SIMPLE_KV_OFFLOAD",
 )
 
 
@@ -113,12 +117,15 @@ def test_qwen38_27b_w8a8_910b_selects_exact_single_node_profile():
         "use_vllm_serve": True,
         "trust_remote_code": True,
         "quantization": "ascend",
-        "max_num_seqs": 32,
+        "max_num_seqs": 64,
         "max_model_len": 131072,
         "max_num_batched_tokens": 16384,
-        "gpu_memory_utilization": 0.85,
+        "gpu_memory_utilization": 0.9,
         "enable_prefix_caching": True,
-        "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+        "compilation_config": {
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+            "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64],
+        },
         "additional_config": {"enable_cpu_binding": True},
     }
     # TP/DP 是运行时拓扑，不能固化在模型 defaults 中。
@@ -135,12 +142,15 @@ def test_qwen38_27b_w8a8_910c_selects_exact_profile():
         "use_vllm_serve": True,
         "trust_remote_code": True,
         "quantization": "ascend",
-        "max_num_seqs": 32,
-        "max_model_len": 131072,
+        "max_num_seqs": 64,
+        "max_model_len": 133072,
         "max_num_batched_tokens": 16384,
-        "gpu_memory_utilization": 0.85,
+        "gpu_memory_utilization": 0.9,
         "enable_prefix_caching": True,
-        "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+        "compilation_config": {
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+            "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64],
+        },
         "additional_config": {"enable_cpu_binding": True},
     }
     # TP/DP 属于运行时拓扑，不固化到模型 defaults；前缀缓存仍是静态配方。
@@ -194,8 +204,9 @@ def test_qwen38_27b_ascend_spec_whitelist_renders_exact_mtp(
     )
 
     assert row is not None
+    assert row["exact_model_names"] == ("qwen3.8-27b-w8a8",)
     assert row["mtp_method"] == "qwen3_5_mtp"
-    assert row["mtp_num_speculative_tokens"] == 3
+    assert row["mtp_num_speculative_tokens"] == 2
     assert row["enforce_eager"] is True
     assert model_utils.resolve_feature_whitelist_row(
         "vllm_ascend", "Qwen3.8-27B", "/models/Qwen3.8-27B", card_token, "spec"
@@ -218,8 +229,194 @@ def test_qwen38_27b_ascend_spec_whitelist_renders_exact_mtp(
 
     assert command == (
         " --speculative-config "
-        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3,\"enforce_eager\":true}'"
+        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":2,\"enforce_eager\":true}'"
     )
+
+
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+def test_qwen38_27b_ascend_native_offload_whitelist_is_exact(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        _MODEL_NAME,
+        _MODEL_PATH,
+        card_token,
+        "offload",
+    )
+
+    assert row is not None
+    assert row["exact_model_names"] == ("qwen3.8-27b-w8a8",)
+    assert row["backend"] == "native"
+    assert row["source"] == "vllm-ascend-0.23"
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        "Qwen3.8-27B",
+        "/models/Qwen3.8-27B",
+        card_token,
+        "offload",
+    ) is None
+
+
+def test_exact_model_names_remains_optional_for_existing_rows():
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "GLM-5-FP8",
+        "/models/GLM-5-FP8",
+        "h20-141",
+        "spec",
+    )
+
+    assert row is not None
+    assert "exact_model_names" not in row
+
+
+@pytest.mark.parametrize("feature", ["spec", "offload"])
+@pytest.mark.parametrize("card_token", ["910b", "910c"])
+@pytest.mark.parametrize(
+    ("model_name", "model_path"),
+    [
+        ("Qwen3.8-27B-w8a8-custom", "/models/Qwen3.8-27B-w8a8-custom"),
+        ("Other-27B", "/models/archive/Qwen3.8-27B-w8a8"),
+    ],
+)
+def test_qwen38_27b_smart_feature_rows_reject_alias_and_path_substrings(
+    feature,
+    card_token,
+    model_name,
+    model_path,
+):
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend",
+        model_name,
+        model_path,
+        card_token,
+        feature,
+    ) is None
+
+
+def test_qwen38_27b_alias_offload_request_is_suppressed_end_to_end(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0-a3")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "100")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "Qwen3.8-27B-w8a8-custom",
+        "model_path": "/models/Qwen3.8-27B-w8a8-custom",
+        "model_type": "llm",
+        "_resolved_model_type": "llm",
+        "device_count": 2,
+        "nnodes": 1,
+        "distributed": False,
+    }
+
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {
+            "device": "ascend",
+            "count": 2,
+            "details": [{"name": "Ascend910C"}],
+        },
+    )
+
+    assert params["_smart_feats"] == []
+    assert vllm_adapter.build_kv_offload_cmd(params, "vllm_ascend") == ""
+    assert vllm_adapter.resolve_kv_offload_effective_state(
+        params,
+        "vllm_ascend",
+    )[0] is False
+
+
+@pytest.mark.parametrize(
+    ("card_token", "engine_version"),
+    [("ascend910b", "v0.23.0"), ("ascend910c", "v0.23.0-a3")],
+)
+def test_qwen38_27b_ascend_native_offload_renders_for_023_golden_image(
+    monkeypatch,
+    card_token,
+    engine_version,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("ENGINE_VERSION", engine_version)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "100")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": _MODEL_NAME,
+        "model_path": _MODEL_PATH,
+        "model_type": "llm",
+        "device_count": 2,
+        "nnodes": 1,
+        "distributed": False,
+        "_smart_card_token": card_token,
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter.build_kv_offload_cmd(params, "vllm_ascend") == (
+        " --kv-offloading-backend native --kv-offloading-size 100"
+    )
+    assert vllm_adapter.resolve_kv_offload_effective_state(
+        params,
+        "vllm_ascend",
+    ) == (True, "native_kv_offloading_backend")
+    aligned = vllm_adapter._align_qwen38_27b_w8a8_910c_env(
+        ["export VLLM_USE_SIMPLE_KV_OFFLOAD=0"],
+        params,
+        "vllm_ascend",
+    )
+    assert aligned == ["export VLLM_USE_SIMPLE_KV_OFFLOAD=1"]
+
+
+@pytest.mark.parametrize(
+    ("card_token", "engine_version", "mem_enabled", "size"),
+    [
+        ("ascend910b", "v0.22.0", "true", "100"),
+        ("ascend910b", "v0.23.0-a3", "true", "100"),
+        ("ascend910c", "v0.23.0", "true", "100"),
+        ("ascend910c", "v0.24.0-a3", "true", "100"),
+        ("ascend910c", "v0.23.0-a3", "false", "100"),
+        ("ascend910c", "v0.23.0-a3", "true", "0"),
+    ],
+)
+def test_qwen38_27b_ascend_native_offload_rejects_wrong_image_or_size(
+    monkeypatch,
+    card_token,
+    engine_version,
+    mem_enabled,
+    size,
+):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("ENGINE_VERSION", engine_version)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", mem_enabled)
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", size)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": _MODEL_NAME,
+        "model_path": _MODEL_PATH,
+        "model_type": "llm",
+        "device_count": 2,
+        "nnodes": 1,
+        "distributed": False,
+        "_smart_card_token": card_token,
+        "_smart_feats": ["offload"],
+    }
+
+    assert vllm_adapter.build_kv_offload_cmd(params, "vllm_ascend") == ""
+    assert vllm_adapter.resolve_kv_offload_effective_state(
+        params,
+        "vllm_ascend",
+    )[0] is False
+    aligned = vllm_adapter._align_qwen38_27b_w8a8_910c_env(
+        ["export VLLM_USE_SIMPLE_KV_OFFLOAD=0"],
+        params,
+        "vllm_ascend",
+    )
+    assert "export VLLM_USE_SIMPLE_KV_OFFLOAD=1" not in aligned
 
 
 def test_qwen38_27b_910b_uses_dedicated_minimal_env(monkeypatch):
@@ -239,11 +436,9 @@ def test_qwen38_27b_910b_uses_dedicated_minimal_env(monkeypatch):
     )
 
     assert commands == [
+        "export VLLM_USE_MODELSCOPE=True",
         "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export OMP_PROC_BIND=false",
-        "export OMP_NUM_THREADS=1",
-        "export TASK_QUEUE_ENABLE=1",
     ]
 
 
@@ -391,12 +586,15 @@ def test_qwen38_27b_910c_final_command_derives_tp_from_local_devices(
     assert "export OMP_NUM_THREADS=" not in script
     assert "export TASK_QUEUE_ENABLE=" not in script
     assert "export HCCL_OP_EXPANSION_MODE=" not in script
+    assert "export VLLM_USE_SIMPLE_KV_OFFLOAD=" not in script
+    assert "--kv-offloading-backend" not in exec_line
+    assert "--kv-offloading-size" not in exec_line
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"_smart_card_token": "ascend910b"},
+        {"_smart_card_token": "ascend910b", "device_count": 4},
         {"distributed": True, "nnodes": 2},
         {"model_name": "Qwen3.8-27B"},
         {"engine": "vllm"},
@@ -440,6 +638,10 @@ def test_qwen38_27b_production_chain_renders_target_single_node_command(
     monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "2,3")
     monkeypatch.setenv("ENGINE_PORT", "8000")
     monkeypatch.setenv("POD_IP", "10.0.0.8")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "100")
 
     # DP=1 由本次部署显式声明；模型 defaults 只保存静态能力参数。
     config_file = tmp_path / "qwen38-27b-runtime.json"
@@ -485,7 +687,7 @@ def test_qwen38_27b_production_chain_renders_target_single_node_command(
     shlex.split(exec_line, posix=True)
 
     assert params["_smart_card_token"].endswith("910b")
-    assert params["_smart_feats"] == ["spec"]
+    assert params["_smart_feats"] == ["offload", "spec"]
     assert params["engine_config"]["tensor_parallel_size"] == 2
     assert params["engine_config"]["data_parallel_size"] == 1
     # v4 的 --port/PORT 是代理端口；真正的 vLLM 监听端口由 ENGINE_PORT 控制。
@@ -495,12 +697,13 @@ def test_qwen38_27b_production_chain_renders_target_single_node_command(
         f"exec vllm serve {_MODEL_PATH}"
         " --trust-remote-code"
         " --quantization ascend"
-        " --max-num-seqs 32"
+        " --max-num-seqs 64"
         " --max-model-len 131072"
         " --max-num-batched-tokens 16384"
-        " --gpu-memory-utilization 0.85"
+        " --gpu-memory-utilization 0.9"
         " --enable-prefix-caching"
-        " --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}'"
+        " --compilation-config "
+        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[1,2,4,8,16,24,32,40,48,56,64]}'"
         " --additional-config '{\"enable_cpu_binding\":true}'"
         " --host 10.0.0.8"
         " --port 8000"
@@ -509,17 +712,17 @@ def test_qwen38_27b_production_chain_renders_target_single_node_command(
         " --tensor-parallel-size 2"
         " --data-parallel-size 1"
         " --speculative-config "
-        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3,\"enforce_eager\":true}'"
+        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":2,\"enforce_eager\":true}'"
+        " --kv-offloading-backend native"
+        " --kv-offloading-size 100"
     )
     # 可见卡由部署层传入；启动脚本不得把 2,3 改写成逻辑卡号或其它物理卡号。
     assert "ASCEND_RT_VISIBLE_DEVICES=" not in script
     assert [line for line in script.splitlines() if line.startswith("export ")] == [
+        "export VLLM_USE_MODELSCOPE=True",
         "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
-        "export OMP_PROC_BIND=false",
-        "export OMP_NUM_THREADS=1",
-        "export TASK_QUEUE_ENABLE=1",
-        "export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-AIV}",
+        "export VLLM_USE_SIMPLE_KV_OFFLOAD=1",
     ]
 
 
@@ -543,6 +746,10 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(
     monkeypatch.setenv("SERVED_MODEL_NAME", "qwen3.8")
     monkeypatch.setenv("ENGINE_PORT", "8000")
     monkeypatch.setenv("POD_IP", "10.0.0.9")
+    monkeypatch.setenv("ENGINE_VERSION", "v0.23.0-a3")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "100")
 
     # DP=1 由本次部署显式声明；模型 defaults 不持有运行时拓扑。
     config_file = tmp_path / "qwen38-27b-910c-runtime.json"
@@ -588,7 +795,7 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(
     shlex.split(exec_line, posix=True)
 
     assert params["_smart_card_token"].endswith("910c")
-    assert params["_smart_feats"] == ["spec"]
+    assert params["_smart_feats"] == ["offload", "spec"]
     assert "distributed_executor_backend" not in params["engine_config"]
     assert params["engine_config"]["tensor_parallel_size"] == 2
     assert params["engine_config"]["data_parallel_size"] == 1
@@ -598,12 +805,13 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(
         "exec vllm serve /usr/local/serving/models"
         " --trust-remote-code"
         " --quantization ascend"
-        " --max-num-seqs 32"
-        " --max-model-len 131072"
+        " --max-num-seqs 64"
+        " --max-model-len 133072"
         " --max-num-batched-tokens 16384"
-        " --gpu-memory-utilization 0.85"
+        " --gpu-memory-utilization 0.9"
         " --enable-prefix-caching"
-        " --compilation-config '{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}'"
+        " --compilation-config "
+        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[1,2,4,8,16,24,32,40,48,56,64]}'"
         " --additional-config '{\"enable_cpu_binding\":true}'"
         " --host 10.0.0.9"
         " --port 8000"
@@ -612,7 +820,9 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(
         " --tensor-parallel-size 2"
         " --data-parallel-size 1"
         " --speculative-config "
-        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":3,\"enforce_eager\":true}'"
+        "'{\"method\":\"qwen3_5_mtp\",\"num_speculative_tokens\":2,\"enforce_eager\":true}'"
+        " --kv-offloading-backend native"
+        " --kv-offloading-size 100"
     )
     assert "--distributed-executor-backend" not in exec_line
     assert "--async-scheduling" not in exec_line
@@ -621,4 +831,5 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(
         "export VLLM_USE_MODELSCOPE=True",
         "export HCCL_BUFFSIZE=512",
         "export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True",
+        "export VLLM_USE_SIMPLE_KV_OFFLOAD=1",
     ]

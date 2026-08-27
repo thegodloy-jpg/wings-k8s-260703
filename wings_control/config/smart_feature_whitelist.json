@@ -1,7 +1,7 @@
 {
   "_doc": "Smart 三特性白名单，按特性拆为三独立表（投机 spec / 稀疏 sparse / 卸载 offload）。23.6.0 矩阵来源见 docs/features/smart_feature/23.6.0_feature_matrix_summary.md。由 utils/model_utils.py 模块加载。",
   "_schema": {
-    "每表条目": "engine(精确 vllm|vllm_ascend) + name_tokens(小写子串，对 model_name+model_path 任一命中) + card_tokens(子串|[\"*\"]，Ascend 用 910b/910c)",
+    "每表条目": "engine(精确 vllm|vllm_ascend) + name_tokens(小写子串，对 model_name+model_path 任一命中) + 可选 exact_model_names(精确 model_name) + card_tokens(子串|[\"*\"]，Ascend 用 910b/910c)",
     "arch / source": "仅文档用元信息，加载器忽略",
     "source": "仅标识该行收编来源/引擎版本，不参与任何 matcher 判定。当前 NVIDIA H20/L20 收编使用 vllm-0.23，Qwen3.5/Qwen3.6 Ascend 收编使用 vllm-ascend-0.21。",
     "DAY0_20260714": "S列为空场景适配统一按对应引擎版本标注 source：Ascend 行使用 vllm-ascend-0.21，Pro 5000 行默认使用 vllm-0.23；行 20 MiniMax-M3-MXFP8 因 H 列引擎为 vllm-minimax-m3，spec/offload 行单独标注 vllm-minimax-m3。",
@@ -59,8 +59,8 @@
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.2-w4a8", "glm-5.2-w4a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "vllm-ascend-glm52-a3", "mtp_method": "deepseek_mtp", "mtp_num_speculative_tokens": 3},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910b"], "arch": "GlmMoeDsaForCausalLM", "source": "user", "mtp_num_speculative_tokens": 3},
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "user", "mtp_num_speculative_tokens": 3},
-    {"engine": "vllm_ascend", "name_tokens": ["qwen3.8-27b-w8a8"], "card_tokens": ["910b"], "arch": "Qwen3_5ForConditionalGeneration", "source": "user", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 3, "enforce_eager": true},
-    {"engine": "vllm_ascend", "name_tokens": ["qwen3.8-27b-w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5ForConditionalGeneration", "source": "user", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 3, "enforce_eager": true},
+    {"engine": "vllm_ascend", "name_tokens": ["qwen3.8-27b-w8a8"], "exact_model_names": ["qwen3.8-27b-w8a8"], "card_tokens": ["910b"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.23", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 2, "enforce_eager": true},
+    {"engine": "vllm_ascend", "name_tokens": ["qwen3.8-27b-w8a8"], "exact_model_names": ["qwen3.8-27b-w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.23", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 2, "enforce_eager": true},
     {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.5-27b", "qwen3.5-27b"], "exclude_name_tokens": ["w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.21", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 1, "enforce_eager": true},
     {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.5-27b", "qwen3.5-27b"], "exclude_name_tokens": ["w8a8"], "card_tokens": ["910b"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.21", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 3, "enforce_eager": true},
     {"engine": "vllm_ascend", "name_tokens": ["qwen/qwen3.5-35b-a3b", "qwen3.5-35b-a3b"], "card_tokens": ["910c"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "vllm-ascend-0.21", "mtp_method": "qwen3_5_mtp", "mtp_num_speculative_tokens": 1, "enforce_eager": true},
@@ -113,6 +113,8 @@
     {"engine": "vllm_ascend", "name_tokens": ["eco-tech/glm-5.1-w8a8", "glm-5.1-w8a8"], "card_tokens": ["910c"], "arch": "GlmMoeDsaForCausalLM", "source": "23.6.0", "strategy": "indexcache", "use_index_cache": true, "topk": {"accuracy_first": 8}}
   ],
   "offload": [
+    {"engine": "vllm_ascend", "name_tokens": ["qwen3.8-27b-w8a8"], "exact_model_names": ["qwen3.8-27b-w8a8"], "card_tokens": ["910b"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.23", "backend": "native"},
+    {"engine": "vllm_ascend", "name_tokens": ["qwen3.8-27b-w8a8"], "exact_model_names": ["qwen3.8-27b-w8a8"], "card_tokens": ["910c"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-ascend-0.23", "backend": "native"},
     {"engine": "vllm", "name_tokens": ["glm-5-fp8"], "card_tokens": ["h20-141"], "arch": "GlmMoeDsaForCausalLM", "source": "vllm-0.23", "backend": "native"},
     {"engine": "vllm", "name_tokens": ["glm-4.7-fp8"], "card_tokens": ["h20-141"], "arch": "Glm4MoeForCausalLM", "source": "vllm-0.23", "backend": "native"},
     {"engine": "vllm", "name_tokens": ["glm-5.1-fp8"], "card_tokens": ["h20-141"], "arch": "GlmMoeDsaForCausalLM", "source": "vllm-0.23", "backend": "native"},

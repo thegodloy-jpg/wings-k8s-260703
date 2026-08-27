@@ -77,13 +77,19 @@ def _normalize_match_rows(rows) -> tuple[dict, ...]:
     for row in rows or ():
         if not isinstance(row, dict):
             continue
-        normalized.append({
+        normalized_row = {
             **row,
             "engine": str(row.get("engine", "")),
             "name_tokens": _as_lower_tuple(row.get("name_tokens", ())),
             "exclude_name_tokens": _as_lower_tuple(row.get("exclude_name_tokens", ())),
             "card_tokens": _as_lower_tuple(row.get("card_tokens", ())),
-        })
+        }
+        # 可选精确名称只在条目显式声明时加入，避免所有既有行的返回结构平白多出空字段。
+        if "exact_model_names" in row:
+            normalized_row["exact_model_names"] = _as_lower_tuple(
+                row.get("exact_model_names", ())
+            )
+        normalized.append(normalized_row)
     return tuple(normalized)
 
 
@@ -163,15 +169,20 @@ def _whitelist_table_match(
     engine: str,
     hay: str,
     ct: str,
+    model_name: str = "",
 ) -> Optional[dict]:
-    """三维（engine 精确 → 名子串 → 卡型 "*"/子串）与匹配，首命中返回行。"""
+    """三维（engine 精确 → 名称 → 卡型 "*"/子串）与匹配，首命中返回行。"""
     # 模型名由上层按开源名称准确下发，这里不推断精度、不拼接后缀，也不维护宽松别名。
     # 对同时具有组织路径和准确模型名的开源模型，name_tokens 固定为
     # [组织/开源路径名, 准确模型名] 两项，不增加第三种拼写；
     # 只有开源模型名本身带 W8A8/NVFP4 等后缀时才在 JSON 中建独立行；
     # 场景表中的独立精度列不参与名称构造，具体边界见白名单 _schema.精度命名。
+    normalized_model_name = str(model_name or "").strip().lower()
     for row in table:
         if row["engine"] != engine:
+            continue
+        exact_model_names = row.get("exact_model_names", ())
+        if exact_model_names and normalized_model_name not in exact_model_names:
             continue
         if not any(tok in hay for tok in row["name_tokens"]):
             continue
@@ -189,8 +200,9 @@ def _whitelist_table_hit(
     engine: str,
     hay: str,
     ct: str,
+    model_name: str = "",
 ) -> bool:
-    return _whitelist_table_match(table, engine, hay, ct) is not None
+    return _whitelist_table_match(table, engine, hay, ct, model_name) is not None
 
 
 def feature_allowed(engine, model_name, model_path, card_token, feature) -> bool:
@@ -206,7 +218,7 @@ def feature_allowed(engine, model_name, model_path, card_token, feature) -> bool
         model_path,
         card_token,
     )
-    return _whitelist_table_hit(table, engine, hay, ct)
+    return _whitelist_table_hit(table, engine, hay, ct, model_name)
 
 
 def resolve_feature_whitelist_row(engine, model_name, model_path, card_token, feature) -> Optional[dict]:
@@ -219,7 +231,7 @@ def resolve_feature_whitelist_row(engine, model_name, model_path, card_token, fe
         model_path,
         card_token,
     )
-    return _whitelist_table_match(table, engine, hay, ct)
+    return _whitelist_table_match(table, engine, hay, ct, model_name)
 
 
 def resolve_feature_whitelist_row_from_params(
@@ -296,7 +308,7 @@ def resolve_feature_whitelist(engine, model_name, model_path, card_token):
     )
     return frozenset(
         feat for feat in SMART_FEATURES
-        if _whitelist_table_hit(_SMART_WHITELISTS[feat], engine, hay, ct)
+        if _whitelist_table_hit(_SMART_WHITELISTS[feat], engine, hay, ct, model_name)
     )
 
 
@@ -309,7 +321,9 @@ def resolve_forced_feature_whitelist(engine, model_name, model_path, card_token)
     )
     forced = []
     for feat in SMART_FEATURES:
-        row = _whitelist_table_match(_SMART_WHITELISTS[feat], engine, hay, ct)
+        row = _whitelist_table_match(
+            _SMART_WHITELISTS[feat], engine, hay, ct, model_name
+        )
         if row and row.get("forced") is True:
             forced.append(feat)
     return frozenset(forced)
@@ -330,6 +344,7 @@ def resolve_sparse_topk(engine, model_name, model_path, card_token, sparse_level
         engine,
         hay,
         ct,
+        model_name,
     )
     topk = row.get("topk", {}) if row else {}
     if not isinstance(topk, dict):
