@@ -624,10 +624,20 @@ def _build_dp_deployment_commands(params: Dict[str, Any], ctx: DistScriptCtx, sp
     if vllm_adapter.should_append_auto_speculative_config(params):
         speculative_extra = vllm_adapter.build_speculative_cmd(params, ctx.engine)
     kv_offload_extra = ""
-    if vllm_adapter.is_kimi_k3_910c_dp_scope(params, ctx.engine):
-        # 分布式命令不会经过单机脚本的 native CLI 追加点，只给该精确配方补齐。
+    deepseek_v4_pro_0813_910c_native = (
+        vllm_adapter.is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(params)
+    )
+    if (
+        vllm_adapter.is_kimi_k3_910c_dp_scope(params, ctx.engine)
+        or deepseek_v4_pro_0813_910c_native
+    ):
+        # 分布式命令不会经过单机脚本的 native CLI 追加点，仅给已收编的精确配方补齐。
         kv_offload_extra = vllm_adapter.build_kv_offload_cmd(params, ctx.engine)
     parts = _build_dp_env_commands(ctx.is_ascend, params, model_info.model_architecture)
+    if deepseek_v4_pro_0813_910c_native and kv_offload_extra:
+        # SimpleKV 只与已完整生成的 native backend/size 同时生效，避免关闭或容量非法时
+        # 遗留半套运行时环境。
+        parts.append("export VLLM_USE_SIMPLE_KV_OFFLOAD=1")
     exec_spec = _DpExecCommandSpec(
         command=f"{dp_cmd}{speculative_extra}{sparse_args}{kv_offload_extra}",
         rpc_port=dp_rpc_port,

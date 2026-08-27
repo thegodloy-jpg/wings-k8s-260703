@@ -5082,7 +5082,7 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     """构建白名单 native KV 卸载 CLI 片段。
 
     - 通用路径仍仅允许 ``engine == "vllm"``；Ascend 只放行精确的
-      Kimi-K3-W4A8 四节点 910C 原生 DP 配方。
+      Kimi-K3-W4A8 四节点和 DeepSeek-V4-Pro-0813-W4A8 双节点 910C 原生 DP 配方。
     - 复用 ``ENABLE_KV_OFFLOAD`` 总开关（get_lmcache_env）作为触发条件。
     - Pro 5000 新增场景优先读白名单 backend：Qwen / MiniMax-M2.5 / MiniMax-M3
       命中 native，MiniMax-M2.7 命中 lmcache，不在这里生成 native CLI。
@@ -5092,7 +5092,12 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。
     """
     kimi_k3_910c_native = is_kimi_k3_910c_dp_scope(params, engine)
-    if engine != "vllm" and not kimi_k3_910c_native:
+    deepseek_v4_pro_0813_910c_native = (
+        is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(params)
+    )
+    if engine != "vllm" and not (
+        kimi_k3_910c_native or deepseek_v4_pro_0813_910c_native
+    ):
         return ""
     if params.get("_wings_fallback_no_kv_offload"):
         return ""

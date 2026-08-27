@@ -449,15 +449,53 @@ def test_default_smart_feature_whitelist_file_is_loaded():
     ) == frozenset()
 
 
-def test_deepseek_v4_pro_0813_w4a8_ascend_does_not_inherit_mtp_features():
-    # 0813-W4A8 参考命令不含 MTP/IndexCache；独立 defaults profile 不应复用
-    # 旧 w4a8-mtp 的 SmartFeature 白名单身份。
+def test_deepseek_v4_pro_0813_w4a8_ascend_uses_exact_acceleration_recipe():
+    model_name = "DeepSeek-V4-Pro-0813-w4a8"
+    model_path = "/models/DeepSeek-V4-Pro-0813-w4a8"
+
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend",
-        "DeepSeek-V4-Pro-0813-w4a8",
-        "/models/DeepSeek-V4-Pro-0813-w4a8",
+        model_name,
+        model_path,
         "910c",
-    ) == frozenset()
+    ) == frozenset({"spec", "sparse", "offload"})
+
+    spec_row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910c", "spec"
+    )
+    assert spec_row["mtp_method"] == "dspark"
+    assert spec_row["mtp_num_speculative_tokens"] == 7
+    assert spec_row["enforce_eager"] is True
+    assert "draft_sample_method" not in spec_row
+
+    sparse_row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910c", "sparse"
+    )
+    assert sparse_row["strategy"] == "indexcache"
+    assert sparse_row["use_index_cache"] is True
+    assert sparse_row["topk"]["accuracy_first"] == 8
+
+    offload_row = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910c", "offload"
+    )
+    assert offload_row["backend"] == "native"
+
+    for engine, negative_name, card, expected in (
+        ("vllm", model_name, "910c", frozenset()),
+        ("vllm_ascend", model_name, "910b", frozenset()),
+        (
+            "vllm_ascend",
+            "DeepSeek-V4-Pro-w4a8-mtp",
+            "910c",
+            frozenset({"spec", "sparse"}),
+        ),
+    ):
+        assert model_utils.resolve_feature_whitelist(
+            engine,
+            negative_name,
+            f"/models/{negative_name}",
+            card,
+        ) == expected
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])

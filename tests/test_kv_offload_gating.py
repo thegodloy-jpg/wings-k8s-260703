@@ -1933,6 +1933,7 @@ def test_deepseek_v4_pro_0813_w4a8_production_launcher_matches_dual_node_recipe(
         "ENABLE_KV_OFFLOAD",
         "ENABLE_KV_MEM_OFFLOAD",
         "ENABLE_KV_DISK_OFFLOAD",
+        "LMCACHE_OFFLOAD",
     ):
         monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a3")

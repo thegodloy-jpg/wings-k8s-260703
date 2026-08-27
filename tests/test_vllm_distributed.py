@@ -506,6 +506,115 @@ def test_deepseek_v4_pro_0813_w4a8_910c_final_rank_commands_match_recipe(
         assert "--port " not in exec_line
 
 
+@pytest.mark.parametrize("node_rank", [0, 1])
+def test_deepseek_v4_pro_0813_w4a8_910c_acceleration_reaches_each_rank(
+    monkeypatch,
+    node_rank,
+):
+    vllm_adapter = vllm_distributed._import_vllm_adapter()
+    monkeypatch.setattr(
+        vllm_adapter,
+        "ModelIdentifier",
+        _FakeDeepSeekV4Pro0813W4A8Identifier,
+    )
+    monkeypatch.setattr(
+        vllm_distributed,
+        "ModelIdentifier",
+        _FakeDeepSeekV4Pro0813W4A8Identifier,
+    )
+    monkeypatch.setenv("ENGINE_VERSION", "0.26.0rc-a3")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("LMCACHE_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("SD_ENABLE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("SPARSE_ENABLE", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "128")
+    monkeypatch.setenv("NETWORK_INTERFACE", "enp196s0f0")
+    monkeypatch.setenv("POD_IP", "7.6.28.252")
+
+    params = _deepseek_v4_pro_0813_w4a8_910c_params(node_rank)
+    params.update({
+        "enable_speculative_decode": True,
+        "enable_sparse": True,
+    })
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {
+            "device": "ascend",
+            "count": 16,
+            "details": [{"name": "Ascend910C"}],
+        },
+    )
+
+    script = vllm_adapter.build_start_script(params)
+    exports = [line for line in script.splitlines() if line.startswith("export ")]
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
+    assert exports.count("export VLLM_USE_SIMPLE_KV_OFFLOAD=1") == 1
+    assert (
+        "--speculative-config "
+        "'{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"enforce_eager\":true}'"
+        in exec_line
+    )
+    assert (
+        "--hf-overrides '{\"use_index_cache\":true,\"index_topk_freq\":8}'"
+        in exec_line
+    )
+    assert "--kv-offloading-backend native" in exec_line
+    assert "--kv-offloading-size 128" in exec_line
+    assert "--kv-transfer-config" not in exec_line
+    assert f"--data-parallel-start-rank {node_rank}" in exec_line
+
+
+@pytest.mark.parametrize(
+    ("offload_enabled", "offload_size"),
+    [(False, "128"), (True, "0")],
+)
+def test_deepseek_v4_pro_0813_w4a8_910c_inactive_offload_has_no_partial_runtime(
+    monkeypatch,
+    offload_enabled,
+    offload_size,
+):
+    vllm_adapter = vllm_distributed._import_vllm_adapter()
+    monkeypatch.setattr(
+        vllm_adapter,
+        "ModelIdentifier",
+        _FakeDeepSeekV4Pro0813W4A8Identifier,
+    )
+    monkeypatch.setattr(
+        vllm_distributed,
+        "ModelIdentifier",
+        _FakeDeepSeekV4Pro0813W4A8Identifier,
+    )
+    monkeypatch.setenv("ENGINE_VERSION", "0.26.0rc-a3")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", str(offload_enabled).lower())
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", str(offload_enabled).lower())
+    monkeypatch.setenv("LMCACHE_OFFLOAD", str(offload_enabled).lower())
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "false")
+    monkeypatch.setenv("SD_ENABLE", "false")
+    monkeypatch.setenv("ENABLE_SPARSE", "false")
+    monkeypatch.setenv("SPARSE_ENABLE", "false")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", offload_size)
+
+    params = _deepseek_v4_pro_0813_w4a8_910c_params(0)
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {
+            "device": "ascend",
+            "count": 16,
+            "details": [{"name": "Ascend910C"}],
+        },
+    )
+
+    script = vllm_adapter.build_start_script(params)
+    assert "VLLM_USE_SIMPLE_KV_OFFLOAD" not in script
+    assert "--kv-offloading-backend" not in script
+    assert "--kv-offloading-size" not in script
+
+
 @pytest.mark.parametrize("node_rank", [0, 1, 2, 3])
 def test_kimi_k3_w4a8_910c_full_script_drops_generic_ascend_env_defaults(
     monkeypatch,
