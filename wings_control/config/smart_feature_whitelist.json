@@ -92,6 +92,7 @@
     {"engine": "vllm", "name_tokens": ["glm-4.7-fp8"], "card_tokens": ["h20-141"], "arch": "Glm4MoeForCausalLM", "source": "vllm-0.23", "strategy": "fp8"},
     {"engine": "vllm", "name_tokens": ["glm-5.1-fp8"], "card_tokens": ["h20-141"], "arch": "GlmMoeDsaForCausalLM", "source": "vllm-0.23", "strategy": "indexcache", "use_index_cache": true, "topk": {"accuracy_first": 4}},
     {"engine": "vllm", "name_tokens": ["qwen/qwen3.6-27b", "qwen3.6-27b"], "card_tokens": ["l20"], "arch": "Qwen3_5ForConditionalGeneration", "source": "vllm-0.23", "strategy": "fp8"},
+    {"engine": "vllm", "name_tokens": ["qwen/qwen3.8-27b", "qwen3.8-27b"], "exclude_name_tokens": ["fp8", "w8a8"], "card_tokens": ["h20-96", "h20-141"], "arch": "Qwen3_5ForConditionalGeneration", "source": "user", "strategy": "fp8"},
     {"engine": "vllm", "name_tokens": ["qwen/qwen3.6-35b-a3b", "qwen3.6-35b-a3b"], "card_tokens": ["l20"], "arch": "Qwen3_5MoeForConditionalGeneration", "source": "vllm-0.23", "strategy": "fp8"},
     {"engine": "vllm", "name_tokens": ["qwen3.8-2.4t-a95b-fp8"], "card_tokens": ["h20-96", "h20-141"], "arch": "Qwen3_5MoeForCausalLM", "source": "user", "strategy": "fp8"},
     {"engine": "vllm", "name_tokens": ["qwen/qwen3-embedding-0.6b", "qwen3-embedding-0.6b"], "card_tokens": ["l20"], "arch": "Qwen3ForCausalLM", "source": "vllm-0.23", "strategy": "fp8"},

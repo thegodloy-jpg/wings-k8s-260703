@@ -677,7 +677,6 @@
             "trust_remote_code": true,
             "max_model_len": 133000,
             "gpu_memory_utilization": 0.9,
-            "kv_cache_dtype": "fp8",
             "enable_prefix_caching": true,
             "tool_call_parser": "qwen3_coder",
             "mm_encoder_tp_mode": "data"
@@ -687,7 +686,6 @@
             "trust_remote_code": true,
             "max_model_len": 133000,
             "gpu_memory_utilization": 0.9,
-            "kv_cache_dtype": "fp8",
             "enable_prefix_caching": true,
             "tool_call_parser": "qwen3_coder",
             "mm_encoder_tp_mode": "data"

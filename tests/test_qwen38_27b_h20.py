@@ -125,6 +125,7 @@ def _render_command(
     enable_auto_tool_choice=True,
     enable_auto_think_choice=True,
     enable_speculative_decode=True,
+    enable_sparse=True,
     enable_simple_cpu_offload=False,
     enable_prefix_caching=None,
 ):
@@ -172,6 +173,8 @@ def _render_command(
         argv.append("--enable-auto-think-choice")
     if enable_speculative_decode:
         argv.append("--enable-speculative-decode")
+    if enable_sparse:
+        argv.append("--enable-sparse")
 
     params = config_loader.load_and_merge_configs(
         _hardware(card_name=card_name, count=device_count),
@@ -190,7 +193,6 @@ def test_qwen38_27b_h20_profile_is_static_and_topology_free():
         "trust_remote_code": True,
         "max_model_len": 133000,
         "gpu_memory_utilization": 0.9,
-        "kv_cache_dtype": "fp8",
         "enable_prefix_caching": True,
         "tool_call_parser": "qwen3_coder",
         "mm_encoder_tp_mode": "data",
@@ -232,7 +234,6 @@ def test_qwen38_27b_h20_profile_does_not_restrict_topology(
         "trust_remote_code": True,
         "max_model_len": 133000,
         "gpu_memory_utilization": 0.9,
-        "kv_cache_dtype": "fp8",
         "enable_prefix_caching": True,
         "tool_call_parser": "qwen3_coder",
         "mm_encoder_tp_mode": "data",
@@ -270,6 +271,21 @@ def test_qwen38_27b_h20_spec_row_uses_exact_mtp3_without_topology_fields(card_to
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_qwen38_27b_h20_sparse_row_selects_fp8_without_topology_fields(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "Qwen/Qwen3.8-27B",
+        "/models/Qwen/Qwen3.8-27B",
+        card_token,
+        "sparse",
+    )
+
+    assert row is not None
+    assert row["strategy"] == "fp8"
+    assert not {"device_counts", "tensor_parallel_size", "data_parallel_size", "nnodes"} & row.keys()
+
+
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
 def test_qwen38_27b_h20_offload_row_selects_simple_cpu(card_token):
     row = model_utils.resolve_feature_whitelist_row(
         "vllm",
@@ -303,6 +319,24 @@ def test_qwen38_27b_h20_spec_row_excludes_quantized_name_suffixes(model_name):
         ("Qwen3.8-27B", "l20"),
     ],
 )
+def test_qwen38_27b_h20_sparse_row_does_not_broaden(model_name, card_token):
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        f"/models/{model_name}",
+        card_token,
+        "sparse",
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_token"),
+    [
+        ("Qwen3.8-27B-FP8", "h20-96"),
+        ("Qwen3.8-27B-w8a8", "h20-141"),
+        ("Qwen3.8-27B", "l20"),
+    ],
+)
 def test_qwen38_27b_h20_offload_row_does_not_broaden(model_name, card_token):
     assert model_utils.resolve_feature_whitelist_row(
         "vllm",
@@ -322,7 +356,6 @@ def test_qwen38_27b_h20_single_gpu_renders_reference_command(monkeypatch):
         " --trust-remote-code"
         " --max-model-len 133000"
         " --gpu-memory-utilization 0.9"
-        " --kv-cache-dtype fp8"
         " --enable-prefix-caching"
         " --tool-call-parser qwen3_coder"
         " --mm-encoder-tp-mode data"
@@ -333,6 +366,7 @@ def test_qwen38_27b_h20_single_gpu_renders_reference_command(monkeypatch):
         " --enable-auto-tool-choice"
         " --default-chat-template-kwargs '{\"enable_thinking\":true}'"
         " --tensor-parallel-size 1"
+        " --kv-cache-dtype fp8"
         " --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'"
     )
     for absent in (
@@ -367,8 +401,8 @@ def test_qwen38_27b_h20_single_gpu_renders_simple_cpu_mtp3_command(
         enable_simple_cpu_offload=True,
     )
 
-    assert params["_allowed_smart_feats"] == ["offload", "spec"]
-    assert params["_smart_feats"] == ["offload", "spec"]
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
     assert json.loads(params["engine_config"]["kv_transfer_config"]) == {
         "kv_connector": "SimpleCPUOffloadConnector",
         "kv_role": "kv_both",
@@ -520,12 +554,17 @@ def test_qwen38_27b_h20_keeps_feature_switches_opt_in(monkeypatch):
         enable_auto_tool_choice=False,
         enable_auto_think_choice=False,
         enable_speculative_decode=False,
+        enable_sparse=False,
     )
 
+    assert params["_allowed_smart_feats"] == ["offload", "sparse", "spec"]
+    assert params["_smart_feats"] == []
     assert "tool_call_parser" not in params["engine_config"]
     assert "reasoning_parser" not in params["engine_config"]
+    assert "kv_cache_dtype" not in params["engine_config"]
     assert "--enable-auto-tool-choice" not in exec_line
     assert "--tool-call-parser" not in exec_line
     assert "--reasoning-parser" not in exec_line
     assert "--speculative-config" not in exec_line
+    assert "--kv-cache-dtype" not in exec_line
     assert "--default-chat-template-kwargs '{\"enable_thinking\":false}'" in exec_line
