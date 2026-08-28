@@ -330,16 +330,26 @@ def test_qwen38_27b_alias_offload_request_is_suppressed_end_to_end(monkeypatch):
 
 @pytest.mark.parametrize(
     ("card_token", "engine_version"),
-    [("ascend910b", "v0.23.0"), ("ascend910c", "v0.23.0-a3")],
+    [
+        ("ascend910b", None),
+        ("ascend910b", "v0.22.0"),
+        ("ascend910b", "v0.23.0"),
+        ("ascend910b", "v0.23.0-a3"),
+        ("ascend910c", "v0.23.0"),
+        ("ascend910c", "v0.23.0-a3"),
+        ("ascend910c", "v0.24.0-a3"),
+        ("ascend910c", "v0.99.0-a2"),
+    ],
 )
-def test_qwen38_27b_ascend_native_offload_renders_for_023_golden_image(
+def test_qwen38_27b_ascend_native_offload_does_not_gate_on_engine_version(
     monkeypatch,
     card_token,
     engine_version,
 ):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
     _clear_runtime_env(monkeypatch)
-    monkeypatch.setenv("ENGINE_VERSION", engine_version)
+    if engine_version is not None:
+        monkeypatch.setenv("ENGINE_VERSION", engine_version)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "100")
@@ -371,26 +381,19 @@ def test_qwen38_27b_ascend_native_offload_renders_for_023_golden_image(
 
 
 @pytest.mark.parametrize(
-    ("card_token", "engine_version", "mem_enabled", "size"),
+    ("mem_enabled", "size"),
     [
-        ("ascend910b", "v0.22.0", "true", "100"),
-        ("ascend910b", "v0.23.0-a3", "true", "100"),
-        ("ascend910c", "v0.23.0", "true", "100"),
-        ("ascend910c", "v0.24.0-a3", "true", "100"),
-        ("ascend910c", "v0.23.0-a3", "false", "100"),
-        ("ascend910c", "v0.23.0-a3", "true", "0"),
+        ("false", "100"),
+        ("true", "0"),
     ],
 )
-def test_qwen38_27b_ascend_native_offload_rejects_wrong_image_or_size(
+def test_qwen38_27b_ascend_native_offload_rejects_disabled_or_zero_size(
     monkeypatch,
-    card_token,
-    engine_version,
     mem_enabled,
     size,
 ):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
     _clear_runtime_env(monkeypatch)
-    monkeypatch.setenv("ENGINE_VERSION", engine_version)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", mem_enabled)
     monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", size)
@@ -402,7 +405,7 @@ def test_qwen38_27b_ascend_native_offload_rejects_wrong_image_or_size(
         "device_count": 2,
         "nnodes": 1,
         "distributed": False,
-        "_smart_card_token": card_token,
+        "_smart_card_token": "ascend910c",
         "_smart_feats": ["offload"],
     }
 

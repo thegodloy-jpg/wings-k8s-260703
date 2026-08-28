@@ -132,7 +132,6 @@ logger = logging.getLogger(__name__)
 # 低版本 (< 0.14) 沿用 --num-gpus（兼容 V1 行为）。
 # 同时，v0.14 需要 Triton NPU 补丁和 --enforce-eager 标志。
 _ASCEND_NPU_RESOURCE_MIN_VERSION = (0, 14)
-_QWEN38_27B_NATIVE_OFFLOAD_VERSION = (0, 23)
 
 
 def _parse_engine_version() -> tuple:
@@ -2044,11 +2043,8 @@ def _is_qwen38_27b_w8a8_ascend_native_offload_scope(
     params: Dict[str, Any],
     engine: str,
 ) -> bool:
-    """仅放行 vLLM-Ascend 0.23 金粉镜像覆盖的 Qwen3.8 本机配方。"""
-    if (
-        engine != "vllm_ascend"
-        or _parse_engine_version() != _QWEN38_27B_NATIVE_OFFLOAD_VERSION
-    ):
+    """仅按 Qwen3.8 910B/910C 本机场景放行 native offload。"""
+    if engine != "vllm_ascend":
         return False
     model_info = ModelIdentifier(
         params.get("model_name"),
@@ -2057,10 +2053,8 @@ def _is_qwen38_27b_w8a8_ascend_native_offload_scope(
     )
     is_910b = _is_qwen38_27b_w8a8_910b_single_node_env_scope(params, model_info)
     is_910c = _is_qwen38_27b_w8a8_910c_local_scope(params, model_info)
-    image_platform = engine_version_platform()
-    # 官方 A3 镜像必须带 -a3；A2 官方标签无平台后缀，因此只拒绝明确的 A3 镜像。
-    # 硬件识别仍由既有 scope 负责，这里只阻止 910B/910C 误配镜像后启用新 offload。
-    return (is_910b and image_platform != "a3") or (is_910c and image_platform == "a3")
+    # 镜像/版本选择属于部署层；adapter 只确认模型、卡型和本机拓扑场景已命中。
+    return is_910b or is_910c
 
 
 def _build_qwen35moe_ascend_env(arch: str) -> List[str]:
