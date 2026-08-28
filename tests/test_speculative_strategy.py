@@ -630,7 +630,6 @@ def test_deepseek_v4_pro_0813_h20_final_mp_command_matches_recipe(
     assert "export GLOO_SOCKET_IFNAME=bond0" in script
     for expected in (
         "--trust-remote-code",
-        "--kv-cache-dtype fp8",
         "--block-size 256",
         "--enable-expert-parallel",
         "--tensor-parallel-size 32",
@@ -656,6 +655,10 @@ def test_deepseek_v4_pro_0813_h20_final_mp_command_matches_recipe(
     assert '"draft_sample_method":"greedy"' in exec_line
     assert '"cudagraph_mode":"FULL_DECODE_ONLY"' in exec_line
     assert exec_line.count("--speculative-config") == 1
+    # Pro-0813 H20 的 FP8 KV 与 IndexCache 同属 sparse 能力包；关闭 sparse
+    # 时两者都不能从静态 profile 残留到最终命令。
+    assert "--kv-cache-dtype fp8" not in exec_line
+    assert "--hf-overrides" not in exec_line
     assert "--headless" not in exec_line
     assert "--data-parallel-size" not in exec_line
     assert "--kv-transfer-config" not in exec_line
@@ -790,7 +793,7 @@ def test_deepseek_v4_pro_0813_dual_h20_matches_tuned_three_feature_recipe(
         "draft_sample_method": "greedy",
     }
     assert vllm_adapter.resolve_sparse_variant(params, "vllm") == (
-        "indexcache_use_index_cache_topk8"
+        "fp8_indexcache_use_index_cache_topk8"
     )
     feature_status = wings_entry._resolve_advanced_feature_status("vllm", params)
     assert feature_status["features"]["kv_offload"] is True
@@ -1087,7 +1090,7 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
     }
     assert status["variants"] == {
         "speculative_decode": "dspark",
-        "sparse_kv": "indexcache_use_index_cache_topk8",
+        "sparse_kv": "fp8_indexcache_use_index_cache_topk8",
         "kv_offload": "simple_cpu_offload_connector+custom",
     }
     assert status["others"]["kv_mem_offload_size"] == 512
@@ -1099,6 +1102,20 @@ def test_deepseek_v4_pro_0813_h20_production_config_chain(
     }
     assert "SimpleCPUOffloadConnector" in plan.command
     assert "index_topk_freq" in plan.command
+    primary_lines = [
+        line.strip()
+        for line in plan.command.splitlines()
+        if line.strip().startswith("vllm serve ") and "--speculative-config" in line
+    ]
+    fallback_lines = [
+        line.strip()
+        for line in plan.command.splitlines()
+        if line.strip().startswith("vllm serve ") and "--speculative-config" not in line
+    ]
+    assert primary_lines
+    assert all("--kv-cache-dtype fp8" in line for line in primary_lines)
+    assert fallback_lines
+    assert all("--kv-cache-dtype fp8" not in line for line in fallback_lines)
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])

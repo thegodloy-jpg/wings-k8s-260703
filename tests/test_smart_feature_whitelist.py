@@ -628,6 +628,7 @@ def test_deepseek_v4_pro_0813_h20_declares_tuned_feature_capabilities(card_token
     )
     assert sparse_row is not None
     assert sparse_row["strategy"] == "indexcache"
+    assert sparse_row["kv_cache_dtype"] == "fp8"
     assert sparse_row["topk"] == {"accuracy_first": 8}
     assert offload_row is not None
     assert offload_row["backend"] == "simple_cpu"
