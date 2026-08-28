@@ -884,7 +884,7 @@ def test_deepseek_v4_pro_0813_h20_simple_cpu_uses_local_device_count(
         "engine_config": {"enable_prefix_caching": True},
     }
 
-    config = vllm_adapter.resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(
+    config = vllm_adapter.resolve_topology_free_simple_cpu_offload_config(
         params,
         "vllm",
     )
@@ -1371,10 +1371,8 @@ def test_kimi_k3_h20_simple_cpu_offload_rejects_other_runtime_scopes(
         False,
         "disabled",
     )
-    assert vllm_adapter.resolve_kv_offload_effective_state(params, "vllm") == (
-        False,
-        "disabled",
-    )
+    # Kimi 固定配方失配后不能回落到 topology-free resolver。
+    assert vllm_adapter.resolve_simple_cpu_offload_config(params, "vllm") is None
 
 
 @pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])

@@ -31,6 +31,13 @@ _RUNTIME_ENV_NAMES = (
     "POD_IP",
     "RANK_IP",
     "SERVED_MODEL_NAME",
+    "TRUST_REMOTE_CODE",
+    "KV_CACHE_DTYPE",
+    "GPU_MEMORY_UTILIZATION",
+    "ENABLE_PREFIX_CACHING",
+    "NO_ENABLE_PREFIX_CACHING",
+    "INPUT_LENGTH",
+    "OUTPUT_LENGTH",
     "CONFIG_FORCE",
     "CONFIG_FILE",
     "ENABLE_AUTO_TOOL_CHOICE",
@@ -42,6 +49,8 @@ _RUNTIME_ENV_NAMES = (
     "ENABLE_SPARSE",
     "ENABLE_KV_OFFLOAD",
     "LMCACHE_OFFLOAD",
+    "ENABLE_KV_MEM_OFFLOAD",
+    "KV_MEM_OFFLOAD_SIZE",
     "ENGINE_VERSION",
 )
 
@@ -109,17 +118,30 @@ def _clear_runtime_env(monkeypatch):
 def _render_command(
     monkeypatch,
     *,
+    card_name=_H20_CARDS[0],
     device_count=1,
     tensor_parallel_size=None,
     config_file=None,
     enable_auto_tool_choice=True,
     enable_auto_think_choice=True,
     enable_speculative_decode=True,
+    enable_simple_cpu_offload=False,
+    enable_prefix_caching=None,
 ):
     _clear_runtime_env(monkeypatch)
     monkeypatch.setenv("SERVED_MODEL_NAME", "Qwen/Qwen3.8-27B")
     if tensor_parallel_size is not None:
         monkeypatch.setenv("TENSOR_PARALLEL_SIZE", str(tensor_parallel_size))
+    if enable_simple_cpu_offload:
+        monkeypatch.setenv("SERVED_MODEL_NAME", "qwen3.8")
+        monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+        monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+        monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "64")
+        if enable_prefix_caching is not None:
+            monkeypatch.setenv(
+                "ENABLE_PREFIX_CACHING",
+                "true" if enable_prefix_caching else "false",
+            )
     monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeQwen38Identifier)
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
     monkeypatch.setattr(config_loader, "_check_vram_requirements", lambda *_args: None)
@@ -152,7 +174,7 @@ def _render_command(
         argv.append("--enable-speculative-decode")
 
     params = config_loader.load_and_merge_configs(
-        _hardware(count=device_count),
+        _hardware(card_name=card_name, count=device_count),
         parse_launch_args(argv),
     )
     script = vllm_adapter.build_start_script(params)
@@ -165,6 +187,11 @@ def test_qwen38_27b_h20_profile_is_static_and_topology_free():
     profile = _nvidia_arch_defaults()["Qwen3.8-27B-H20"]
     expected_engine_config = {
         "use_vllm_serve": True,
+        "trust_remote_code": True,
+        "max_model_len": 133000,
+        "gpu_memory_utilization": 0.9,
+        "kv_cache_dtype": "fp8",
+        "enable_prefix_caching": True,
         "tool_call_parser": "qwen3_coder",
         "mm_encoder_tp_mode": "data",
     }
@@ -202,6 +229,11 @@ def test_qwen38_27b_h20_profile_does_not_restrict_topology(
         engine_key=engine_key,
     ) == {
         "use_vllm_serve": True,
+        "trust_remote_code": True,
+        "max_model_len": 133000,
+        "gpu_memory_utilization": 0.9,
+        "kv_cache_dtype": "fp8",
+        "enable_prefix_caching": True,
         "tool_call_parser": "qwen3_coder",
         "mm_encoder_tp_mode": "data",
     }
@@ -237,6 +269,21 @@ def test_qwen38_27b_h20_spec_row_uses_exact_mtp3_without_topology_fields(card_to
     assert not {"device_counts", "tensor_parallel_size", "data_parallel_size", "nnodes"} & row.keys()
 
 
+@pytest.mark.parametrize("card_token", ["h20-96", "h20-141"])
+def test_qwen38_27b_h20_offload_row_selects_simple_cpu(card_token):
+    row = model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        "Qwen/Qwen3.8-27B",
+        "/models/Qwen/Qwen3.8-27B",
+        card_token,
+        "offload",
+    )
+
+    assert row is not None
+    assert row["backend"] == "simple_cpu"
+    assert row["lazy_offload"] is False
+
+
 @pytest.mark.parametrize("model_name", ["Qwen3.8-27B-FP8", "Qwen3.8-27B-w8a8"])
 def test_qwen38_27b_h20_spec_row_excludes_quantized_name_suffixes(model_name):
     assert model_utils.resolve_feature_whitelist_row(
@@ -248,12 +295,35 @@ def test_qwen38_27b_h20_spec_row_excludes_quantized_name_suffixes(model_name):
     ) is None
 
 
+@pytest.mark.parametrize(
+    ("model_name", "card_token"),
+    [
+        ("Qwen3.8-27B-FP8", "h20-96"),
+        ("Qwen3.8-27B-w8a8", "h20-141"),
+        ("Qwen3.8-27B", "l20"),
+    ],
+)
+def test_qwen38_27b_h20_offload_row_does_not_broaden(model_name, card_token):
+    assert model_utils.resolve_feature_whitelist_row(
+        "vllm",
+        model_name,
+        f"/models/{model_name}",
+        card_token,
+        "offload",
+    ) is None
+
+
 def test_qwen38_27b_h20_single_gpu_renders_reference_command(monkeypatch):
     params, exec_line = _render_command(monkeypatch)
 
     assert params["engine_config"]["tensor_parallel_size"] == 1
     assert exec_line == (
         "exec vllm serve /model"
+        " --trust-remote-code"
+        " --max-model-len 133000"
+        " --gpu-memory-utilization 0.9"
+        " --kv-cache-dtype fp8"
+        " --enable-prefix-caching"
         " --tool-call-parser qwen3_coder"
         " --mm-encoder-tp-mode data"
         " --reasoning-parser qwen3"
@@ -266,13 +336,11 @@ def test_qwen38_27b_h20_single_gpu_renders_reference_command(monkeypatch):
         " --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'"
     )
     for absent in (
-        "--trust-remote-code",
-        "--max-model-len",
         "--max-num-seqs",
         "--max-num-batched-tokens",
         "--quantization",
-        "--enable-prefix-caching",
         "--enforce-eager",
+        "--simple-cpu-offload-local-rank-source",
     ):
         assert absent not in exec_line
 
@@ -284,6 +352,148 @@ def test_qwen38_27b_h20_uses_generic_dynamic_tp(monkeypatch, device_count):
     assert params["engine_config"]["tensor_parallel_size"] == device_count
     assert f"--tensor-parallel-size {device_count}" in exec_line
     assert "--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'" in exec_line
+
+
+@pytest.mark.parametrize("card_name", _H20_CARDS)
+def test_qwen38_27b_h20_single_gpu_renders_simple_cpu_mtp3_command(
+    monkeypatch,
+    card_name,
+):
+    params, exec_line = _render_command(
+        monkeypatch,
+        card_name=card_name,
+        device_count=1,
+        tensor_parallel_size=1,
+        enable_simple_cpu_offload=True,
+    )
+
+    assert params["_allowed_smart_feats"] == ["offload", "spec"]
+    assert params["_smart_feats"] == ["offload", "spec"]
+    assert json.loads(params["engine_config"]["kv_transfer_config"]) == {
+        "kv_connector": "SimpleCPUOffloadConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "cpu_bytes_to_use_per_rank": 68719476736,
+            "lazy_offload": False,
+        },
+    }
+    for expected in (
+        "--trust-remote-code",
+        "--mm-encoder-tp-mode data",
+        "--max-model-len 133000",
+        "--served-model-name qwen3.8",
+        "--tensor-parallel-size 1",
+        "--enable-prefix-caching",
+        "--gpu-memory-utilization 0.9",
+        "--kv-cache-dtype fp8",
+        "--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
+        "SimpleCPUOffloadConnector",
+        '"cpu_bytes_to_use_per_rank":68719476736',
+        '"lazy_offload":false',
+    ):
+        assert expected in exec_line
+    assert '"method":"suffix"' not in exec_line
+    assert "--kv-offloading-backend" not in exec_line
+    assert "LMCacheConnector" not in exec_line
+    assert "LMCACHE_" not in vllm_adapter.build_start_script(params)
+    assert vllm_adapter.resolve_offload_variant(params, "vllm") == (
+        "simple_cpu_offload_connector+custom"
+    )
+
+
+@pytest.mark.parametrize("engine_version", ["v0.23.0", "v0.27.1"])
+def test_qwen38_27b_h20_simple_cpu_uses_shared_resolver_without_version_gate(
+    monkeypatch,
+    engine_version,
+):
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("ENGINE_VERSION", engine_version)
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "64")
+    params = {
+        "engine": "vllm",
+        # 部署别名不需要再次枚举；模型路径命中白名单即可确认 Qwen3.8-27B 场景。
+        "model_name": "deployment-alias",
+        "model_path": "/models/Qwen/Qwen3.8-27B",
+        "_smart_card_token": "h20-96",
+        "_smart_feats": ["offload"],
+        "device_count": 1,
+        "distributed": False,
+        "nnodes": 1,
+        "engine_config": {
+            "tensor_parallel_size": 1,
+            "enable_prefix_caching": True,
+        },
+    }
+
+    config = vllm_adapter.resolve_topology_free_simple_cpu_offload_config(
+        params,
+        "vllm",
+    )
+
+    assert config is not None
+    assert config["kv_connector"] == "SimpleCPUOffloadConnector"
+
+
+def test_qwen38_27b_h20_simple_cpu_respects_explicit_prefix_caching_disable(monkeypatch):
+    params, exec_line = _render_command(
+        monkeypatch,
+        device_count=1,
+        tensor_parallel_size=1,
+        enable_simple_cpu_offload=True,
+        enable_prefix_caching=False,
+    )
+
+    # 白名单能力与最终运行约束分层：offload 通过开关门控，但 connector 因前缀缓存关闭而丢弃。
+    assert "offload" in params["_smart_feats"]
+    assert "kv_transfer_config" not in params["engine_config"]
+    assert "SimpleCPUOffloadConnector" not in exec_line
+
+
+@pytest.mark.parametrize("distributed", [False, True])
+@pytest.mark.parametrize(
+    ("device_count", "expected_bytes_per_rank"),
+    [
+        (1, 68719476736),
+        (2, 34359738368),
+        (4, 17179869184),
+        (8, 8589934592),
+    ],
+)
+def test_qwen38_27b_h20_simple_cpu_uses_dynamic_local_rank_count(
+    monkeypatch,
+    distributed,
+    device_count,
+    expected_bytes_per_rank,
+):
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "64")
+    params = {
+        "engine": "vllm",
+        "model_name": "Qwen3.8-27B",
+        "model_path": "/models/Qwen3.8-27B",
+        "_smart_card_token": "h20-96",
+        "_smart_feats": ["offload"],
+        "device_count": device_count,
+        "distributed": distributed,
+        "nnodes": 2 if distributed else 1,
+        "engine_config": {
+            "tensor_parallel_size": device_count,
+            "enable_prefix_caching": True,
+        },
+    }
+
+    config = vllm_adapter.resolve_topology_free_simple_cpu_offload_config(
+        params,
+        "vllm",
+    )
+
+    assert config is not None
+    assert config["kv_connector_extra_config"]["cpu_bytes_to_use_per_rank"] == (
+        expected_bytes_per_rank
+    )
 
 
 def test_qwen38_27b_h20_preserves_explicit_tp_and_dp(monkeypatch, tmp_path):

@@ -748,6 +748,19 @@ def is_deepseek_v4_flash_0731_rtx_pro_5000_scope(
     return is_deepseek_v4_flash_rtx_pro_5000(params, engine)
 
 
+def _is_kimi_k3_h20_simple_cpu_row(row: Optional[dict]) -> bool:
+    """识别仍需固定拓扑保护的 Kimi-K3 SimpleCPU 白名单行。"""
+    name_tokens = {
+        str(token).strip().lower()
+        for token in (row.get("name_tokens") or ())
+    } if row else set()
+    return bool(
+        row
+        and row.get("backend") == _OFFLOAD_SIMPLE_CPU_BACKEND
+        and "kimi-k3" in name_tokens
+    )
+
+
 def _is_kimi_k3_h20_simple_cpu_scope(
     params: Optional[Dict[str, Any]],
     engine: str,
@@ -755,7 +768,13 @@ def _is_kimi_k3_h20_simple_cpu_scope(
     """仅允许已调优的 Kimi-K3 四节点 H20 拓扑进入 SimpleCPU 卸载。"""
     if not params or engine != "vllm":
         return False
-    if resolve_offload_whitelist_backend(params, engine) != _OFFLOAD_SIMPLE_CPU_BACKEND:
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "offload",
+        require_enabled=True,
+    )
+    if not _is_kimi_k3_h20_simple_cpu_row(row):
         return False
     # 白名单使用子串匹配；这里再收紧为基础 Kimi-K3，避免同名前缀的新变体误入固定拓扑。
     if str(params.get("model_name") or "").strip().lower() != "kimi-k3":
@@ -784,25 +803,22 @@ def _is_kimi_k3_h20_simple_cpu_scope(
     return True
 
 
-def _is_deepseek_v4_pro_0813_h20_simple_cpu_scope(
+def _is_topology_free_simple_cpu_scope(
     params: Optional[Dict[str, Any]],
     engine: str,
 ) -> bool:
-    """Pro-0813 H20 按白名单选择 SimpleCPU，不绑定节点数或 TP/DP 组合。"""
+    """按白名单选择无需固定配方的 SimpleCPU 场景。"""
     row = resolve_feature_whitelist_row_from_params(
         params,
         engine,
         "offload",
         require_enabled=True,
     )
-    name_tokens = {
-        str(token).strip().lower()
-        for token in (row.get("name_tokens") or ())
-    } if row else set()
     if (
         not row
         or row.get("backend") != _OFFLOAD_SIMPLE_CPU_BACKEND
-        or "deepseek-v4-pro-0813" not in name_tokens
+        # Kimi-K3 的固定拓扑校验失败后必须直接关闭，不能回落到动态通用分支。
+        or _is_kimi_k3_h20_simple_cpu_row(row)
     ):
         return False
     if get_pd_role_env():
@@ -954,24 +970,24 @@ def resolve_kimi_k3_h20_simple_cpu_config(
     )
 
 
-def resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(
+def resolve_topology_free_simple_cpu_offload_config(
     params: Optional[Dict[str, Any]],
     engine: str = "vllm",
 ) -> Optional[Dict[str, Any]]:
-    """按实际本机 rank 数生成 Pro-0813 H20 SimpleCPU connector。"""
-    if not _is_deepseek_v4_pro_0813_h20_simple_cpu_scope(params, engine):
+    """按实际本机 device_count 生成 topology-free SimpleCPU connector。"""
+    if not _is_topology_free_simple_cpu_scope(params, engine):
         return None
     local_rank_count = _safe_int(_offload_runtime_value(params, "device_count"))
     if local_rank_count is None or local_rank_count <= 0:
         logger.warning(
-            "[SimpleCPU Offload] DeepSeek-V4-Pro-0813 requires a positive "
+            "[SimpleCPU Offload] topology-free recipe requires a positive "
             "device_count to split node capacity; request discarded."
         )
         return None
     return _build_simple_cpu_offload_config(
         params,
         engine,
-        local_rank_count,
+        local_rank_count=local_rank_count,
     )
 
 
@@ -979,11 +995,11 @@ def resolve_simple_cpu_offload_config(
     params: Optional[Dict[str, Any]],
     engine: str = "vllm",
 ) -> Optional[Dict[str, Any]]:
-    """分派当前已验证的两套 H20 SimpleCPU 调优配方。"""
+    """分派当前已验证的 H20 SimpleCPU 调优配方。"""
     kimi_config = resolve_kimi_k3_h20_simple_cpu_config(params, engine)
     if kimi_config is not None:
         return kimi_config
-    return resolve_deepseek_v4_pro_0813_h20_simple_cpu_config(params, engine)
+    return resolve_topology_free_simple_cpu_offload_config(params, engine)
 
 
 def _classify_offload_special_case(params: Optional[Dict[str, Any]], engine: str) -> str:
