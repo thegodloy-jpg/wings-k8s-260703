@@ -117,15 +117,12 @@ def test_qwen38_27b_w8a8_910b_selects_exact_single_node_profile():
         "use_vllm_serve": True,
         "trust_remote_code": True,
         "quantization": "ascend",
-        "max_num_seqs": 64,
+        "max_num_seqs": 32,
         "max_model_len": 131072,
         "max_num_batched_tokens": 16384,
         "gpu_memory_utilization": 0.9,
         "enable_prefix_caching": True,
-        "compilation_config": {
-            "cudagraph_mode": "FULL_DECODE_ONLY",
-            "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64],
-        },
+        "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
         "additional_config": {"enable_cpu_binding": True},
     }
     # TP/DP 是运行时拓扑，不能固化在模型 defaults 中。
@@ -142,15 +139,12 @@ def test_qwen38_27b_w8a8_910c_selects_exact_profile():
         "use_vllm_serve": True,
         "trust_remote_code": True,
         "quantization": "ascend",
-        "max_num_seqs": 64,
-        "max_model_len": 133072,
+        "max_num_seqs": 32,
+        "max_model_len": 131072,
         "max_num_batched_tokens": 16384,
         "gpu_memory_utilization": 0.9,
         "enable_prefix_caching": True,
-        "compilation_config": {
-            "cudagraph_mode": "FULL_DECODE_ONLY",
-            "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64],
-        },
+        "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
         "additional_config": {"enable_cpu_binding": True},
     }
     # TP/DP 属于运行时拓扑，不固化到模型 defaults；前缀缓存仍是静态配方。
@@ -700,13 +694,13 @@ def test_qwen38_27b_production_chain_renders_target_single_node_command(
         f"exec vllm serve {_MODEL_PATH}"
         " --trust-remote-code"
         " --quantization ascend"
-        " --max-num-seqs 64"
+        " --max-num-seqs 32"
         " --max-model-len 131072"
         " --max-num-batched-tokens 16384"
         " --gpu-memory-utilization 0.9"
         " --enable-prefix-caching"
         " --compilation-config "
-        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[1,2,4,8,16,24,32,40,48,56,64]}'"
+        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}'"
         " --additional-config '{\"enable_cpu_binding\":true}'"
         " --host 10.0.0.8"
         " --port 8000"
@@ -808,13 +802,13 @@ def test_qwen38_27b_910c_production_chain_renders_target_command(
         "exec vllm serve /usr/local/serving/models"
         " --trust-remote-code"
         " --quantization ascend"
-        " --max-num-seqs 64"
-        " --max-model-len 133072"
+        " --max-num-seqs 32"
+        " --max-model-len 131072"
         " --max-num-batched-tokens 16384"
         " --gpu-memory-utilization 0.9"
         " --enable-prefix-caching"
         " --compilation-config "
-        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[1,2,4,8,16,24,32,40,48,56,64]}'"
+        "'{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}'"
         " --additional-config '{\"enable_cpu_binding\":true}'"
         " --host 10.0.0.9"
         " --port 8000"
