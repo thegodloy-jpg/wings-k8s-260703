@@ -3592,10 +3592,13 @@ def _prepare_engine_config(params: Dict[str, Any]) -> Dict[str, Any]:
             engine_config["speculative_config"] = {
                 "num_speculative_tokens": 3,
                 "method": "deepseek_mtp",
+                # GLM-5.1 的投机头不支持图模式；主模型仍可保留
+                # FULL_DECODE_ONLY，仅让 MTP draft 退回 eager。
+                "enforce_eager": True,
             }
             logger.info(
                 "[GLM-5.1 RoCE] Replaced speculative_config with "
-                "num_speculative_tokens=3, method=deepseek_mtp"
+                "num_speculative_tokens=3, method=deepseek_mtp, enforce_eager=true"
             )
         if removed_keys:
             logger.info(

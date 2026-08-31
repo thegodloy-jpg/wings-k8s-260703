@@ -14,6 +14,7 @@ from core import config_loader, wings_entry  # noqa: E402
 from core.port_plan import derive_port_plan  # noqa: E402
 from core.start_args_compat import parse_launch_args  # noqa: E402
 from engines import vllm_adapter  # noqa: E402
+from utils import device_utils  # noqa: E402
 
 
 class _FakeModelIdentifier:
@@ -65,6 +66,12 @@ class _FakeDeepSeekV2Identifier:
 
 
 class _FakeGlm51Identifier:
+    config = {
+        "architectures": ["GlmMoeDsaForCausalLM"],
+        "_name_or_path": "Eco-Tech/GLM-5.1-w8a8",
+        "model_type": "glm_moe_dsa",
+        "quantization_config": {"quant_method": "w8a8"},
+    }
     model_architecture = "GlmMoeDsaForCausalLM"
     model_quantize = "w8a8"
 
@@ -72,6 +79,14 @@ class _FakeGlm51Identifier:
         self.model_name = model_name
         self.model_path = model_path
         self.model_type = model_type
+
+    @staticmethod
+    def identify_model_architecture():
+        return "GlmMoeDsaForCausalLM"
+
+    @staticmethod
+    def identify_model_type():
+        return "llm"
 
 
 class _FakeGlm47Identifier:
@@ -2386,7 +2401,8 @@ def test_spec_draft_sentinel_values_do_not_generate_draft_model(monkeypatch, dra
     assert '"model"' not in command
 
 
-def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch):
+@pytest.mark.parametrize("card_token", ["ascend910b", "ascend910c"])
+def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch, card_token):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
 
@@ -2397,14 +2413,182 @@ def test_glm51_ascend_spec_whitelist_uses_native_mtp(monkeypatch):
         "model_type": "llm",
         "enable_speculative_decode": True,
         "speculative_decode_model_path": "none",
+        "_smart_card_token": card_token,
         "_smart_feats": ["sparse", "spec"],
     }
 
     command = vllm_adapter.build_speculative_cmd(params, "vllm_ascend")
 
-    assert '"method": "deepseek_mtp"' in command
-    assert '"num_speculative_tokens": 3' in command
-    assert "suffix" not in command
+    assert command == (
+        " --speculative-config "
+        "'{\"method\":\"deepseek_mtp\",\"num_speculative_tokens\":3,"
+        "\"enforce_eager\":true}'"
+    )
+
+
+@pytest.mark.parametrize(
+    ("node_rank", "local_ip"),
+    [(0, "10.254.233.77"), (1, "10.254.233.78")],
+)
+def test_glm51_910b_dual_node_launcher_renders_eager_mtp_only_for_draft(
+    monkeypatch,
+    tmp_path,
+    node_rank,
+    local_ip,
+):
+    """从真实配置入口验证双机每个 rank 的最终 MTP 参数。"""
+    for env_name in (
+        "CONFIG_FORCE",
+        "ENABLE_SPECULATIVE_DECODE",
+        "ENABLE_SPARSE",
+        "ENABLE_KV_OFFLOAD",
+        "ENABLE_KV_MEM_OFFLOAD",
+        "ENABLE_KV_DISK_OFFLOAD",
+        "LMCACHE_OFFLOAD",
+        "PD_ROLE",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("ENGINE_VERSION", "0.21.0-a2")
+    monkeypatch.setenv("NETWORK_INTERFACE", "eth0")
+    monkeypatch.setenv("POD_IP", local_ip)
+    monkeypatch.setenv("RANK_IP", local_ip)
+    monkeypatch.setenv("SERVED_MODEL_NAME", "GLM-5.1-w8a8")
+    # 显式指向不存在的 ranktable，稳定覆盖普通 HCCS/非 RoCE 分支；RoCE 另有专项用例。
+    monkeypatch.setenv("RANK_TABLE_PATH", str(tmp_path / "missing_ranktable.json"))
+    monkeypatch.setattr(device_utils, "_hardware_cache", {})
+    monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeGlm51Identifier)
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
+    monkeypatch.setattr(wings_entry, "ModelIdentifier", _FakeGlm51Identifier)
+    monkeypatch.setattr(config_loader, "_check_vram_requirements", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_record_selected_engine", lambda *_args: None)
+    monkeypatch.setattr(
+        wings_entry,
+        "_ADVANCED_FEATURES_FILE",
+        str(tmp_path / f"advanced_features_rank{node_rank}.json"),
+    )
+
+    hardware_file = tmp_path / f"hardware_info_rank{node_rank}.json"
+    hardware_file.write_text(
+        json.dumps(
+            {
+                "device": "ascend",
+                "count": 8,
+                "hardware_family": "Ascend910B_64G",
+                "details": [
+                    {
+                        "device_id": index,
+                        "name": "Ascend910B_64G",
+                        "total_memory": 64,
+                        "free_memory": 60,
+                        "used_memory": 4,
+                    }
+                    for index in range(8)
+                ],
+                "units": "GB",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WINGS_HARDWARE_FILE", str(hardware_file))
+
+    node_ips = "10.254.233.77,10.254.233.78"
+    launch_args = parse_launch_args(
+        [
+            "--model-name", "GLM-5.1-w8a8",
+            "--model-path", "/mnt/models/GLM-5.1-w8a8",
+            "--model-type", "llm",
+            "--engine", "vllm_ascend",
+            "--device-count", "8",
+            "--host", "0.0.0.0",
+            "--port", "17000",
+            "--max-num-seqs", "16",
+            "--distributed",
+            "--nnodes", "2",
+            "--node-rank", str(node_rank),
+            "--node-ips", node_ips,
+            "--nodes", node_ips,
+            "--master-ip", "10.254.233.77",
+            "--head-node-addr", "10.254.233.77",
+            "--distributed-executor-backend", "dp_deployment",
+            "--enable-auto-tool-choice",
+            "--enable-auto-think-choice",
+            "--enable-speculative-decode",
+            "--enable-sparse",
+            "--speculative-decode-model-path", "none",
+        ]
+    )
+    plan = wings_entry.build_launcher_plan(
+        launch_args,
+        derive_port_plan(
+            port=launch_args.port,
+            enable_reason_proxy=False,
+            health_port=19000,
+        ),
+    )
+    exec_lines = [
+        line
+        for line in plan.command.splitlines()
+        if "vllm serve" in line and not line.lstrip().startswith("echo ")
+    ]
+    assert len(exec_lines) == 2
+    spec_lines = [line for line in exec_lines if "--speculative-config" in line]
+    fallback_lines = [line for line in exec_lines if "--speculative-config" not in line]
+    assert len(spec_lines) == 1
+    assert len(fallback_lines) == 1
+    assert "--hf-overrides" not in fallback_lines[0]
+    exec_line = spec_lines[0]
+    tokens = shlex.split(exec_line, posix=True)
+    spec_index = tokens.index("--speculative-config")
+    compilation_index = tokens.index("--compilation-config")
+
+    assert plan.merged_params["_smart_card_token"] == "ascend910b_64g"
+    assert plan.merged_params["_smart_feats"] == ["sparse", "spec"]
+    assert json.loads(tokens[spec_index + 1]) == {
+        "method": "deepseek_mtp",
+        "num_speculative_tokens": 3,
+        "enforce_eager": True,
+    }
+    assert json.loads(tokens[compilation_index + 1])["cudagraph_mode"] == "FULL_DECODE_ONLY"
+    assert tokens.count("--speculative-config") == 1
+    assert "--enforce-eager" not in tokens
+    for expected_cli in (
+        "--tensor-parallel-size 8",
+        "--data-parallel-address 10.254.233.77",
+        "--data-parallel-size 2",
+        "--data-parallel-size-local 1",
+    ):
+        assert expected_cli in exec_line
+
+    if node_rank == 0:
+        assert "--headless" not in tokens
+        assert "--data-parallel-start-rank" not in tokens
+        assert f"--host {local_ip}" in exec_line
+        assert "--port 17000" in exec_line
+    else:
+        assert "--headless" in tokens
+        assert "--data-parallel-start-rank 1" in exec_line
+        assert "--host" not in tokens
+        assert "--port" not in tokens
+
+
+def test_glm51_ascend_spec_disabled_does_not_emit_eager_mtp(monkeypatch):
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "GLM-5.1-w8a8",
+        "model_path": "/models/GLM-5.1-w8a8",
+        "model_type": "llm",
+        "enable_speculative_decode": False,
+        "_smart_card_token": "ascend910b",
+        "_smart_feats": ["sparse"],
+        "engine_config": {
+            "use_vllm_serve": True,
+            "model": "/models/GLM-5.1-w8a8",
+        },
+    }
+
+    assert vllm_adapter.should_append_auto_speculative_config(params) is False
+    assert "--speculative-config" not in vllm_adapter.build_start_script(params)
 
 
 @pytest.mark.parametrize(
@@ -2474,9 +2658,27 @@ def test_auto_floor_with_disk_offload_still_uses_suffix_guard(monkeypatch):
     assert strategy == "suffix"
 
 
-def test_glm51_roce_distributed_engine_config_uses_official_mtp_num3(monkeypatch):
+def test_glm51_roce_distributed_engine_config_uses_official_mtp_num3(
+    monkeypatch,
+    tmp_path,
+):
     monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeGlm51Identifier)
-    monkeypatch.setattr(vllm_adapter, "_is_roce_distributed", lambda: True)
+    rank_table = tmp_path / "rank_table_all.json"
+    rank_table.write_text(
+        json.dumps(
+            {
+                "server_list": [
+                    {
+                        "server_id": "10.254.233.77",
+                        "device": [{"device_id": str(index)} for index in range(8)],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RANK_TABLE_PATH", str(rank_table))
+    assert vllm_adapter.is_roce_distributed() is True
 
     params = {
         "engine": "vllm_ascend",
@@ -2497,11 +2699,22 @@ def test_glm51_roce_distributed_engine_config_uses_official_mtp_num3(monkeypatch
     assert engine_config["speculative_config"] == {
         "num_speculative_tokens": 3,
         "method": "deepseek_mtp",
+        "enforce_eager": True,
     }
     assert params["engine_config"]["speculative_config"] == {
         "num_speculative_tokens": 3,
         "method": "deepseek_mtp",
+        "enforce_eager": True,
     }
+    command_tokens = shlex.split(vllm_adapter._build_vllm_cmd_parts(params), posix=True)
+    spec_index = command_tokens.index("--speculative-config")
+    assert json.loads(command_tokens[spec_index + 1]) == {
+        "num_speculative_tokens": 3,
+        "method": "deepseek_mtp",
+        "enforce_eager": True,
+    }
+    assert command_tokens.count("--speculative-config") == 1
+    assert "--enforce-eager" not in command_tokens
     assert "async_scheduling" not in engine_config
     assert "enable_expert_parallel" not in engine_config
 
