@@ -31,6 +31,7 @@ _RUNTIME_ENV_NAMES = (
     "SERVED_MODEL_NAME",
     "DISTRIBUTED_EXECUTOR_BACKEND",
     "CONFIG_FORCE",
+    "ENABLE_AUTO_TOOL_CHOICE",
     "ENABLE_AUTO_THINK_CHOICE",
     "ENABLE_SPECULATIVE_DECODE",
     "SD_ENABLE",
@@ -122,6 +123,7 @@ def test_qwen38_27b_w8a8_910b_selects_exact_single_node_profile():
         "max_num_batched_tokens": 16384,
         "gpu_memory_utilization": 0.9,
         "enable_prefix_caching": True,
+        "tool_call_parser": "qwen3_coder",
         "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
         "additional_config": {"enable_cpu_binding": True},
     }
@@ -144,6 +146,7 @@ def test_qwen38_27b_w8a8_910c_selects_exact_profile():
         "max_num_batched_tokens": 16384,
         "gpu_memory_utilization": 0.9,
         "enable_prefix_caching": True,
+        "tool_call_parser": "qwen3_coder",
         "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
         "additional_config": {"enable_cpu_binding": True},
     }
@@ -586,6 +589,59 @@ def test_qwen38_27b_910c_final_command_derives_tp_from_local_devices(
     assert "export VLLM_USE_SIMPLE_KV_OFFLOAD=" not in script
     assert "--kv-offloading-backend" not in exec_line
     assert "--kv-offloading-size" not in exec_line
+
+
+@pytest.mark.parametrize("card_name", ["Ascend910B", "Ascend910C"])
+def test_qwen38_27b_ascend_function_call_and_reasoning_reach_final_command(
+    monkeypatch,
+    card_name,
+):
+    monkeypatch.setattr(config_loader, "ModelIdentifier", _FakeQwen38Identifier)
+    monkeypatch.setattr(vllm_adapter, "ModelIdentifier", _FakeQwen38Identifier)
+    monkeypatch.setattr(config_loader, "_check_vram_requirements", lambda *_args: None)
+    monkeypatch.setattr(config_loader, "_record_selected_engine", lambda *_args: None)
+    _clear_runtime_env(monkeypatch)
+
+    launch_args = parse_launch_args(
+        [
+            "--model-name",
+            _MODEL_NAME,
+            "--model-path",
+            "/usr/local/serving/models",
+            "--model-type",
+            "llm",
+            "--engine",
+            "vllm_ascend",
+            "--device-count",
+            "2",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "18000",
+            "--enable-auto-tool-choice",
+            "--enable-auto-think-choice",
+        ]
+    )
+    params = config_loader.load_and_merge_configs(
+        {
+            "device": "ascend",
+            "count": 2,
+            "details": [{"name": card_name}],
+        },
+        launch_args,
+    )
+    script = vllm_adapter.build_start_script(params)
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+    tokens = shlex.split(exec_line, posix=True)
+
+    assert params["engine_config"]["tool_call_parser"] == "qwen3_coder"
+    assert params["engine_config"]["enable_auto_tool_choice"] is True
+    assert params["engine_config"]["reasoning_parser"] == "qwen3"
+    assert tokens[tokens.index("--tool-call-parser") + 1] == "qwen3_coder"
+    assert "--enable-auto-tool-choice" in tokens
+    assert tokens[tokens.index("--reasoning-parser") + 1] == "qwen3"
+    thinking_kwargs = tokens[tokens.index("--default-chat-template-kwargs") + 1]
+    assert json.loads(thinking_kwargs) == {"enable_thinking": True}
 
 
 @pytest.mark.parametrize(

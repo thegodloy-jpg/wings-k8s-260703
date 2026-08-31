@@ -1,0 +1,22 @@
+# Function Call 模型名精确支持表（本次目标模型迁移范围）
+#
+# config_loader 对组织前缀归一后按 basename 完整匹配；精确命中时本表覆盖
+# default.json 中的 tool_call_parser。未登记模型暂时保留历史 defaults 行为，避免
+# 本次四个模型族的修复扩散为全量 Function Call 迁移。
+#
+# --enable-auto-tool-choice 仍是实际使能开关；本表只声明 parser 能力，不强制打开。
+
+feature: function_call
+field: tool_call_parser
+engines: [vllm, vllm_ascend]
+
+models:
+  Qwen3.8-27B:                    {vllm: qwen3_coder}
+  Qwen3.8-27B-FP8:               {vllm: qwen3_coder}
+  Qwen3.8-27B-w8a8:              {vllm_ascend: qwen3_coder}
+  DeepSeek-V4-Pro-0813:          {vllm: deepseek_v4}
+  DeepSeek-V4-Pro-0813-w4a8:     {vllm_ascend: deepseek_v4}
+  DeepSeek-V4-Flash-0731:        {vllm: deepseek_v4}
+  DeepSeek-V4-Flash-0731-w8a8:   {vllm_ascend: deepseek_v4}
+  Kimi-K3:                        {vllm: kimi_k3}
+  Kimi-K3-w4a8:                  {vllm_ascend: kimi_k3}

@@ -900,7 +900,8 @@
             "gpu_memory_utilization": 0.9,
             "enable_prefix_caching": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true}
+            "additional_config": {"enable_cpu_binding": true},
+            "tool_call_parser": "qwen3_coder"
           }
         },
         "Qwen3.8-27B-w8a8-910C": {
@@ -916,7 +917,8 @@
             "gpu_memory_utilization": 0.9,
             "enable_prefix_caching": true,
             "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
-            "additional_config": {"enable_cpu_binding": true}
+            "additional_config": {"enable_cpu_binding": true},
+            "tool_call_parser": "qwen3_coder"
           }
         },
         "Qwen3.5-27B-Ascend910C": {

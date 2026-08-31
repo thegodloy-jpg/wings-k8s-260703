@@ -1,44 +1,23 @@
 # Reasoning Parser（思维解析）特性支持表
 #
 # 范围: vllm / vllm_ascend。
-#   - sglang 已整体移出 reasoning: nvidia_default.json 的 sglang 段已删除全部 reasoning_parser,
-#     无论开关如何 sglang 都不参与思维解析（见 xuqiu/reasoning_thinking_switch.md「引擎范围」）。
-#     注: reasoning 与 function call 解耦, 剔除 sglang 的 reasoning 不影响其 function call
-#     (tool_call_parser 保留, 见 function_call_support.yaml)。
-#   - mindie 不使用 reasoning_parser, 思维解析为服务端内置。
+#   - sglang 已整体移出 reasoning；mindie 不使用 reasoning_parser。
+#   - reasoning 与 function call 解耦，互不影响 parser 能力判定。
 #
-# 开关: reasoning_parser 已与 function call 解耦, 由独立开关 --enable-auto-think-choice / ENABLE_AUTO_THINK_CHOICE 驱动
-#   （字段 enable_auto_think_choice, 与 function call 的 enable_auto_tool_choice 并列对齐; 默认关闭, 见 config_loader._set_reasoning_parser）。
-#   - 开关开启 + 模型/引擎默认配置里有 reasoning_parser → 注入启动命令（启用思维解析）。
-#   - 开关开启 但配置无 reasoning_parser → 仅告警, 不凭空注入。
-#   - 开关关闭 → 移除 reasoning_parser, 启动命令不带思维解析（模型仍可能输出 <think>, 只是不被拆解）。
+# 开关: --enable-auto-think-choice / ENABLE_AUTO_THINK_CHOICE，默认关闭。
+#   - 开启且精确命中非 null parser → 注入启动命令。
+#   - 开启但没有 parser → 仅告警；关闭 → 移除 reasoning_parser。
 #
-# 运行时真值:
-#   - reasoning_parser 仅由本文件承载，config_loader 在模型默认配置合并时读取并注入。
-#   - nvidia_default.json / ascend_default.json 不得再存放 reasoning_parser。
-#   - 模型清单与 wings_control/utils/model_utils.py (_LLM_MODELS) 保持严格一致。
-#
-# 每个架构含两块:
-#   models:  本架构在 _LLM_MODELS 中登记的【每个】模型的最终取值；运行时精确命中即生效，
-#            优先于 config。models 清单与 wings_control/utils/model_utils.py (_LLM_MODELS) 严格一一对应。
-#   config:  仅为【未登记到 _LLM_MODELS 但 architectures[0] 命中本架构】的模型兜底，不重复列已登记模型：
-#              default          —— 该架构未知模型的回落值；
-#              <精确模型名>: …  —— 个别未登记模型的专属兜底（如 Qwen3-Coder 系列强制 null、不启用解析）。
-#            ⚠ 已登记模型恒命中 models 块、永远走不到 config，故 config 不再镜像已登记模型（避免死配置漂移）。
-#
-# 取值约定:
-#   <string>  实际生效的 reasoning_parser
-#   null      不启用思维解析（该引擎下此模型不注入 reasoning_parser）
-#   省略某 engine 键 = 该模型在该引擎不向 models 命中、继续按 config 回落
-#
-# 命名约定: vllm / vllm_ascend 取值均用下划线: deepseek_r1, deepseek_v3, deepseek_v4, qwen3, glm45, kimi_k2, minimax_m2_append_think。
-#
-# 匹配规则(config_loader._resolve_reasoning_parser_support —— 本表的唯一消费者):
-#   1) 先在 models 块按模型名【精确匹配】(忽略大小写)，命中且该 engine 键存在 → 取该值；
-#   2) 否则在 config[engine] 按【精确匹配】命中非 default 专属键 → 取该值；
-#   3) 否则取 config[engine].default；都没有 → 不注入。
-#   全程纯精确匹配，无 token 子串匹配（子串匹配仅存在于 default.json 的 _match_model_engine_config，与本表无关）。
-#   DeepSeek V3/V3.2 架构默认 deepseek_v3；R1 系列在 models 块直接给 deepseek_r1；Coder-V2 按真实 V2 架构给 null（不启用）。
+# 运行时真值与文件结构:
+#   - 保持原有 architectures -> config/models 结构，architecture 仅用于可读分组。
+#   - config_loader 从各 architecture.models，以及 config 内非 default 的精确模型键，
+#     构建全局模型名索引；config.default 保留为历史结构，不再参与运行时兜底。
+#   - field 是实际写入 engine_config 的字段名，不再只是说明性元数据。
+#   - 去掉组织前缀后，仅对 basename 做大小写无关的完整名称匹配；不按
+#     architecture、token 子串、量化后缀或相邻版本推断。
+#   - vllm_distributed / vllm_ascend_distributed 归一到基础引擎。
+#   - 未登记模型、缺失 engine 键或显式 null 均视为不支持。
+#   - 芯片和拓扑准入继续由 nvidia_default.json / ascend_default.json 负责。
 
 feature: reasoning_parser
 field: reasoning_parser
@@ -81,6 +60,10 @@ architectures:
       DeepSeek-V4-Flash-w8a8-mtp: {vllm: deepseek_v4, vllm_ascend: deepseek_v4}
       DeepSeek-V4-Pro:            {vllm: deepseek_v4, vllm_ascend: deepseek_v4}
       DeepSeek-V4-Pro-w4a8-mtp:   {vllm: deepseek_v4, vllm_ascend: deepseek_v4}
+      DeepSeek-V4-Pro-0813:        {vllm: deepseek_v4}
+      DeepSeek-V4-Pro-0813-w4a8:   {vllm_ascend: deepseek_v4}
+      DeepSeek-V4-Flash-0731:      {vllm: deepseek_v4}
+      DeepSeek-V4-Flash-0731-w8a8: {vllm_ascend: deepseek_v4}
 
   - name: DeepseekV32ForCausalLM
     config:
@@ -110,6 +93,7 @@ architectures:
       vllm_ascend: {default: kimi_k3}
     models:
       Kimi-K3: {vllm: kimi_k3, vllm_ascend: kimi_k3}
+      Kimi-K3-w4a8: {vllm_ascend: kimi_k3}
 
   - name: GlmMoeDsaForCausalLM
     config:
@@ -173,6 +157,9 @@ architectures:
       Qwen3.5-27B-w8a8: {vllm: qwen3, vllm_ascend: qwen3}
       Qwen3.6-27B:      {vllm: qwen3, vllm_ascend: qwen3}
       Qwen3.6-27B-w8a8: {vllm: qwen3, vllm_ascend: qwen3}
+      Qwen3.8-27B:       {vllm: qwen3}
+      Qwen3.8-27B-FP8:  {vllm: qwen3}
+      Qwen3.8-27B-w8a8: {vllm_ascend: qwen3}
 
   - name: Qwen3_5MoeForConditionalGeneration
     config:

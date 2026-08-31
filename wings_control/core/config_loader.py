@@ -113,6 +113,13 @@ REASONING_PARSER_SUPPORT_PATH = (
     / "reasoning_parser"
     / "reason_parser.yaml"
 )
+FUNCTION_CALL_SUPPORT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs"
+    / "features"
+    / "function_call"
+    / "function_call_support.yaml"
+)
 
 # 各设备类型和引擎对应的默认配置文件名映射
 DEFAULT_CONFIG_FILES = {
@@ -4690,31 +4697,190 @@ def _resolve_model_lookup_keys(cmd_known_params: Dict[str, Any]) -> Tuple[str, s
     return model_name_lower, engine, engine_key
 
 
-@lru_cache(maxsize=1)
-def _load_reasoning_parser_support() -> Dict[str, Any]:
-    """Load the reasoning parser matrix keyed by model architecture."""
+def _normalize_exact_model_support_name(model_name: str) -> str:
+    """将组织前缀归一为 basename，再按大小写无关的完整模型名建立索引。"""
+    normalized = str(model_name or "").strip().replace("\\", "/").rstrip("/")
+    if not normalized:
+        return ""
+    return normalized.rsplit("/", 1)[-1].casefold()
+
+
+def _load_exact_model_feature_support(
+    support_path: Path,
+    expected_feature: str,
+) -> Dict[str, Any]:
+    """加载以模型名为唯一索引的 parser 支持表。
+
+    支持表只允许 basename 规范化后的完整名称命中，不接受 architecture/default、
+    token 子串或模型后缀回退。格式或重复索引冲突时返回空表，让调用方按“未声明
+    能力”安全降级，避免错误 parser 进入最终启动命令。
+    """
     try:
-        with REASONING_PARSER_SUPPORT_PATH.open("r", encoding="utf-8-sig") as stream:
+        with support_path.open("r", encoding="utf-8-sig") as stream:
             support = yaml.safe_load(stream) or {}
     except (OSError, yaml.YAMLError) as exc:
         logger.warning(
-            "Failed to load reasoning parser support file %s: %s",
-            REASONING_PARSER_SUPPORT_PATH,
+            "Failed to load %s support file %s: %s",
+            expected_feature,
+            support_path,
             exc,
         )
         return {}
 
-    architectures = support.get("architectures", [])
-    if not isinstance(architectures, list):
+    if support.get("feature") != expected_feature:
         logger.warning(
-            "Invalid reasoning parser support format: architectures must be a list"
+            "Invalid feature support file %s: expected feature=%s, got %s",
+            support_path,
+            expected_feature,
+            support.get("feature"),
         )
         return {}
+
+    field = support.get("field")
+    engines = support.get("engines")
+    if (
+        not isinstance(field, str)
+        or not field
+        or not isinstance(engines, list)
+    ):
+        logger.warning(
+            "Invalid %s support format in %s: field/engines are required",
+            expected_feature,
+            support_path,
+        )
+        return {}
+
+    # Function Call 使用顶层 models；Reasoning Parser 保持历史
+    # architectures -> config/models 文件结构。这里汇总各分组 models，并只保留
+    # config 内的精确模型键；architecture 和 config.default 都不进入运行时判定。
+    top_level_models = support.get("models")
+    architectures = support.get("architectures")
+    if isinstance(top_level_models, dict):
+        model_groups = [top_level_models]
+    elif isinstance(architectures, list):
+        model_groups = []
+        for architecture in architectures:
+            if not isinstance(architecture, dict) or not isinstance(
+                architecture.get("models"), dict
+            ):
+                logger.warning(
+                    "Invalid %s architecture model group in %s",
+                    expected_feature,
+                    support_path,
+                )
+                return {}
+            model_groups.append(architecture["models"])
+            exact_config_models: Dict[str, Dict[str, Optional[str]]] = {}
+            architecture_config = architecture.get("config", {})
+            if not isinstance(architecture_config, dict):
+                logger.warning(
+                    "Invalid %s architecture config in %s",
+                    expected_feature,
+                    support_path,
+                )
+                return {}
+            for engine_name, engine_config in architecture_config.items():
+                if not isinstance(engine_config, dict):
+                    logger.warning(
+                        "Invalid %s architecture engine config in %s",
+                        expected_feature,
+                        support_path,
+                    )
+                    return {}
+                for exact_model_name, parser in engine_config.items():
+                    if exact_model_name == "default":
+                        continue
+                    exact_config_models.setdefault(exact_model_name, {})[
+                        engine_name
+                    ] = parser
+            if exact_config_models:
+                model_groups.append(exact_config_models)
+    else:
+        logger.warning(
+            "Invalid %s support format in %s: models or architectures are required",
+            expected_feature,
+            support_path,
+        )
+        return {}
+
+    engine_names = {str(engine) for engine in engines}
+    normalized_models: Dict[str, Dict[str, Optional[str]]] = {}
+    for models in model_groups:
+        for model_name, engine_values in models.items():
+            normalized_name = _normalize_exact_model_support_name(model_name)
+            if not normalized_name or not isinstance(engine_values, dict):
+                logger.warning(
+                    "Invalid %s model row in %s: model=%r",
+                    expected_feature,
+                    support_path,
+                    model_name,
+                )
+                return {}
+            invalid_engines = set(engine_values) - engine_names
+            invalid_values = [
+                value for value in engine_values.values()
+                if value is not None and not isinstance(value, str)
+            ]
+            if invalid_engines or invalid_values:
+                logger.warning(
+                    "Invalid %s engine mapping in %s: model=%s, invalid_engines=%s",
+                    expected_feature,
+                    support_path,
+                    model_name,
+                    sorted(invalid_engines),
+                )
+                return {}
+            existing = normalized_models.get(normalized_name)
+            if existing is not None and existing != engine_values:
+                logger.warning(
+                    "Conflicting %s exact model index in %s: model=%s",
+                    expected_feature,
+                    support_path,
+                    model_name,
+                )
+                return {}
+            normalized_models[normalized_name] = dict(engine_values)
+
     return {
-        item["name"]: item
-        for item in architectures
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
+        "field": field,
+        "engines": engine_names,
+        "models": normalized_models,
     }
+
+
+@lru_cache(maxsize=1)
+def _load_reasoning_parser_support() -> Dict[str, Any]:
+    """从原有 architecture 分组结构加载全局精确模型索引。"""
+    return _load_exact_model_feature_support(
+        REASONING_PARSER_SUPPORT_PATH,
+        "reasoning_parser",
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_function_call_support() -> Dict[str, Any]:
+    """Load the exact-model function-call parser matrix."""
+    return _load_exact_model_feature_support(
+        FUNCTION_CALL_SUPPORT_PATH,
+        "function_call",
+    )
+
+
+def _resolve_exact_model_feature_support(
+    support: Dict[str, Any],
+    model_name: str,
+    engine: str,
+) -> Tuple[bool, Optional[str]]:
+    """按规范化后的完整模型名和基础引擎精确解析一个 parser 值。"""
+    base_engine = engine.removesuffix("_distributed")
+    if base_engine not in support.get("engines", set()):
+        return False, None
+    engine_values = support.get("models", {}).get(
+        _normalize_exact_model_support_name(model_name)
+    )
+    if not isinstance(engine_values, dict) or base_engine not in engine_values:
+        return False, None
+    return True, engine_values[base_engine]
 
 
 def _resolve_reasoning_parser_support(
@@ -4722,39 +4888,63 @@ def _resolve_reasoning_parser_support(
     model_name: str,
     engine: str,
 ) -> Tuple[bool, Optional[str]]:
-    """Resolve one parser value from reason_parser.yaml.
+    """Resolve one parser value from the exact-model reason_parser.yaml.
 
-    Concrete model rows, including explicit ``null``, take precedence over the
-    architecture config map. Distributed vLLM variants share their base engine
-    mapping.
+    ``model_architecture`` 仅保留调用兼容性；能力判定不再读取 architecture，防止
+    未登记的新模型静默继承同架构 parser。
     """
-    base_engine = engine.removesuffix("_distributed")
-    if base_engine not in {"vllm", "vllm_ascend"}:
-        return False, None
+    del model_architecture
+    return _resolve_exact_model_feature_support(
+        _load_reasoning_parser_support(),
+        model_name,
+        engine,
+    )
 
-    architecture = _load_reasoning_parser_support().get(model_architecture)
-    if not architecture:
-        return False, None
 
-    model_name_lower = (model_name or "").lower()
-    models = architecture.get("models", {})
-    if isinstance(models, dict):
-        for supported_name, engine_values in models.items():
-            if str(supported_name).lower() != model_name_lower:
-                continue
-            if isinstance(engine_values, dict) and base_engine in engine_values:
-                return True, engine_values[base_engine]
+def _resolve_function_call_support(
+    model_name: str,
+    engine: str,
+) -> Tuple[bool, Optional[str]]:
+    """Resolve one tool-call parser from the exact target-model support table."""
+    return _resolve_exact_model_feature_support(
+        _load_function_call_support(),
+        model_name,
+        engine,
+    )
 
-    config = architecture.get("config", {})
-    engine_config = config.get(base_engine, {}) if isinstance(config, dict) else {}
-    if not isinstance(engine_config, dict):
-        return False, None
-    for configured_name, parser in engine_config.items():
-        if configured_name != "default" and configured_name.lower() == model_name_lower:
-            return True, parser
-    if "default" in engine_config:
-        return True, engine_config["default"]
-    return False, None
+
+def _apply_function_call_support(
+    engine_specific_defaults: Dict[str, Any],
+    model_name: str,
+    engine_key: str,
+) -> Dict[str, Any]:
+    """用精确模型表覆盖目标模型的 Function Call parser。
+
+    未登记模型继续保留 defaults 中的历史 parser，控制本次迁移范围；精确命中时
+    YAML 为目标模型的最终能力真值，显式 ``null`` 可收回旧 defaults 能力。
+    """
+    resolved = dict(engine_specific_defaults)
+    support = _load_function_call_support()
+    base_engine = engine_key.removesuffix("_distributed")
+    if base_engine not in support.get("engines", set()):
+        return resolved
+
+    normalized_name = _normalize_exact_model_support_name(model_name)
+    if normalized_name not in support.get("models", {}):
+        return resolved
+
+    found, parser = _resolve_exact_model_feature_support(
+        support,
+        model_name,
+        engine_key,
+    )
+    field = support["field"]
+    if found and parser:
+        resolved[field] = parser
+    else:
+        # 模型已迁移进精确表，但当前基础引擎没有声明 parser：显式收回旧架构默认。
+        resolved.pop(field, None)
+    return resolved
 
 
 def _apply_reasoning_parser_support(
@@ -4763,19 +4953,28 @@ def _apply_reasoning_parser_support(
     model_name: str,
     engine_key: str,
 ) -> Dict[str, Any]:
-    """Merge the YAML-backed reasoning parser into model defaults."""
+    """以精确模型表为 vLLM Reasoning Parser 的最终能力真值。"""
     resolved = dict(engine_specific_defaults)
+    base_engine = engine_key.removesuffix("_distributed")
+    if base_engine not in {"vllm", "vllm_ascend"}:
+        return resolved
+
+    support = _load_reasoning_parser_support()
+    field = support.get("field", "reasoning_parser")
     found, parser = _resolve_reasoning_parser_support(
         model_architecture,
         model_name,
         engine_key,
     )
     if not found:
+        # 精确表未登记即不支持。即使 default.json 的架构级配置带有旧字段，也必须
+        # 在这里移除，防止同架构的新模型绕过 models 索引静默继承 parser。
+        resolved.pop(field, None)
         return resolved
     if parser:
-        resolved["reasoning_parser"] = parser
+        resolved[field] = parser
     else:
-        resolved.pop("reasoning_parser", None)
+        resolved.pop(field, None)
     return resolved
 
 
@@ -4851,6 +5050,11 @@ def _get_model_specific_config(hardware_env: Dict[str, Any],
         engine_specific_defaults = models_dict.get(default_key, {}).get(engine_key, {})
         logger.info("The default deploy configuration of the model type %s will be used.", model_type)
 
+    engine_specific_defaults = _apply_function_call_support(
+        engine_specific_defaults,
+        cmd_known_params.get("model_name", ""),
+        engine_key,
+    )
     engine_specific_defaults = _apply_reasoning_parser_support(
         engine_specific_defaults,
         model_architecture,
