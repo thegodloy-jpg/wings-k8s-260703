@@ -71,6 +71,7 @@ try:
     from wings_control.engines.vllm_adapter import (
         is_deepseek_v4_flash_0731_rtx_pro_5000_scope,
         is_kimi_k3_910c_dp_scope,
+        resolve_native_companion_transfer_config,
         resolve_simple_cpu_offload_config,
         resolve_kimi_k3_910c_native_transfer_config,
         resolve_kv_offload_effective_state,
@@ -79,6 +80,7 @@ except ImportError:
     from engines.vllm_adapter import (  # noqa: F401
         is_deepseek_v4_flash_0731_rtx_pro_5000_scope,
         is_kimi_k3_910c_dp_scope,
+        resolve_native_companion_transfer_config,
         resolve_simple_cpu_offload_config,
         resolve_kimi_k3_910c_native_transfer_config,
         resolve_kv_offload_effective_state,
@@ -1873,13 +1875,11 @@ def _set_kv_cache_config(params, ctx, model_info=None):
             return
 
     if lmcache_offload and offload_backend == "native":
-        # native backend 是 vLLM CLI 层的 ``--kv-offloading-backend native``，
-        # 与 ``kv_transfer_config`` 里的 LMCacheConnector/MemCacheConnector 互斥。
-        # 这里早退是为了让白名单 backend=native 成为唯一能力来源；否则后续通用
-        # LMCache 分支会再注入 kv_transfer_config，最终命令同时带两套卸载后端。
+        # backend=native 在内部只负责卸载路径归属，并与 LMCache/MemCache 互斥；
+        # 是否显式输出 backend CLI 或由 companion connector 承载，留给最终配方收口。
         params.pop("kv_transfer_config", None)
         logger.info(
-            "[KVCache Offload] offload whitelist uses native --kv-offloading-backend; "
+            "[KVCache Offload] offload whitelist uses native ownership; "
             "not injecting LMCacheConnectorV1."
         )
         return
@@ -2022,24 +2022,32 @@ def _enforce_native_offload_no_kv_transfer_config(
 
     ``_set_kv_cache_config`` 会在标准流程里避免注入 connector，但用户 config、
     默认配置或历史字段仍可能在更早阶段带入 ``kv_transfer_config``。这里在最终
-    合并后再收口：通用 native 场景继续移除 connector JSON；精确的 Kimi-K3/910C
-    配方只保留镜像要求的 ``lazy_offload=false`` 最小配置。
+    合并后再收口：通用 native 场景继续移除 connector JSON；仅精确调优配方保留
+    对应镜像要求的 companion transfer 配置。
     """
-    if resolve_offload_whitelist_backend(ctx, ctx.get("engine", "")) != "native":
+    engine = ctx.get("engine", "")
+    if resolve_offload_whitelist_backend(ctx, engine) != "native":
         return
     smart_feats = ctx.get("_smart_feats")
     if smart_feats is not None and "offload" not in smart_feats:
         return
     effective_ctx = dict(ctx)
     effective_ctx["engine_config"] = engine_config
-    kimi_transfer_config = resolve_kimi_k3_910c_native_transfer_config(
-        effective_ctx,
-        ctx.get("engine", ""),
+    transfer_config = resolve_native_companion_transfer_config(
+        effective_ctx, engine
     )
-    if kimi_transfer_config is not None:
-        engine_config["kv_transfer_config"] = json.dumps(kimi_transfer_config)
+    recipe_name = "native companion"
+    if transfer_config is None:
+        transfer_config = resolve_kimi_k3_910c_native_transfer_config(
+            effective_ctx,
+            engine,
+        )
+        recipe_name = "Kimi-K3-W4A8-910C"
+    if transfer_config is not None:
+        engine_config["kv_transfer_config"] = json.dumps(transfer_config)
         logger.info(
-            "[Kimi-K3-W4A8-910C] injected native lazy_offload transfer config."
+            "[%s] injected native companion transfer config.",
+            recipe_name,
         )
         return
     removed = engine_config.pop("kv_transfer_config", None)

@@ -1192,6 +1192,39 @@ def resolve_kimi_k3_910c_native_transfer_config(
     return {"kv_connector_extra_config": {"lazy_offload": lazy_offload}}
 
 
+def resolve_native_companion_transfer_config(
+    params: Optional[Dict[str, Any]],
+    engine: str,
+) -> Optional[Dict[str, Any]]:
+    """按统一白名单匹配结果生成 native 容量路径的 companion connector。
+
+    模型名、引擎和硬件身份均由 ``resolve_feature_whitelist_row_from_params``
+    统一判断；这里不再维护模型专属条件，只解析 connector 元数据和节点容量。
+    """
+    if not params or params.get("_wings_fallback_no_kv_offload"):
+        return None
+    row = resolve_feature_whitelist_row_from_params(
+        params,
+        engine,
+        "offload",
+        require_enabled=True,
+    )
+    connector = str((row or {}).get("native_transfer_connector") or "").strip()
+    lazy_offload = (row or {}).get("lazy_offload")
+    if (row or {}).get("backend") != "native" or not connector:
+        return None
+    if not isinstance(lazy_offload, bool):
+        return None
+    offload_active, _ = resolve_kv_offload_effective_state(params, engine)
+    if not offload_active:
+        return None
+    return {
+        "kv_connector": connector,
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {"lazy_offload": lazy_offload},
+    }
+
+
 def lmcache_auto_floor_disables_all_backends(params: Optional[Dict[str, Any]]) -> bool:
     """True when auto memory floor leaves no LMCache backend that needs a patch."""
     if not is_kv_mem_offload_auto_floor_disabled(params):
@@ -5133,6 +5166,8 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     - 白名单 native 场景统一用 ``_resolve_native_backend_offload_gb`` 解析 size；
       仍未白名单化的 DeepSeek-V4-Flash 特例继续走自己的兼容 resolver。
     - 与 LMCache env 路径互斥：命中时 ``_build_cache_env_commands`` 跳过 LMCache 导出。
+    - 白名单行可声明 ``omit_native_backend_cli=true``，仅输出 size；内部仍复用
+      native 容量解析、有效状态和 LMCache 互斥逻辑，不新增模型专属判断。
     - fallback 时由 ``_wings_fallback_no_kv_offload`` 抑制（崩溃回退退回基线命令）。
     """
     kimi_k3_910c_native = is_kimi_k3_910c_dp_scope(params, engine)
@@ -5143,10 +5178,17 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     deepseek_v4_pro_0813_910c_native = (
         is_deepseek_v4_pro_0813_w4a8_910c_dual_node_scope(params)
     )
+    offload_row = resolve_feature_whitelist_row_from_params(
+        params, engine, "offload", require_enabled=True
+    )
+    native_companion_size_only = bool(
+        offload_row and offload_row.get("omit_native_backend_cli") is True
+    )
     if engine != "vllm" and not (
         kimi_k3_910c_native
         or qwen38_27b_ascend_native
         or deepseek_v4_pro_0813_910c_native
+        or native_companion_size_only
     ):
         return ""
     if params.get("_wings_fallback_no_kv_offload"):
@@ -5158,6 +5200,8 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     if not _is_kv_offload_requested(params):
         return ""
     if kimi_k3_910c_native and resolve_kimi_k3_910c_native_transfer_config(params, engine) is None:
+        return ""
+    if native_companion_size_only and resolve_native_companion_transfer_config(params, engine) is None:
         return ""
 
     # 精确的 Kimi-K3 H20 行由 kv_transfer_config 承载，不能落入其它 offload 分支。
@@ -5182,6 +5226,9 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
             "skipping --kv-offloading-backend."
         )
         return ""
+    if native_companion_size_only:
+        # 是否省略 backend 完全由精确白名单行声明；其它 native 行保持原命令。
+        return f" --kv-offloading-size {size_gb}"
     return f" --kv-offloading-backend native --kv-offloading-size {size_gb}"
 
 
@@ -5341,13 +5388,23 @@ def _filter_deepseek_v4_flash_0731_w8a8_910b_env(
         return commands
 
     # 基础 Ascend 脚本、forced 默认或后续公共 builder 都可能注入这些变量，
-    # 必须在去重后按最终输出合同统一收口。
-    blocked_names = {"OMP_PROC_BIND", "VLLM_ASCEND_ENABLE_FLASHCOMM1"}
-    return [
+    # 必须在去重后按最终输出合同统一收口。SimpleKV 开关必须跟最终 offload CLI
+    # 同生共灭；关闭 offload 或 fallback 时显式 unset，避免继承容器父环境中的旧值。
+    blocked_names = {
+        "OMP_PROC_BIND",
+        "VLLM_ASCEND_ENABLE_FLASHCOMM1",
+        "VLLM_USE_SIMPLE_KV_OFFLOAD",
+    }
+    aligned = [
         command
         for command in commands
         if _top_level_export_name(command) not in blocked_names
     ]
+    if _build_kv_offload_cmd(params, "vllm_ascend"):
+        aligned.append("export VLLM_USE_SIMPLE_KV_OFFLOAD=1")
+    else:
+        aligned.append("unset VLLM_USE_SIMPLE_KV_OFFLOAD")
+    return aligned
 
 
 def _align_qwen38_27b_w8a8_910c_env(

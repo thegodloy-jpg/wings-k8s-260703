@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wings_control"))
 
-from core import config_loader  # noqa: E402
+from core import config_loader, wings_entry  # noqa: E402
 from engines import sglang_adapter, vllm_adapter  # noqa: E402
 
 
@@ -444,6 +444,10 @@ def test_deepseek_v4_flash_0731_w8a8_910b_selects_exact_recipe(monkeypatch, dist
     monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a2")
     model_name = "DeepSeek-V4-Flash-0731-w8a8"
     model_path = f"/var/ai-model/{model_name}/"
+    model_info = _FakeDeepSeekV4Info()
+    model_info.model_name = model_name
+    model_info.model_path = model_path
+    model_info.model_architecture = "DeepseekV4ForCausalLM"
 
     config = config_loader._get_model_specific_config(
         {"device": "ascend", "count": 8, "details": [{"name": "Ascend910B"}]},
@@ -452,16 +456,19 @@ def test_deepseek_v4_flash_0731_w8a8_910b_selects_exact_recipe(monkeypatch, dist
             "model_name": model_name,
             "model_path": model_path,
             "model_type": "llm",
+            "device_count": 8,
+            "nnodes": 1,
+            "_smart_card_token": "910b",
             "distributed": distributed,
             "enable_auto_tool_choice": True,
             "enable_auto_think_choice": True,
         },
-        _FakeDeepSeekV4Info(),
+        model_info,
     )
 
-    assert config["max_model_len"] == 800000
+    assert config["max_model_len"] == (800000 if distributed else 1048576)
     assert config["max_num_batched_tokens"] == 8192
-    assert config["gpu_memory_utilization"] == 0.9
+    assert config["gpu_memory_utilization"] == (0.9 if distributed else 0.94)
     assert config["max_num_seqs"] == 32
     assert config["enable_expert_parallel"] is True
     assert config["quantization"] == "ascend"
@@ -477,6 +484,7 @@ def test_deepseek_v4_flash_0731_w8a8_910b_selects_exact_recipe(monkeypatch, dist
     assert config["tokenizer_mode"] == "deepseek_v4"
     assert config["tool_call_parser"] == "deepseek_v4"
     assert config["reasoning_parser"] == "deepseek_v4"
+    assert config["default_chat_template_kwargs"] == {"thinking": True}
     assert config["served_model_name"] == model_name
     # 0731 DSpark 配方必须与旧 w8a8-mtp profile 隔离，避免 async 冲突后关闭投机解码。
     for legacy_key in (
@@ -492,6 +500,12 @@ def test_deepseek_v4_flash_0731_w8a8_910b_selects_exact_recipe(monkeypatch, dist
 
 
 def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypatch):
+    monkeypatch.setenv("WINGS_ASCEND_PLATFORM", "a2")
+    monkeypatch.setenv("ENABLE_SPECULATIVE_DECODE", "true")
+    monkeypatch.setenv("ENABLE_SPARSE", "true")
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "128")
     monkeypatch.setattr(
         vllm_adapter,
         "ModelIdentifier",
@@ -506,6 +520,18 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
     profile = _model_deploy_config("ascend")["llm"]["DeepseekV4ForCausalLM"][
         "DeepSeek-V4-Flash-0731-w8a8-Ascend910B"
     ]["vllm_ascend"]
+    engine_config = {
+        **profile,
+        "served_model_name": "dsv4-dspark",
+        "enable_auto_tool_choice": True,
+        "reasoning_parser": "deepseek_v4",
+        "port": 8000,
+    }
+    config_loader._set_thinking_default(
+        engine_config,
+        {"enable_auto_think_choice": True},
+        SimpleNamespace(model_name=model_name),
+    )
     params = {
         "engine": "vllm_ascend",
         "model_name": model_name,
@@ -515,18 +541,21 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
         "nnodes": 1,
         "device_details": [{"name": "Ascend910B"}],
         "enable_speculative_decode": True,
+        "enable_sparse": True,
         "speculative_decode_model_path": "none",
-        "_smart_feats": ["spec"],
         "_smart_card_token": "910b",
         "_explicit_cli_keys": set(),
-        "engine_config": {
-            **profile,
-            "served_model_name": "dsv4-dspark",
-            "enable_auto_tool_choice": True,
-            "reasoning_parser": "deepseek_v4",
-            "port": 8000,
-        },
+        "engine_config": engine_config,
     }
+    config_loader.apply_effective_feature_enablement(
+        params,
+        {"device": "ascend", "count": 8, "details": [{"name": "Ascend910B"}]},
+    )
+    assert params["_smart_feats"] == ["offload", "sparse", "spec"]
+    config_loader._enforce_native_offload_no_kv_transfer_config(
+        params["engine_config"],
+        params,
+    )
 
     script = vllm_adapter.build_start_script(params)
     exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
@@ -543,8 +572,9 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
     assert "export OMP_PROC_BIND=" not in script
     assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in script
     assert exec_line.startswith(f"exec vllm serve {model_path} ")
-    assert "--max-model-len 800000" in exec_line
+    assert "--max-model-len 1048576" in exec_line
     assert "--max-num-batched-tokens 8192" in exec_line
+    assert "--gpu-memory-utilization 0.94" in exec_line
     assert "--served-model-name dsv4-dspark" in exec_line
     assert "--tensor-parallel-size 8 --data-parallel-size 1" in exec_line
     assert "--enable-expert-parallel" in exec_line
@@ -552,6 +582,8 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
     assert "--tool-call-parser deepseek_v4" in exec_line
     assert "--enable-auto-tool-choice" in exec_line
     assert "--reasoning-parser deepseek_v4" in exec_line
+    assert "--default-chat-template-kwargs" in exec_line
+    assert '"thinking":true' in exec_line
     assert "--no-disable-hybrid-kv-cache-manager" in exec_line
     assert "--quantization ascend" in exec_line
     assert "--block-size 128" in exec_line
@@ -563,6 +595,21 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
         "'" + '{"method":"dspark","num_speculative_tokens":7,"enforce_eager":true}' + "'"
         in exec_line
     )
+    assert "--hf-overrides" in exec_line
+    assert '"use_index_cache":true' in exec_line
+    assert '"index_topk_freq":4' in exec_line
+    assert "--kv-offloading-backend" not in exec_line
+    assert "--kv-offloading-size 128" in exec_line
+    assert "wings-thinking-default-policy" not in exec_line
+    assert "SimpleCPUOffloadConnector" in exec_line
+    assert '"lazy_offload":true' in exec_line
+    assert sum(
+        line == "export VLLM_USE_SIMPLE_KV_OFFLOAD=1"
+        for line in script.splitlines()
+    ) == 1
+    assert vllm_adapter.resolve_offload_variant(params, "vllm_ascend") == (
+        "native_kv_offloading_backend"
+    )
     for legacy_flag in (
         "--async-scheduling",
         "--no-enable-prefix-caching",
@@ -571,12 +618,55 @@ def test_deepseek_v4_flash_0731_w8a8_910b_final_command_matches_recipe(monkeypat
     ):
         assert legacy_flag not in exec_line
     assert "--kv-cache-dtype" not in exec_line
-    assert "--hf-overrides" not in exec_line
-    assert "--kv-offloading-backend" not in exec_line
+
+    monkeypatch.setattr(
+        wings_entry,
+        "start_engine_service",
+        lambda merged: vllm_adapter.build_start_script(merged),
+    )
+    fallback_cmd = wings_entry._build_advanced_feature_fallback_cmd(params)
+    assert "--speculative-config" not in fallback_cmd
+    assert "--hf-overrides" not in fallback_cmd
+    assert "--kv-offloading-backend" not in fallback_cmd
+    assert "--kv-offloading-size" not in fallback_cmd
+    assert "SimpleCPUOffloadConnector" not in fallback_cmd
+    assert "export VLLM_USE_SIMPLE_KV_OFFLOAD=1" not in fallback_cmd
+    assert "unset VLLM_USE_SIMPLE_KV_OFFLOAD" in fallback_cmd
 
     params["enable_speculative_decode"] = False
     params["_smart_feats"] = []
     assert "--speculative-config" not in vllm_adapter.build_start_script(params)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "card_token", "expected"),
+    [
+        ("DeepSeek-V4-Flash-0731-w8a8", "910b", True),
+        ("DeepSeek-V4-Flash-0731-w8a8-extra", "910b", False),
+        ("DeepSeek-V4-Flash-0731-w8a8", "910c", False),
+    ],
+)
+def test_deepseek_v4_flash_0731_w8a8_companion_uses_exact_model_and_hardware(
+    monkeypatch,
+    model_name,
+    card_token,
+    expected,
+):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "128")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": model_name,
+        "model_path": "/var/ai-model/DeepSeek-V4-Flash-0731-w8a8/",
+        "_smart_card_token": card_token,
+        "_smart_feats": ["offload"],
+    }
+
+    connector = vllm_adapter.resolve_native_companion_transfer_config(
+        params, "vllm_ascend"
+    )
+    assert (connector is not None) is expected
 
 
 def test_deepseek_v4_flash_ascend_a3_defaults_are_selected_without_static_topology(monkeypatch):

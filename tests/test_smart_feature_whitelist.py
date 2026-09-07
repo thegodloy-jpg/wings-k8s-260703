@@ -580,8 +580,14 @@ def test_deepseek_v4_flash_0731_w8a8_smart_features_are_card_specific():
     row_910c = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend", model_name, model_path, "910c", "spec"
     )
+    sparse_910b = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910b", "sparse"
+    )
     sparse_910c = model_utils.resolve_feature_whitelist_row(
         "vllm_ascend", model_name, model_path, "910c", "sparse"
+    )
+    offload_910b = model_utils.resolve_feature_whitelist_row(
+        "vllm_ascend", model_name, model_path, "910b", "offload"
     )
 
     assert row_910b is not None
@@ -594,13 +600,25 @@ def test_deepseek_v4_flash_0731_w8a8_smart_features_are_card_specific():
     assert row_910c["mtp_method"] == "dspark"
     assert row_910c["mtp_num_speculative_tokens"] == 7
     assert row_910c["enforce_eager"] is True
+    assert sparse_910b is not None
+    assert sparse_910b["strategy"] == "indexcache"
+    assert sparse_910b["use_index_cache"] is True
+    assert sparse_910b["topk"] == {"accuracy_first": 4}
     assert sparse_910c is not None
     assert sparse_910c["strategy"] == "indexcache"
     assert sparse_910c["use_index_cache"] is True
     assert sparse_910c["topk"] == {"accuracy_first": 8}
+    assert offload_910b is not None
+    assert offload_910b["backend"] == "native"
+    assert offload_910b["native_transfer_connector"] == "SimpleCPUOffloadConnector"
+    assert offload_910b["lazy_offload"] is True
+    assert offload_910b["omit_native_backend_cli"] is True
+    assert offload_910b["exact_model_names"] == (
+        "deepseek-v4-flash-0731-w8a8",
+    )
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", model_name, model_path, "910b"
-    ) == frozenset({"spec"})
+    ) == frozenset({"offload", "sparse", "spec"})
     assert model_utils.resolve_feature_whitelist(
         "vllm_ascend", model_name, model_path, "910c"
     ) == frozenset({"spec", "sparse"})
