@@ -59,6 +59,7 @@ from utils.model_utils import (
     INDEXCACHE_ARCHS,
     feature_allowed,
     is_deepseek_v4_flash_rtx_pro_5000,
+    resolve_offload_whitelist_backend,
 )
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,14 @@ def _should_install_deepseek_v4_flash_ascend_lmcache(
         logger.info(
             "[SmartFeature] offload suppressed by whitelist; "
             "skipping DeepSeek-V4-Flash Ascend LMCache package install."
+        )
+        return False
+    # 安装包必须服从白名单声明的卸载后端；native 场景即使启用了 offload，
+    # 也不能误装 LMCache。这里复用统一后端解析，不增加模型或硬件特判。
+    if resolve_offload_whitelist_backend(merged, engine) == "native":
+        logger.info(
+            "[KVCache Offload] native backend; skipping DeepSeek-V4-Flash "
+            "Ascend LMCache package install."
         )
         return False
     if lmcache_auto_floor_disables_all_backends(merged):

@@ -1081,6 +1081,35 @@ def test_deepseek_v4_flash_ascend_v021_uses_lmcache_package_config(monkeypatch):
         assert 'cd "/accel-volume"' in snippet
 
 
+def test_deepseek_v4_flash_0731_910b_native_skips_lmcache_package(monkeypatch):
+    monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
+    monkeypatch.setenv("ENABLE_KV_MEM_OFFLOAD", "true")
+    monkeypatch.setenv("KV_MEM_OFFLOAD_SIZE", "128")
+    params = {
+        "engine": "vllm_ascend",
+        "model_name": "DeepSeek-V4-Flash-0731-w8a8",
+        "model_path": "/usr/local/serving/models/",
+        "model_type": "llm",
+        "device_count": 8,
+        "nnodes": 1,
+        "_smart_card_token": "910b",
+        "_smart_feats": ["offload", "sparse", "spec"],
+    }
+
+    assert vllm_adapter.resolve_offload_variant(
+        params, "vllm_ascend"
+    ) == "native_kv_offloading_backend"
+    assert not wings_entry._should_install_deepseek_v4_flash_ascend_lmcache(
+        "vllm_ascend", params
+    )
+    assert wings_entry._build_deepseek_v4_flash_ascend_lmcache_install_snippet(
+        "vllm_ascend", params
+    ) == ""
+    assert "lmcache-ascend:v0.4.5" not in wings_entry._build_accel_preamble(
+        "vllm_ascend", params
+    )
+
+
 def test_deepseek_v4_flash_ascend_future_version_keeps_lmcache_patch_hook(monkeypatch):
     monkeypatch.setenv("ENABLE_KV_OFFLOAD", "true")
     monkeypatch.setenv("ENGINE_VERSION", "v0.22.0-a2")
