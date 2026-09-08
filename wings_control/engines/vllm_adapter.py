@@ -5208,6 +5208,17 @@ def _build_kv_offload_cmd(params: Dict[str, Any], engine: str) -> str:
     if resolve_offload_whitelist_backend(params, engine) == _OFFLOAD_SIMPLE_CPU_BACKEND:
         return ""
 
+    return _build_native_kv_offload_capacity_cmd(params, engine, native_companion_size_only)
+
+
+def _build_native_kv_offload_capacity_cmd(
+    params: Dict[str, Any], engine: str, native_companion_size_only: bool,
+) -> str:
+    """为已通过门控的 native 场景解析容量并生成 CLI。
+
+    场景、开关及 connector 校验由调用方负责；此处保留白名单优先、旧配方回退、
+    无效容量不输出参数和 size-only 格式，避免拆分改变既有卸载行为。
+    """
     # 白名单 native 分支优先，承接 Qwen3.5 NVFP4 等 Day0 收编场景。
     # 这类场景不再写模型专属 ``elif is_qwen...``，避免 native backend 的能力边界
     # 同时散落在白名单和 adapter 硬编码中。
