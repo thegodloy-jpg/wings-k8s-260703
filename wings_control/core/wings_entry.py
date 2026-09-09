@@ -753,7 +753,6 @@ def _build_analyzer_preamble(engine: str, merged: dict, hardware: dict) -> str:
 # --- log_analyzer: 启动部署进度监控（仅master节点） ---
 # 清空旧的日志文件，确保 log_analyzer 只分析新的日志（避免残留内容触发误判）
 rm -f /var/log/wings/engine.log
-rm -f /var/log/wings/engine-full.log
 rm -f {settings.PROGRESS_FILE}
 
 # 记录脚本开始时间（用于计算耗时）
@@ -1874,9 +1873,8 @@ def _assemble_startup_command(
         # Filter engine noise from console output and engine.log:
         #   1) /health and /metrics access logs (uvicorn)
         #   2) "Prefill batch" / "Decode batch" scheduler metrics (SGLang)
-        # Complete unfiltered logs are saved to engine-full.log for debugging.
-        + "exec > >(tee -a /var/log/wings/engine-full.log"
-        " | grep --line-buffered -vE"
+        # 仅保存过滤后的 engine.log，供启动分析和排障使用，避免完整日志重复占用磁盘。
+        + "exec > >(grep --line-buffered -vE"
         " '\"GET\\s+/(health|metrics)\\s|\\b(Prefill|Decode) batch\\b'"
         " | tee -a /var/log/wings/engine.log) 2>&1\n"
         + faulthandler_patch
